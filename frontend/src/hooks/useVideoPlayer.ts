@@ -8,6 +8,7 @@ import { usePlaybackStore } from "@/store/playbackStore";
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const animFrameRef = useRef<number>(0);
+  const videoFrameRef = useRef<number>(0);
 
   const {
     isPlaying,
@@ -46,18 +47,35 @@ export function useVideoPlayer() {
     if (isPlaying) {
       el.play().catch(() => pause());
 
-      // RAF loop for smooth time updates
       const tick = () => {
         setCurrentTime(el.currentTime);
-        animFrameRef.current = requestAnimationFrame(tick);
+        const frameAwareVideo = el as HTMLVideoElement & {
+          requestVideoFrameCallback?: (callback: FrameRequestCallback) => number;
+          cancelVideoFrameCallback?: (handle: number) => void;
+        };
+        if (frameAwareVideo.requestVideoFrameCallback) {
+          videoFrameRef.current = frameAwareVideo.requestVideoFrameCallback(tick);
+        } else {
+          animFrameRef.current = requestAnimationFrame(tick);
+        }
       };
-      animFrameRef.current = requestAnimationFrame(tick);
+      tick();
     } else {
       el.pause();
       cancelAnimationFrame(animFrameRef.current);
+      const frameAwareVideo = el as HTMLVideoElement & {
+        cancelVideoFrameCallback?: (handle: number) => void;
+      };
+      frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
     }
 
-    return () => cancelAnimationFrame(animFrameRef.current);
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      const frameAwareVideo = el as HTMLVideoElement & {
+        cancelVideoFrameCallback?: (handle: number) => void;
+      };
+      frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
+    };
   }, [isPlaying, pause, setCurrentTime]);
 
   // Volume sync

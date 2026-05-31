@@ -84,10 +84,8 @@ export default function CaptionBlock({ caption }: Props) {
   const langClass =
     caption.lang === "english"
       ? "lang-en"
-      : caption.lang === "hindi"
-      ? "lang-hi"
-      : caption.lang === "bengali"
-      ? "lang-bn"
+      : caption.lang === "telgish"
+      ? "lang-telgish"
       : "lang-hinglish";
 
   if (left + width < 0) return null;

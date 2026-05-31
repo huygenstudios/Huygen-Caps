@@ -50,6 +50,7 @@ async def export_headless(
     theme: str,
     resolution: str,
     progress_callback: Callable[[str, int, str], Awaitable[None]],
+    style_config_json: str | None = None,
 ) -> str:
     """
     Export video with pixel-perfect burned captions using headless browser.
@@ -93,8 +94,8 @@ async def export_headless(
 
         # Inject caption data via proper serialization (avoids string escaping issues)
         inject_result = await page.evaluate(
-            "([json, t, w, h]) => window.setCaptionData(json, t, w, h)",
-            [captions_json, theme, width, height]
+            "([json, t, w, h, styleJson]) => window.setCaptionData(json, t, w, h, styleJson)",
+            [captions_json, theme, width, height, style_config_json or ""]
         )
         if not inject_result:
             await browser.close()
@@ -138,11 +139,9 @@ async def export_headless(
             for frame_idx in range(total_frames):
                 current_time = frame_idx / EXPORT_FPS
 
-                # Set the caption time in the render page
-                await page.evaluate(f"() => window.setCaptionTime({current_time})")
-
-                # Small delay to let React re-render
-                await asyncio.sleep(0.01)
+                # Set the caption time in the render page. The page resolves
+                # after React has committed the frame.
+                await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
 
                 # Capture the #render-frame element as transparent PNG
                 element = page.locator("#render-frame")

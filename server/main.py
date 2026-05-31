@@ -17,21 +17,31 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import shutil
 
 # These imports will trigger ai_pipeline logic
 from .database import init_db
 from .api import health, jobs
+from ai_pipeline.transcriber import get_stt_provider
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize Database
     await init_db()
     
-    # Check for crucial API Keys
-    if not os.getenv("GROQ_API_KEY") or "your_groq_api_key" in os.getenv("GROQ_API_KEY"):
+    # Check for crucial runtime dependencies and API keys.
+    stt_provider = get_stt_provider()
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    sarvam_key = os.getenv("SARVAM_API_KEY", "")
+    if stt_provider == "whisper" and (not groq_key or "your_groq_api_key" in groq_key):
         print("WARNING: GROQ_API_KEY is not set or is still a placeholder. Transcription will fail.")
+    if stt_provider == "sarvam" and not sarvam_key:
+        print("WARNING: STT_PROVIDER=sarvam requires SARVAM_API_KEY. Transcription will fail.")
+    if not shutil.which("ffmpeg"):
+        print("WARNING: FFmpeg is not on PATH. Set FFMPEG_PATH or install FFmpeg.")
+    if not shutil.which("ffprobe"):
+        print("WARNING: FFprobe is not on PATH. Export and validation may fail.")
         
     yield
     
@@ -41,7 +51,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Caption AI",
-    description="AI-powered video captioning engine for Bengali, Hindi, English & Hinglish",
+    description="AI-powered short-form captioning engine for English, Hinglish, and Telgish",
     version="5.0.0",
     lifespan=lifespan
 )

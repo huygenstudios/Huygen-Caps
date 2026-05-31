@@ -18,9 +18,8 @@
 
   /* Caption track colors */
   --caption-en: #2d4a6b;
-  --caption-hi: #6b3d2d;
   --caption-hing: #4a2d6b;
-  --caption-bn: #2d6b3d;
+  --caption-tel: #17685c;
 
   /* Timeline */
   --playhead: #ff4444;
@@ -184,9 +183,8 @@ body {
 }
 
 .caption-block.lang-en { background: var(--caption-en); }
-.caption-block.lang-hi { background: var(--caption-hi); }
 .caption-block.lang-hinglish { background: var(--caption-hing); }
-.caption-block.lang-bn { background: var(--caption-bn); }
+.caption-block.lang-telgish { background: var(--caption-tel); }
 
 /* Playhead */
 .playhead-line {

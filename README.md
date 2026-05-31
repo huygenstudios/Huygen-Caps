@@ -1,429 +1,276 @@
-<div align="center">
+# Caption AI
 
-# 🎬 Caption AI
+Caption AI is a local short-form video captioning app for Huygen Studios. It uploads an MP4/MOV, transcribes speech with word-level timestamps, previews animated captions in the editor, and exports burned MP4s plus subtitle/transcript files.
 
-### AI-Powered Video Captioning Engine with Premiere Pro-Inspired Editor
+Supported caption modes:
 
-**Generate pixel-perfect captions** for Bengali, Hindi, English & Hinglish videos — completely free, local-first, and open-source.
+- Auto Mixed Indian: Telugu, Hindi, and English mixed naturally in the same sentence, rendered in Roman text
+- English
+- Hinglish
+- Telgish / Teluglish: Telugu or Telugu-English mixed speech rendered in Roman letters, for example `nenu site ki vellanu`
 
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
-[![Next.js 14](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688.svg)](https://fastapi.tiangolo.com)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+The app is optimized for Instagram Reels, YouTube Shorts, and TikTok.
 
-[Features](#-features) · [Demo](#-demo) · [Quick Start](#-quick-start) · [Setup Wizard (Windows)](#-setup-wizard-windows) · [Architecture](#-architecture) · [Contributing](#-contributing)
+## Architecture
 
-</div>
+- `frontend/`: Next.js editor, media import, caption preview, SRT/JSON/MP4 export UI.
+- `server/`: FastAPI upload/job/export API, SQLite job store, WebSocket progress.
+- `ai_pipeline/`: audio extraction, STT provider abstraction, transcript normalization, word-level alignment, SRT/VTT rendering.
+- `server/headless_export.py`: Playwright + FFmpeg frame export. It captures the same React caption component used in preview and burns it into the output video.
 
----
+## Requirements
 
-## ✨ Features
+- Python 3.10+
+- Node.js 18+
+- FFmpeg and FFprobe on PATH, or `FFMPEG_PATH` set in `.env`
+- A configured STT provider:
+  - `STT_PROVIDER=auto` with one of the provider keys below
+  - `STT_PROVIDER=groq_whisper` or `STT_PROVIDER=whisper` with `GROQ_API_KEY`
+  - `STT_PROVIDER=openai_whisper` with `OPENAI_API_KEY`
+  - `STT_PROVIDER=sarvam` with `SARVAM_API_KEY`
 
-| Feature | Description |
-|---------|-------------|
-| 🌍 **Multi-Language** | Bengali, Hindi, English & Hinglish with auto-detection |
-| 🎯 **92–97% Accuracy** | 15-step deterministic pipeline with adaptive thresholds |
-| ⏱️ **Millisecond Sync** | WhisperX forced alignment for frame-perfect timing |
-| 🎨 **16 Caption Themes** | Minimal, Cinematic, Viral Shorts, Karaoke Neon & more |
-| 🖥️ **Premiere Pro Editor** | 5-panel browser-based NLE with timeline editing |
-| 🔧 **Self-Calibrating** | Audio-aware engine adapts to noise, speech rate & language |
-| 🇮🇳 **Hindi/Hinglish Mastery** | 3-pass normalizer + transliteration-aware scoring |
-| 📤 **Multiple Exports** | Burned MP4, SRT, ASS with headless pixel-perfect rendering |
-| 💰 **100% Free** | Uses Groq's free API — no paid services required |
-| 🔒 **Local-First** | Your videos never leave your machine |
+Sarvam is recommended for production Telgish/Teluglish because Saaras v3 supports Telugu (`te-IN`), word timestamps, and `translit` Roman output. See the official Sarvam STT docs: https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe
 
----
+## Environment
 
-## 🖥️ Demo
+Copy `.env.example` to `.env` and fill in the values:
 
-<div align="center">
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Caption AI    File  Edit  Sequence  Captions  Export        │
-├──────────┬──────────────────────────┬───────────────────────┤
-│          │                          │ Caption Editor        │
-│  Media   │   Program Monitor        │ ┌─────────────────┐  │
-│  Panel   │   (Video Preview +       │ │ 00:01.2 - 00:03 │  │
-│          │    Caption Overlay)       │ │ "আজকে আমরা..."  │  │
-│          │                          │ │ 00:03.1 - 00:05 │  │
-│          │                          │ │ "देखेंगे कैसे" │  │
-├──────────┴──────────────────────────┴───────────────────────┤
-│ ▶ 00:00:03.200  ├────┤────┤────┤────┤────┤────┤            │
-│ V1 ████████░░░░░░░░░░░░░░░░░  Timeline                     │
-│ C1 ██ ████ ███ ██████ ██████  Caption Track                 │
-│ A1 ▁▃▅▇▅▃▁▃▅▇▅▃▁▃▅▇▅▃▁▃▅▇  Waveform                      │
-└─────────────────────────────────────────────────────────────┘
+```env
+GROQ_API_KEY=your_groq_api_key_here
+OPENAI_API_KEY=
+STT_PROVIDER=auto
+SARVAM_API_KEY=
+FFMPEG_PATH=C:/ffmpeg/bin/ffmpeg.exe
+PORT=8000
+HOST=127.0.0.1
+MAX_UPLOAD_SIZE_MB=500
+RENDER_PAGE_URL=http://localhost:3000/render
 ```
 
-</div>
+`STT_PROVIDER=auto` chooses Sarvam first for Hinglish, Telgish, and Auto Mixed Indian when `SARVAM_API_KEY` is configured, then OpenAI Whisper, then Groq Whisper. Telgish and Auto Mixed Indian fail clearly if no Telugu-capable provider key is configured.
 
----
+## Install
 
-## 🚀 Quick Start
+Backend:
 
-### Prerequisites
-
-- **Python 3.10+** — [Download](https://python.org/downloads/)
-- **Node.js 18+** — [Download](https://nodejs.org/)
-- **FFmpeg** — [Download](https://ffmpeg.org/download.html)
-- **Groq API Key** (free) — [Get one here](https://console.groq.com/keys)
-
-### 1. Clone & Setup
-
-```bash
-git clone https://github.com/morningstarweb/caption-ai.git
-cd caption-ai
-```
-
-### 2. Backend Setup
-
-```bash
-# Create virtual environment
+```powershell
 python -m venv venv
-
-# Activate it
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your GROQ_API_KEY
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe -m playwright install chromium
 ```
 
-### 3. Frontend Setup
+Frontend:
 
-```bash
+```powershell
 cd frontend
 npm install
-cd ..
 ```
 
-### 4. Run
+## Run Locally
 
-```bash
-# Terminal 1 — Backend (port 8000)
-python -m server.main
+Backend:
 
-# Terminal 2 — Frontend (port 3000)
+```powershell
+.\venv\Scripts\python.exe -m uvicorn server.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Frontend:
+
+```powershell
 cd frontend
 npm run dev
 ```
 
-Open **[http://localhost:3000](http://localhost:3000)** and start captioning! 🎉
-
----
-
-## 🧙 Setup Wizard (Windows)
-
-The project now includes a Windows setup wizard in the [wizard](wizard) folder.
-
-### Run Wizard (normal mode)
-
-```bash
-python -m wizard.wizard
-```
-
-### Run Wizard (dry-run mode)
-
-Dry-run mode tests the full UI flow without performing real installs or writing `.env` / `start.bat`.
-
-```bash
-python -m wizard.wizard --dry-run
-```
-
-You can also enable dry-run using an environment variable:
-
-```powershell
-$env:CAPTION_AI_WIZARD_DRY_RUN="1"
-python -m wizard.wizard
-```
-
-### Build `.exe` Wizard
-
-```bat
-wizard\build.bat
-```
-
-`build.bat` auto-uses `wizard/icon.ico` if present; otherwise it builds without an icon.
-
----
-
-## 🏗️ Architecture
-
-### Pipeline Overview
-
-```
-Video → Audio Extract → Quality Estimation → Adaptive Thresholds
-  → Chunking → ASR (Groq Whisper) → Language Detection
-  → Hindi Normalization → LLM Refinement → Hallucination Guard
-  → Dual Scoring → LM Check → Merge → Sentence Split
-  → WhisperX Alignment → Drift Clamp → SRT/VTT Output
-```
-
-### 15-Step AI Engine
-
-| Step | Module | Description |
-|------|--------|-------------|
-| 1 | `audio.py` | Extract & chunk audio with overlap |
-| 2 | `quality_estimator.py` | Measure SNR & speech rate |
-| 3 | `config.py` | Adaptive threshold calibration |
-| 4 | `audio.py` | Profile-aware chunking (strict/normal) |
-| 5 | `transcriber.py` | Groq Whisper + retry with prompt biasing |
-| 6 | `lang_detector.py` | Per-chunk language detection |
-| 7 | `hindi_normalizer.py` | 3-pass deterministic Hindi/Hinglish correction |
-| 8 | `llm_judge.py` | LLM contextual refinement (Llama 3.3 70B) |
-| 9 | `hallucination_guard.py` | Word-count validation guard |
-| 10 | `dual_scorer.py` | Semantic + keyword dual scoring |
-| 11 | `lm_check.py` | Language model validation |
-| 12 | `chunk_merger.py` | Order-safe parallel merge |
-| 13 | `sentence_splitter.py` | Smart sentence splitting (prosody-aware) |
-| 14 | `aligner.py` | WhisperX forced alignment |
-| 15 | `drift_clamp.py` | Alignment drift correction & validation |
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **AI Engine** | Python, Groq Whisper large-v3, Llama 3.3 70B, WhisperX |
-| **Backend** | FastAPI, SQLite (aiosqlite), WebSocket real-time progress |
-| **Frontend** | Next.js 14, TypeScript, Tailwind CSS, Zustand |
-| **Rendering** | FFmpeg, Playwright (headless pixel-perfect), ImageMagick |
-| **Timeline** | react-resizable-panels, WaveSurfer.js, dnd-kit |
-
-### Project Structure
-
-```
-caption-ai/
-├── ai_pipeline/                # 🧠 AI captioning engine (15 modules)
-│   ├── main.py                 # Pipeline orchestrator
-│   ├── config.py               # All thresholds & settings
-│   ├── transcriber.py          # Groq Whisper ASR
-│   ├── hindi_normalizer.py     # Hindi/Hinglish 3-pass normalizer
-│   ├── aligner.py              # WhisperX forced alignment
-│   ├── dual_scorer.py          # Semantic + keyword scoring
-│   ├── llm_judge.py            # LLM contextual refinement
-│   ├── hallucination_guard.py  # Word-count validation
-│   ├── quality_estimator.py    # Audio quality & SNR analysis
-│   ├── sentence_splitter.py    # Prosody-aware sentence split
-│   ├── drift_clamp.py          # Alignment drift correction
-│   └── ...                     # + 8 more pipeline modules
-├── server/                     # ⚡ FastAPI backend
-│   ├── main.py                 # Server entry point
-│   ├── database.py             # SQLite async database
-│   ├── pipeline_runner.py      # Background pipeline executor
-│   ├── headless_export.py      # Pixel-perfect video export
-│   └── api/
-│       ├── jobs.py             # Upload, status, export, WebSocket
-│       └── health.py           # Health check endpoint
-├── frontend/                   # 🎨 Next.js 14 Premiere Pro editor
-│   └── src/
-│       ├── app/                # Pages & layout
-│       ├── components/editor/  # 12 editor components
-│       │   ├── ProgramMonitor  # Video preview + caption overlay
-│       │   ├── Timeline        # Track-based composition editor
-│       │   ├── CaptionEditor   # Caption list + inline editing
-│       │   ├── MediaPanel      # File browser & import
-│       │   └── Toolbar         # Menu bar + tool selection
-│       ├── store/              # Zustand state (4 stores)
-│       ├── hooks/              # Custom React hooks
-│       └── lib/                # API client, types, utilities
-├── requirements.txt            # Python dependencies
-├── .env.example                # Environment variable template
-├── CONTRIBUTING.md             # Contribution guidelines
-└── LICENSE                     # MIT License
-```
-
----
-
-## 🎨 Caption Themes
-
-16 built-in themes — fully customizable per caption:
-
-| Theme | Style | Theme | Style |
-|-------|-------|-------|-------|
-| `minimal` | Clean white text | `neon_glow` | Bright neon colors |
-| `viral_shorts` | Bold yellow, high impact | `typewriter` | Monospace typewriter |
-| `cinematic` | Elegant serif, letter-spaced | `comic_pop` | Comic book style |
-| `karaoke_neon` | Glowing cyan neon | `elegant_serif` | Refined serif typography |
-| `kalakar_fire` | Bold red gradient | `gradient_wave` | Gradient color flow |
-| `glassmorphism` | Frosted glass background | `outline_bold` | Heavy outline text |
-| `retro_vhs` | VHS distortion feel | `shadow_3d` | 3D shadow effect |
-| `dramatic` | Italic dramatic feel | `highlight_box` | Highlighted background |
-
----
-
-## 🌍 Language Support
-
-| Language | ASR | Normalization | Alignment Model | Status |
-|----------|-----|---------------|-----------------|--------|
-| 🇺🇸 English | ✅ Groq Whisper | — | WAV2VEC2_ASR_BASE | ✅ Stable |
-| 🇮🇳 Hindi | ✅ Groq Whisper | ✅ 3-pass normalizer | Wav2Vec2-large-xlsr-hindi | ✅ Stable |
-| 🇮🇳 Hinglish | ✅ Groq Whisper | ✅ 3-pass normalizer | Wav2Vec2-large-xlsr-hindi | ✅ Stable |
-| 🇧🇩 Bengali | ✅ Groq Whisper | — | WAV2VEC2_ASR_BASE | ✅ Stable |
-
----
-
-## 🔌 API Reference
-
-### Upload Video & Start Captioning
-```http
-POST /api/jobs
-Content-Type: multipart/form-data
-
-file: <video_file>
-target_lang: "auto" | "english" | "hindi" | "hinglish" | "bengali"
-
-→ { "job_id": "uuid", "status": "processing", "filename": "video.mp4" }
-```
-
-### Get Job Status & Results
-```http
-GET /api/jobs/{job_id}
-
-→ { "job_id": "...", "status": "completed", "srt": "...", "segments": [...] }
-```
-
-### List All Jobs
-```http
-GET /api/jobs
-
-→ [ { "job_id": "...", "status": "completed", "filename": "..." }, ... ]
-```
+Open http://localhost:3000.
 
-### Real-time Progress (WebSocket)
-```http
-WS /api/jobs/{job_id}/ws
+## Generate Test
 
-→ { "status": "transcribing", "percent": 45, "details": "Chunk 3/7" }
-```
+1. Import an MP4 or MOV.
+2. Select `Auto Mixed Indian`, `English`, `Hinglish`, or `Telgish / Teluglish`.
+3. Click `Generate Captions`.
+4. Confirm the editor shows processing progress.
+5. Confirm captions appear with word timings.
+6. Open Export and download `Burned MP4`, `SRT Subtitles`, or `Transcript JSON`.
 
-### Export Video with Burned Captions
-```http
-POST /api/jobs/{job_id}/export
+## Language Tests
 
-render_mode: "headless" | "ass"
-resolution: "720p" | "1080p"
+English:
 
-→ Binary MP4 file
-```
+- Use an English MP4.
+- Select `English`.
+- Verify the backend receives `languageMode=english`.
+- Verify word timestamps exist and the exported MP4 highlights spoken words.
 
-### Health Check
-```http
-GET /api/health
+Auto Mixed Indian:
 
-→ { "status": "ok", "version": "5.0.0" }
-```
+- Use a Telugu-English or Telugu-Hindi-English mixed MP4.
+- Select `Auto Mixed Indian`.
+- Verify Roman output, not Telugu or Devanagari script.
+- Verify English words remain readable.
+- Verify word timestamps and burned MP4 export.
 
----
+Hinglish:
 
-## 🤝 Contributing
+- Use a Hindi-English mixed MP4.
+- Select `Hinglish`.
+- Verify Roman output, not Devanagari.
+- Verify word timestamps and burned MP4 export.
 
-We love contributions! Whether it's a bug fix, new feature, or documentation improvement — every PR matters.
+Telgish / Teluglish:
 
-See **[CONTRIBUTING.md](CONTRIBUTING.md)** for detailed guidelines.
+- Use a Telugu-English mixed MP4.
+- Select `Telgish / Teluglish`.
+- Verify the request sends `languageMode=telgish`.
+- Verify the backend accepts it.
+- Verify output is Roman text, not Telugu script.
+- Verify every visible word has start/end timing.
+- Verify the burned MP4 uses animated word highlights.
 
-```bash
-# Quick start for contributors
-git fork https://github.com/morningstarweb/caption-ai.git
-git checkout -b feature/amazing-feature
-# Make your changes...
-git commit -m "feat: add amazing feature"
-git push origin feature/amazing-feature
-# Open a Pull Request!
-```
+## Transcript Normalization
 
-### Ideas for Contribution
+All provider output is normalized into a shared transcript shape with:
 
-- 🌐 **New Languages** — Add support for more languages
-- 🎨 **Caption Themes** — Design new caption styles
-- ⚡ **Performance** — Optimize pipeline speed
-- 📱 **Mobile UI** — Improve responsive editor
-- 🧪 **Testing** — Add test coverage
-- 📖 **Docs** — Improve documentation & examples
-- 🔧 **Integrations** — YouTube upload, cloud storage, etc.
+- `languageMode`
+- `provider`
+- `romanized`
+- `segments`
+- `words` with `word`, `start`, `end`, optional `originalWord`, and `languageHint`
 
----
+Hinglish, Telgish, and Auto Mixed Indian detect Telugu (`U+0C00-U+0C7F`) and Devanagari (`U+0900-U+097F`) script. Native-script words are romanized while English words, names, numbers, and punctuation are preserved. If Romanization fails and native script remains, generation fails instead of outputting unreadable captions.
 
-## 📋 System Requirements
+## Caption Chunking
 
-### Minimum
-- 4GB RAM
-- Python 3.10+
-- Node.js 18+
-- Any modern browser (Chrome, Firefox, Edge)
-- Internet connection (for Groq API calls)
+Use the `Caption Chunking` controls in the editor to rebuild captions from existing word timestamps without re-running transcription.
 
-### Recommended
-- 8GB+ RAM
-- NVIDIA GPU (for faster WhisperX alignment)
-- SSD storage
-- FFmpeg installed globally
+- Max words per caption
+- Max characters per caption
+- Minimum and maximum caption duration
+- Pause split threshold
+- Merge small gaps
+- Target reading speed
+- Avoid single-word captions
+- Balance line length
 
----
+## Word Highlight Box
 
-## ❓ FAQ
+The default premium style is `Word Highlight Box`.
 
-<details>
-<summary><strong>Is it really free?</strong></summary>
+- Captions are chunked into short 2-6 word pages, preferring 4-5 words for fast Reels.
+- All words in the active chunk remain visible.
+- Inactive words use the configured text color.
+- The currently spoken word uses the configured active word color, default `#FFD43B`.
+- The caption sits inside a configurable dark rounded background.
+- Active word timing is computed from word timestamps.
+- Headless export advances by frame with `currentTime = frame / fps`.
+- Preview and export use the same React caption component.
+- Small provider/alignment overlaps are repaired before rendering and marked with a
+  `*_repaired` `timing_source` in transcript JSON.
+- If a caption has no word-level timestamps, the app shows:
+  `Word-level timestamps are required for automatic word highlighting.`
 
-Yes! Caption AI uses Groq's free API tier for both Whisper transcription and LLM refinement. No credit card required.
-</details>
+Use the `Caption Style` panel to customize:
 
-<details>
-<summary><strong>Do my videos get uploaded anywhere?</strong></summary>
+- Font family: Poppins, Inter, Montserrat, Roboto, Oswald, Anton, Bebas Neue, Arial.
+- Font size, weight, letter spacing, line height, and uppercase mode.
+- Text color and active word color.
+- Active word scale, glow, animation strength, animation type, and speed.
+- Background color, opacity, radius, padding, and shadow.
+- X/Y position, safe area, alignment, and max width.
 
-No. Everything runs locally on your machine. Videos are processed on your own hardware, and the only external API call is for transcription text (audio is sent to Groq's API, but no video data leaves your machine).
-</details>
+Fonts are installed through local `@fontsource` packages so preview and export do not depend on Google Fonts at render time.
 
-<details>
-<summary><strong>What video formats are supported?</strong></summary>
+## Word Highlight Box Tests
 
-Any format that FFmpeg can decode — MP4, MKV, AVI, MOV, WebM, and more.
-</details>
+Test 1:
 
-<details>
-<summary><strong>Can I use my own Whisper model instead of Groq?</strong></summary>
+- Upload an English reel.
+- Generate captions.
+- Select `Word Highlight Box`.
+- Confirm the active word turns yellow exactly when spoken.
+- Change active word color to green.
+- Export MP4 and confirm it matches preview.
 
-The pipeline is designed around Groq's hosted Whisper for speed and zero-cost. Self-hosted Whisper support is a great contribution opportunity!
-</details>
+Test 2:
 
-<details>
-<summary><strong>How accurate are the captions?</strong></summary>
+- Change font to Poppins, Montserrat, and Anton.
+- Confirm preview and exported MP4 use the selected font.
 
-92–97% accuracy depending on audio quality, language, and speech clarity. The adaptive engine automatically adjusts thresholds for noisy audio or fast speech.
-</details>
+Test 3:
 
----
+- Change background color, opacity, radius, and padding.
+- Confirm the box wraps text cleanly and export matches.
 
-## 📄 License
+Test 4:
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+- Move caption X/Y position with sliders.
+- Confirm the caption stays inside the safe area and export matches.
 
-Free to use, modify, and distribute. Attribution appreciated but not required.
+Test 5:
 
----
+- Use longer caption text.
+- Confirm chunking avoids long full-sentence paragraphs.
 
-## ⭐ Support the Project
+Test 6:
 
-If Caption AI helps you, consider:
-- ⭐ **Starring** this repo — helps others discover it
-- 🐛 **Filing issues** — helps us improve
-- 🔀 **Contributing** — helps everyone
-- 📢 **Sharing** — tell others about it!
+- Drag captions in the preview.
+- Confirm all caption chunks move together.
+- Export MP4 and confirm the same position.
 
----
+Test 7:
 
-<div align="center">
+- Upload Telugu-English or Hindi-English mixed speech.
+- Confirm the transcript JSON has Roman `word` values and `originalWord` only when romanization changed the token.
 
-**Built with ❤️ for the open-source community**
+## Troubleshooting
 
-[Report Bug](https://github.com/morningstarweb/caption-ai/issues) · [Request Feature](https://github.com/morningstarweb/caption-ai/issues) · [Discussions](https://github.com/morningstarweb/caption-ai/discussions)
+Generate button does nothing:
 
-</div>
+- Confirm the backend is running on `http://127.0.0.1:8000`.
+- Confirm the frontend `NEXT_PUBLIC_API_URL` points to the backend if customized.
+- Check the inline error in the Caption Editor.
+- Run `.\venv\Scripts\python.exe -c "from server.main import app; print(app.title)"`.
+
+CORS error:
+
+- Use the default frontend/backend ports first: `3000` and `8000`.
+- Confirm the API URL is not mixed between `localhost` and another host unexpectedly.
+
+FFmpeg missing:
+
+- Install FFmpeg and FFprobe.
+- Or set `FFMPEG_PATH=C:/ffmpeg/bin/ffmpeg.exe`.
+- Restart the backend after changing `.env`.
+
+Missing `SARVAM_API_KEY`:
+
+- Use `STT_PROVIDER=auto` with `GROQ_API_KEY` or `OPENAI_API_KEY`, or add `SARVAM_API_KEY`.
+- Telgish with `STT_PROVIDER=sarvam` will fail clearly without this key.
+
+Telgish / Auto Mixed provider error:
+
+- Configure `SARVAM_API_KEY`, `OPENAI_API_KEY`, or `GROQ_API_KEY`.
+- For best Telugu-English mixed captions, prefer `STT_PROVIDER=auto` with `SARVAM_API_KEY`.
+
+Word timings are not increasing:
+
+- Restart the backend so it loads the latest timestamp repair logic.
+- The pipeline now repairs small non-monotonic word overlaps, for example near short words like `and`.
+- Repaired words are labeled in transcript JSON with a `timing_source` ending in `_repaired`.
+
+Telgish returning Telugu script:
+
+- Prefer `STT_PROVIDER=sarvam` with Saaras v3 transliteration mode.
+- The Whisper fallback runs a Telugu Unicode romanization layer, but some loan words may need manual correction.
+
+Render fails:
+
+- Install Playwright Chromium:
+  `.\venv\Scripts\python.exe -m playwright install chromium`
+- Start the frontend before exporting MP4 because the backend captures `RENDER_PAGE_URL`.
+- Confirm FFmpeg is installed.
+
+Output file missing:
+
+- Check the backend terminal for the export stage error.
+- Verify the original upload still exists in `storage/uploads`.
+- Try exporting SRT or JSON first to confirm captions exist.

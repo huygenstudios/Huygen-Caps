@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 async def update_job_status(job_id: str, status: str, progress: int = None, 
                             error: str = None, srt: str = None, vtt: str = None,
-                            segments: list = None):
+                            segments: list = None, transcript: dict = None):
     async with aiosqlite.connect(DB_PATH) as db:
         
         updates = []
@@ -39,6 +39,10 @@ async def update_job_status(job_id: str, status: str, progress: int = None,
         if segments is not None:
             updates.append("segments_json = ?")
             params.append(json.dumps(segments, ensure_ascii=False))
+
+        if transcript is not None:
+            updates.append("transcript_json = ?")
+            params.append(json.dumps(transcript, ensure_ascii=False))
             
         if status in ['completed', 'failed']:
             updates.append("completed_at = CURRENT_TIMESTAMP")
@@ -65,7 +69,8 @@ def run_pipeline_sync(job_id: str, video_path: str, target_lang: str):
         loop.run_until_complete(manager.broadcast_progress(job_id, status, percent, details))
 
     try:
-        on_progress("Pipeline started", 1)
+        logger.info("job_stage", extra={"job_id": job_id, "stage": "pipeline started"})
+        on_progress("extracting_audio", 1, "Pipeline started.")
         
         result = run_pipeline(
             video_path=video_path,
@@ -79,22 +84,24 @@ def run_pipeline_sync(job_id: str, video_path: str, target_lang: str):
                 update_job_status(
                     job_id, "completed", 100, 
                     srt=result.get("srt"), vtt=result.get("vtt"),
-                    segments=result.get("segments")
+                    segments=result.get("segments"),
+                    transcript=result.get("transcript"),
                 )
             )
             loop.run_until_complete(
                 manager.broadcast_progress(job_id, "completed", 100, "Captioning finished successfully.")
             )
+            logger.info("job_stage", extra={"job_id": job_id, "stage": "output returned"})
         else:
             err_msg = result.get("message", "Unknown pipeline error")
             logger.error(f"Job {job_id} Failed gracefully: {err_msg}")
-            loop.run_until_complete(update_job_status(job_id, "failed", error=err_msg))
+            loop.run_until_complete(update_job_status(job_id, "failed", progress=-1, error=err_msg))
             loop.run_until_complete(manager.broadcast_progress(job_id, "failed", 0, err_msg))
 
     except Exception as e:
         logger.exception(f"Job {job_id} Pipeline crashed.")
         try:
-            loop.run_until_complete(update_job_status(job_id, "failed", error=str(e)))
+            loop.run_until_complete(update_job_status(job_id, "failed", progress=-1, error=str(e)))
         except Exception:
             logger.error(f"Job {job_id} Failed to update DB after crash")
         try:

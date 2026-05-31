@@ -8,8 +8,8 @@ import { useEditorStore } from "@/store/editorStore";
 import { useCaptionStore } from "@/store/captionStore";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
 import { ExportFormat, ProjectData } from "@/lib/types";
-import { downloadFile, generateASS } from "@/lib/captionUtils";
-import { exportBurnedMp4, exportHeadless, createProgressWebSocket } from "@/lib/api";
+import { downloadFile } from "@/lib/captionUtils";
+import { exportHeadless, createProgressWebSocket } from "@/lib/api";
 
 interface ExportOption {
   format: ExportFormat;
@@ -32,6 +32,12 @@ const options: ExportOption[] = [
     icon: <FileText size={20} />,
   },
   {
+    format: "json",
+    label: "Transcript JSON",
+    description: "Word-timed caption data",
+    icon: <FileText size={20} />,
+  },
+  {
     format: "ass",
     label: "ASS Subtitles (Styled)",
     description: "Advanced SubStation Alpha with styling",
@@ -46,7 +52,17 @@ const options: ExportOption[] = [
 ];
 
 export default function ExportModal() {
-  const { showExportModal, setShowExportModal, language, theme, mediaFiles, jobId } = useEditorStore();
+  const {
+    showExportModal,
+    setShowExportModal,
+    language,
+    theme,
+    mediaFiles,
+    jobId,
+    captionStyleConfig,
+    captionChunkingConfig,
+    captionLayerTransform,
+  } = useEditorStore();
   const allCaptions = useCaptionStore((s) => s.captions);
   const captions = useCaptionStore((s) => s.captions);
   const { exportSRT, exportASS } = useCaptionExport();
@@ -67,6 +83,23 @@ export default function ExportModal() {
       case "srt":
         exportSRT();
         break;
+      case "json":
+        downloadFile(
+          JSON.stringify(
+            {
+              languageMode: language,
+              segments: captions,
+              styleConfig: captionStyleConfig,
+              chunkingConfig: captionChunkingConfig,
+              layerTransform: captionLayerTransform,
+            },
+            null,
+            2
+          ),
+          "transcript.json",
+          "application/json"
+        );
+        break;
       case "ass":
         exportASS();
         break;
@@ -80,8 +113,11 @@ export default function ExportModal() {
           },
           captions,
           settings: {
-            language: language === "auto" ? "english" : language,
+            language,
             theme,
+            captionStyleConfig,
+            captionChunkingConfig,
+            captionLayerTransform,
           },
         };
         downloadFile(
@@ -99,6 +135,11 @@ export default function ExportModal() {
         if (captions.length === 0) {
           alert("No captions to export.");
           break;
+        }
+        if (theme === "word_highlight_box" && captions.some((caption) => !caption.words?.length)) {
+          setExportError("Word-level timestamps are required for automatic word highlighting.");
+          setExporting(false);
+          return;
         }
         
         try {
@@ -120,7 +161,13 @@ export default function ExportModal() {
 
           // Pixel-perfect headless export — sends raw captions + theme
           const captionsJson = JSON.stringify(allCaptions);
-          const blob = await exportHeadless(jobId, captionsJson, theme, resolution);
+          const blob = await exportHeadless(
+            jobId,
+            captionsJson,
+            theme,
+            resolution,
+            JSON.stringify(captionStyleConfig)
+          );
 
           // Cleanup WebSocket
           wsRef.current?.close();

@@ -4,11 +4,11 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function uploadVideo(
   file: File,
-  language: string = "auto"
+  languageMode: string = "auto_mixed_indian"
 ): Promise<{ job_id: string }> {
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("target_lang", language);
+  formData.append("languageMode", languageMode);
 
   const res = await fetch(`${API_BASE}/api/jobs`, {
     method: "POST",
@@ -25,7 +25,10 @@ export async function uploadVideo(
 
 export async function getJob(jobId: string) {
   const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
-  if (!res.ok) throw new Error("Failed to fetch job");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Failed to fetch job");
+  }
   return res.json();
 }
 
@@ -96,13 +99,17 @@ export async function exportHeadless(
   jobId: string,
   captionsJson: string,
   theme: string,
-  resolution: string = "1080p"
+  resolution: string = "1080p",
+  styleConfigJson?: string
 ): Promise<Blob> {
   const formData = new FormData();
   formData.append("captions_json", captionsJson);
   formData.append("theme", theme);
   formData.append("resolution", resolution);
   formData.append("render_mode", "headless");
+  if (styleConfigJson) {
+    formData.append("style_config_json", styleConfigJson);
+  }
 
   const res = await fetch(`${API_BASE}/api/jobs/${jobId}/export`, {
     method: "POST",

@@ -1,7 +1,18 @@
 /* Editor Store — global editor state */
 
 import { create } from "zustand";
-import { Language, CaptionTheme, ToolMode, MediaFile } from "@/lib/types";
+import { DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG, normalizeCaptionStyleConfig } from "@/lib/captionStyleConfig";
+import { DEFAULT_CAPTION_CHUNKING_CONFIG } from "@/lib/captionUtils";
+import {
+  AlignedSegment,
+  CaptionChunkingConfig,
+  CaptionLayerTransform,
+  CaptionStyleConfig,
+  CaptionTheme,
+  Language,
+  MediaFile,
+  ToolMode,
+} from "@/lib/types";
 
 interface EditorState {
   // Tool
@@ -20,6 +31,17 @@ interface EditorState {
   setLanguage: (lang: Language) => void;
   theme: CaptionTheme;
   setTheme: (theme: CaptionTheme) => void;
+  captionStyleConfig: CaptionStyleConfig;
+  setCaptionStyleConfig: (config: Partial<CaptionStyleConfig>) => void;
+  resetCaptionStyleConfig: () => void;
+  savedCaptionPresets: CaptionStyleConfig[];
+  saveCaptionPreset: (name?: string) => void;
+  captionChunkingConfig: CaptionChunkingConfig;
+  setCaptionChunkingConfig: (config: Partial<CaptionChunkingConfig>) => void;
+  transcriptSegments: AlignedSegment[];
+  setTranscriptSegments: (segments: AlignedSegment[]) => void;
+  captionLayerTransform: CaptionLayerTransform;
+  setCaptionLayerTransform: (transform: Partial<CaptionLayerTransform>) => void;
 
   // Pipeline
   jobId: string | null;
@@ -55,10 +77,75 @@ export const useEditorStore = create<EditorState>((set) => ({
     })),
   setActiveMedia: (id) => set({ activeMediaId: id }),
 
-  language: "auto",
+  language: "auto_mixed_indian",
   setLanguage: (lang) => set({ language: lang }),
-  theme: "viral_shorts",
+  theme: "word_highlight_box",
   setTheme: (theme) => set({ theme }),
+  captionStyleConfig: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG,
+  setCaptionStyleConfig: (config) =>
+    set((state) => {
+      const captionStyleConfig = normalizeCaptionStyleConfig({
+        ...state.captionStyleConfig,
+        ...config,
+      });
+      return {
+        captionStyleConfig,
+        captionLayerTransform: {
+          ...state.captionLayerTransform,
+          xPercent: captionStyleConfig.positionX,
+          yPercent: captionStyleConfig.positionY,
+        },
+      };
+    }),
+  resetCaptionStyleConfig: () =>
+    set({ captionStyleConfig: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG, theme: "word_highlight_box" }),
+  savedCaptionPresets: [],
+  saveCaptionPreset: (name) =>
+    set((state) => ({
+      savedCaptionPresets: [
+        ...state.savedCaptionPresets,
+        normalizeCaptionStyleConfig({
+          ...state.captionStyleConfig,
+          presetName: name?.trim() || state.captionStyleConfig.presetName || "Custom Word Highlight Box",
+        }),
+      ].slice(-12),
+    })),
+  captionChunkingConfig: DEFAULT_CAPTION_CHUNKING_CONFIG,
+  setCaptionChunkingConfig: (config) =>
+    set((state) => ({
+      captionChunkingConfig: {
+        ...state.captionChunkingConfig,
+        ...config,
+      },
+    })),
+  transcriptSegments: [],
+  setTranscriptSegments: (segments) => set({ transcriptSegments: segments }),
+  captionLayerTransform: {
+    xPercent: 50,
+    yPercent: 78,
+    scale: 1,
+    rotation: 0,
+    anchor: "center",
+  },
+  setCaptionLayerTransform: (transform) =>
+    set((state) => {
+      const next = {
+        ...state.captionLayerTransform,
+        ...transform,
+        xPercent: Math.min(100, Math.max(0, transform.xPercent ?? state.captionLayerTransform.xPercent)),
+        yPercent: Math.min(100, Math.max(0, transform.yPercent ?? state.captionLayerTransform.yPercent)),
+        scale: Math.min(3, Math.max(0.2, transform.scale ?? state.captionLayerTransform.scale)),
+        rotation: Math.min(180, Math.max(-180, transform.rotation ?? state.captionLayerTransform.rotation)),
+      };
+      return {
+        captionLayerTransform: next,
+        captionStyleConfig: normalizeCaptionStyleConfig({
+          ...state.captionStyleConfig,
+          positionX: next.xPercent,
+          positionY: next.yPercent,
+        }),
+      };
+    }),
 
   jobId: null,
   setJobId: (id) => set({ jobId: id }),

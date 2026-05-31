@@ -1,10 +1,12 @@
 /* Types for Caption AI */
 
-export type Language = "auto" | "english" | "hindi" | "hinglish" | "bengali";
+export type Language = "english" | "hinglish" | "telgish" | "auto_mixed_indian";
 export type ToolMode = "selection" | "razor" | "hand" | "zoom";
-export type ExportFormat = "mp4" | "srt" | "ass" | "project";
+export type ExportFormat = "mp4" | "srt" | "json" | "ass" | "project";
 
 export type CaptionTheme =
+  | "word_highlight_box"
+  | "viral_word_highlight"
   | "minimal"
   | "viral_shorts"
   | "cinematic"
@@ -94,6 +96,9 @@ export interface ProjectData {
   settings: {
     language: Language;
     theme: CaptionTheme;
+    captionStyleConfig?: CaptionStyleConfig;
+    captionChunkingConfig?: CaptionChunkingConfig;
+    captionLayerTransform?: CaptionLayerTransform;
   };
 }
 
@@ -109,15 +114,24 @@ export interface JobResponse {
   progress: number;
   filename: string;
   target_lang: string;
+  languageMode: Language;
   error?: string;
   srt?: string;
   vtt?: string;
   segments?: AlignedSegment[];
+  transcript?: {
+    languageMode: Language;
+    provider?: string;
+    romanized?: boolean;
+    segments: AlignedSegment[];
+    metadata?: Record<string, unknown>;
+  };
   created_at: string;
   completed_at?: string;
 }
 
 export interface AlignedSegment {
+  id?: string;
   start: number;
   end: number;
   text: string;
@@ -129,10 +143,104 @@ export interface AlignedWord {
   start: number;
   end: number;
   score: number;
+  confidence?: number;
+  provider?: string;
+  timing_source?: string;
+  originalWord?: string;
+  languageHint?: "english" | "hindi" | "telugu" | "unknown";
+  timing_repair?: string;
+}
+
+export interface CaptionChunkingConfig {
+  maxWordsPerCaption: number;
+  minWordsPerCaption: number;
+  maxCharsPerCaption: number;
+  minCaptionDuration: number;
+  maxCaptionDuration: number;
+  pauseSplitThreshold: number;
+  mergeSmallGapThreshold: number;
+  targetReadingSpeedCps: number;
+  avoidSingleWordCaptions: boolean;
+  balanceLineLength: boolean;
+}
+
+export interface CaptionLayerTransform {
+  xPercent: number;
+  yPercent: number;
+  scale: number;
+  rotation: number;
+  anchor: "center" | "top" | "bottom";
+}
+
+export type CaptionAlignment = "left" | "center" | "right";
+export type CaptionEntranceAnimation = "none" | "fade" | "pop" | "slide_up";
+export type CaptionWordAnimation = "none" | "pop" | "bounce";
+
+export interface CaptionStyleConfig {
+  presetName: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number | string;
+  textColor: string;
+  activeWordColor: string;
+  backgroundEnabled: boolean;
+  backgroundColor: string;
+  backgroundOpacity: number;
+  borderRadius: number;
+  paddingX: number;
+  paddingY: number;
+  letterSpacing: number;
+  lineHeight: number;
+  textTransform: "none" | "uppercase";
+  textShadowEnabled: boolean;
+  activeWordScale: number;
+  activeWordGlow: boolean;
+  animationType: CaptionWordAnimation;
+  animationStrength: number;
+  animationSpeed: number;
+  animationSmoothness: number;
+  entranceAnimation: CaptionEntranceAnimation;
+  backgroundShadow: boolean;
+  safeAreaEnabled: boolean;
+  positionX: number;
+  positionY: number;
+  alignment: CaptionAlignment;
+  maxWidth: number;
 }
 
 // Theme presets
 export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
+  word_highlight_box: {
+    fontSize: 58,
+    fontFamily: "'Poppins', 'Inter', Arial, sans-serif",
+    color: "#ffffff",
+    backgroundColor: "rgba(0,0,0,0.78)",
+    bold: true,
+    outline: false,
+    position: "bottom",
+    textTransform: "none",
+    letterSpacing: "0",
+    borderRadius: "16px",
+    padding: "14px 24px",
+    shadow: "0 4px 16px rgba(0,0,0,0.55)",
+    animation: "pop",
+  },
+  viral_word_highlight: {
+    fontSize: 64,
+    fontFamily: "'Inter', 'Arial Black', sans-serif",
+    color: "#ffffff",
+    backgroundColor: "rgba(0,0,0,0.88)",
+    bold: true,
+    outline: true,
+    outlineColor: "#000000",
+    position: "bottom",
+    textTransform: "uppercase",
+    letterSpacing: "0",
+    borderRadius: "8px",
+    padding: "14px 22px",
+    shadow: "0 6px 18px rgba(0,0,0,0.65)",
+    animation: "pop",
+  },
   minimal: {
     fontSize: 24,
     fontFamily: "Inter, sans-serif",

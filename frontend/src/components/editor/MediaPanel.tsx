@@ -7,7 +7,7 @@ import {
   FolderOpen,
   Film,
   Music,
-  Image,
+  Image as ImageIcon,
   Plus,
   Trash2,
   Sparkles,
@@ -18,6 +18,8 @@ import { useTimelineStore } from "@/store/timelineStore";
 import { MediaFile, CaptionTheme, CAPTION_THEMES } from "@/lib/types";
 
 const THEME_LIST: { id: CaptionTheme; label: string; preview: string }[] = [
+  { id: "word_highlight_box", label: "Word Highlight Box", preview: "Yellow word" },
+  { id: "viral_word_highlight", label: "Viral Word Highlight", preview: "WORD POP" },
   { id: "minimal", label: "Minimal", preview: "Clean subtitles" },
   { id: "viral_shorts", label: "Viral Shorts", preview: "BOLD TEXT" },
   { id: "cinematic", label: "Cinematic", preview: "Golden Cinema" },
@@ -160,7 +162,7 @@ export default function MediaPanel() {
     switch (type) {
       case "video": return <Film size={14} />;
       case "audio": return <Music size={14} />;
-      default: return <Image size={14} />;
+      default: return <ImageIcon size={14} />;
     }
   };
 

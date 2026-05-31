@@ -1,147 +1,158 @@
-import os
 import logging
-from typing import Dict, Any, List
+import os
+from typing import Any, Dict
 
-# Setup core logging first
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-from .audio import extract_audio, overlap_chunk, apply_fade
-from .quality_estimator import measure_audio_quality, adaptive_thresholds
-from .transcriber import transcribe_chunk_with_retry
+from .alignment_validator import check_hallucination, validate_alignment
+from .aligner import align_text
+from .audio import apply_fade, extract_audio, overlap_chunk
+from .chunk_merger import merge_chunks
+from .confidence import determine_confidence_threshold
+from .config import ALWAYS_KEEP_RAW_CHUNKS, MIN_REFINEMENT_WORD_KEEP_RATIO, MODEL_ALIGN_EN
+from .drift_clamp import clamp_alignment_drift
+from .dual_scorer import compute_dual_score
+from .hindi_normalizer import normalize_hindi_text
 from .lang_detector import detect_language
 from .llm_judge import refine_transcript
 from .lm_check import lightweight_lm_check
-from .dual_scorer import compute_dual_score
-from .confidence import determine_confidence_threshold
-from .chunk_merger import merge_chunks
-from .sentence_splitter import split_sentences_v2
-from .aligner import align_text
-from .alignment_validator import validate_alignment, check_hallucination
-from .drift_clamp import clamp_alignment_drift
 from .logger import PipelineLogger
+from .quality_estimator import adaptive_thresholds, measure_audio_quality
 from .renderer import generate_srt, generate_vtt
-from .config import (
-    MODEL_ALIGN_EN, MODEL_ALIGN_HI,
-    ALWAYS_KEEP_RAW_CHUNKS, MIN_REFINEMENT_WORD_KEEP_RATIO
+from .sentence_splitter import split_sentences_v2
+from .transcriber import transcribe_audio
+from .language_modes import CODE_MIXED_LANGUAGE_MODES, normalize_caption_text, normalize_language_mode
+from .transcript_normalizer import (
+    TranscriptValidationError,
+    build_normalized_transcript,
+    build_word_timed_transcript_from_chunks,
+    normalize_aligned_segments,
 )
-from .hindi_normalizer import normalize_hindi_text
 
 
 def _has_enough_words(source_text: str, candidate_text: str) -> bool:
     source_words = len(source_text.split())
     candidate_words = len(candidate_text.split())
-
     if source_words == 0:
         return candidate_words == 0
 
     minimum_words = max(1, int(source_words * MIN_REFINEMENT_WORD_KEEP_RATIO))
     return candidate_words >= minimum_words
 
-def run_pipeline(video_path: str, user_target_lang: str = "en", progress_callback=None) -> Dict[str, Any]:
-    """
-    Main execution flow for Caption AI Engine.
-    Executes the deterministic 15-step captioning pipeline.
-    """
+
+def _stage_log(stage: str, **fields: Any) -> None:
+    logger.info("pipeline_stage", extra={"stage": stage, **fields})
+
+
+def run_pipeline(
+    video_path: str,
+    user_target_lang: str = "english",
+    progress_callback=None,
+) -> Dict[str, Any]:
+    """Run transcription, normalization, alignment, and subtitle export."""
+    language_mode = normalize_language_mode(user_target_lang)
     pipeline_logger = PipelineLogger(os.path.basename(video_path))
     pipeline_logger.start_run()
-    
+    audio_path = f"{os.path.splitext(video_path)[0]}_temp.wav"
+    chunks = []
+    transcription_providers: set[str] = set()
+
     def emit_progress(status: str, percent: int, details: str = ""):
-        logger.info(f"Progress: {percent}% - {status}")
+        logger.info(f"Progress: {percent}% - {status} - {details}")
         if progress_callback:
             progress_callback(status, percent, details)
-            
+
     try:
-        emit_progress("Initializing via Audio Analyzer", 5)
-        
-        # Ensure .wav path exists
-        audio_path = f"{os.path.splitext(video_path)[0]}_temp.wav"
+        emit_progress("extracting_audio", 5, "Extracting audio from uploaded video.")
         extract_audio(video_path, audio_path)
-        
-        # 1. Audio Quality Estimation & Adaptive Thresholds
-        emit_progress("Estimating Audio Quality", 10)
+        _stage_log("audio extracted", audio_path=audio_path, language_mode=language_mode)
+
+        emit_progress("normalizing", 10, "Estimating audio quality.")
         metrics = measure_audio_quality(audio_path)
-        adaptive_thresholds_dict = adaptive_thresholds(metrics['snr_db'], metrics['speech_rate'])
+        adaptive_thresholds_dict = adaptive_thresholds(metrics["snr_db"], metrics["speech_rate"])
         logger.info(f"Adaptive Thresholds Applied: {adaptive_thresholds_dict}")
-        
-        # 2. Profile-Aware Chunking
-        emit_progress("Chunking Audio", 15)
-        is_strict = metrics['snr_db'] < 10.0
-        chunks = overlap_chunk(audio_path, mode='strict' if is_strict else 'normal')
-        
-        total_chunks = len(chunks)
+
+        emit_progress("normalizing", 15, "Chunking audio for transcription.")
+        is_strict = metrics["snr_db"] < 10.0
+        chunks = overlap_chunk(audio_path, mode="strict" if is_strict else "normal")
+        total_chunks = max(len(chunks), 1)
         processed_chunks = []
-        
-        # Process chunks
+
+        emit_progress("transcribing", 18, f"Transcribing {len(chunks)} audio chunk(s).")
+        _stage_log("transcription started", chunk_count=len(chunks), language_mode=language_mode)
+
         for i, chunk in enumerate(chunks):
-            chunk_pct = 15 + int(((i) / total_chunks) * 50)
-            emit_progress(f"Processing Chunk {i+1}/{total_chunks}", chunk_pct)
-            
-            # Apply anti-pop fade
+            chunk_pct = 18 + int((i / total_chunks) * 48)
+            emit_progress("transcribing", chunk_pct, f"Processing chunk {i + 1}/{len(chunks)}.")
             apply_fade(chunk.audio_path)
-            
-            # 3. Intelligent Transcription (with Retry + Prompt Injection)
-            transcription_result = transcribe_chunk_with_retry(chunk.audio_path, language=user_target_lang)
-            raw_text = transcription_result["text"]
-            chunk.raw_text = raw_text
+
+            transcription_result = transcribe_audio(chunk.audio_path, language_mode=language_mode)
+            transcription_providers.add(str(transcription_result.get("provider") or "unknown"))
+            raw_text = transcription_result.get("text", "")
+            clean_text = normalize_caption_text(raw_text, language_mode)
+            chunk.raw_text = clean_text
             chunk.asr_metadata = transcription_result
-            
-            if not raw_text.strip():
+            score = float(transcription_result.get("language_probability") or 1.0)
+
+            if not clean_text.strip():
                 processed_chunks.append(chunk)
                 continue
-                
-            # 4. Chunk-Level Lang Detection
-            detected_lang = detect_language(raw_text.split())
+
+            if language_mode in CODE_MIXED_LANGUAGE_MODES:
+                chunk.language = language_mode
+                chunk.final_text = clean_text
+                chunk.score = score
+                pipeline_logger.log_chunk(
+                    index=i,
+                    lang=language_mode,
+                    raw=clean_text,
+                    refined=clean_text,
+                    final=chunk.final_text,
+                    score=score,
+                )
+                processed_chunks.append(chunk)
+                continue
+
+            detected_lang = detect_language(clean_text.split())
             chunk.language = detected_lang
-            
-            # 5. Preserve spoken words in maximum-recall mode.
-            clean_text = raw_text.strip()
             scoring_text = clean_text
-            
-            # 5.5 Hindi/Hinglish Normalizer (3-pass deterministic correction)
-            if detected_lang in ("hindi", "hinglish", "hi") or user_target_lang in ("hindi", "hinglish", "hi"):
+
+            if detected_lang in ("hindi", "hinglish", "hi") or language_mode == "hinglish":
                 scoring_text = normalize_hindi_text(clean_text, lang=detected_lang)
-            
-            # 6. LLM Contextual Judge
-            llm_mode = 'critical' if is_strict else 'normal'
+
+            llm_mode = "critical" if is_strict else "normal"
             try:
-                refined_text = refine_transcript(scoring_text, detected_lang, mode=llm_mode, target_lang=user_target_lang)
+                refined_text = refine_transcript(
+                    scoring_text,
+                    detected_lang,
+                    mode=llm_mode,
+                    target_lang=language_mode,
+                )
+                refined_text = normalize_caption_text(refined_text, language_mode)
             except Exception as exc:
                 logger.warning(f"Chunk {i} LLM refinement failed: {exc}. Using unrefined text.")
                 refined_text = scoring_text
-            
-            # 7. Hallucination Guard
-            # Skip for 'hinglish' — transliteration (Devanagari→Roman) naturally changes 
-            # word counts, causing false positives in the word-count-diff check.
-            if user_target_lang == 'hinglish':
-                pass  # Trust the LLM transliteration
+
+            if language_mode == "hinglish":
+                pass
             elif not check_hallucination(scoring_text, refined_text):
                 logger.warning(f"Chunk {i} failed hallucination guard. Falling back to raw text.")
-                refined_text = scoring_text  # Fallback
+                refined_text = scoring_text
 
             keeps_enough_words = _has_enough_words(clean_text, refined_text)
-            
-            # 8. Dual Scoring (Semantic + Keyword)
-            # 9. LM Pre-Check
-            # For Hinglish transliteration, skip scoring — the semantic similarity between
-            # Devanagari source and Roman transliteration will always be very low.
-            if user_target_lang == 'hinglish':
+
+            if language_mode == "hinglish":
                 score = 1.0
-                chunk.score = score
                 chunk.final_text = refined_text if keeps_enough_words else clean_text
             else:
                 lm_score = lightweight_lm_check(refined_text, detected_lang)
-                
-                # Adaptive Threshold integration
-                confidence_threshold = determine_confidence_threshold(refined_text, adaptive_thresholds_dict)
-                
-                if lm_score > 0.9:
-                    score = lm_score
-                else:
-                    score = compute_dual_score(clean_text, refined_text)
-                    
-                chunk.score = score
-                
+                confidence_threshold = determine_confidence_threshold(
+                    refined_text,
+                    adaptive_thresholds_dict,
+                )
+                score = lm_score if lm_score > 0.9 else compute_dual_score(clean_text, refined_text)
+
                 if score >= confidence_threshold and keeps_enough_words:
                     chunk.final_text = refined_text
                 else:
@@ -152,125 +163,123 @@ def run_pipeline(video_path: str, user_target_lang: str = "en", progress_callbac
                     )
                     chunk.final_text = scoring_text or clean_text
 
+            chunk.score = score
             if ALWAYS_KEEP_RAW_CHUNKS and not chunk.final_text.strip():
                 chunk.final_text = clean_text
-                
+
             pipeline_logger.log_chunk(
-                index=i, lang=detected_lang, 
-                raw=clean_text, refined=refined_text, 
-                final=chunk.final_text, score=score
+                index=i,
+                lang=detected_lang,
+                raw=clean_text,
+                refined=refined_text,
+                final=chunk.final_text,
+                score=score,
             )
-            
             processed_chunks.append(chunk)
 
-        # 10. Order-Safe Parallel Merge
-        emit_progress("Merging Timelines", 70)
-        merged_text, merged_segments = merge_chunks(processed_chunks)
-        
-        # 11. Global Consistency Pass
-        # We skip global_consistency_pass here because passing the entire text through the LLM 
-        # destroys the exact chunk-level temporal boundaries. Sync is much more critical!
-        
-        # 12. Sentence Splitter v2
-        emit_progress("Splitting Sentences", 80)
-        prompt_segments_with_time = []
-        
-        for seg in merged_segments:
-            seg_sents = split_sentences_v2(seg['text'], strict=is_strict)
-            n_sents = len(seg_sents)
-            if n_sents == 0:
-                continue
-                
-            # Distribute the chunk's time proportionally by word count.
-            # Even distribution causes sync drift — a 2-word sentence gets the same 
-            # time window as a 10-word sentence, pushing WhisperX alignment off.
-            word_counts = [max(len(s.split()), 1) for s in seg_sents]
-            total_words = sum(word_counts)
-            seg_total_dur = seg['end'] - seg['start']
-            
-            cursor = seg['start']
-            for i, sent in enumerate(seg_sents):
-                frac = word_counts[i] / total_words
-                sent_dur = seg_total_dur * frac
-                sent_start = round(cursor, 3)
-                sent_end = round(cursor + sent_dur, 3)
-                prompt_segments_with_time.append({
-                    "text": sent,
-                    "start": sent_start,
-                    "end": sent_end
-                })
-                cursor += sent_dur
-        
-        # 13. Deterministic Alignment
-        emit_progress("Word-Level Alignment", 85)
-        
-        # Use Hindi model ONLY for Devanagari Hindi or Bengali. 
-        # For Hinglish, use English model because it uses Latin (Roman) alphabet.
-        if user_target_lang in ['hi', 'bn']:
-            align_model = MODEL_ALIGN_HI 
+        _stage_log("transcription completed", chunk_count=len(processed_chunks))
+        emit_progress("romanizing", 70, "Romanizing and validating transcript text.")
+
+        if language_mode in CODE_MIXED_LANGUAGE_MODES:
+            clamped_segments = build_word_timed_transcript_from_chunks(processed_chunks, language_mode)
         else:
-            align_model = MODEL_ALIGN_EN
-            
-        try:
-            aligned_segments = align_text(prompt_segments_with_time, audio_path, align_model)
-        except Exception as e:
-            logger.error(f"Alignment fully failed: {e}. Cannot generate timestamps.")
-            raise
-            
-        # 14. Alignment Drift Clamp - apply per-segment word-level + segment-level
-        clamped_segments = []
-        for seg in aligned_segments:
-            if 'words' in seg:
-                seg['words'] = clamp_alignment_drift(seg['words'])
-            clamped_segments.append(seg)
-        
-        # Segment-level drift clamp: prevent overlapping segment boundaries
-        for i in range(1, len(clamped_segments)):
-            prev = clamped_segments[i - 1]
-            curr = clamped_segments[i]
-            if 'start' in curr and 'end' in prev:
-                if curr['start'] < prev['end']:
-                    # Split the overlap at midpoint
-                    mid = (prev['end'] + curr['start']) / 2
-                    prev['end'] = round(mid - 0.005, 3)
-                    curr['start'] = round(mid + 0.005, 3)
-        
-        # 15. Alignment Validation
-        emit_progress("Validating Alignments", 90)
-        is_valid = validate_alignment(clamped_segments, adaptive_thresholds_dict)
-        if not is_valid:
-            logger.warning("Alignment validation failed. Output may have misaligned tokens.")
-            
-        emit_progress("Generating Formats", 95)
+            merged_text, merged_segments = merge_chunks(processed_chunks)
+            _stage_log(
+                "word timestamps normalized",
+                merged_word_count=len(merged_text.split()),
+                segment_count=len(merged_segments),
+            )
+
+            emit_progress("chunking", 80, "Splitting caption sentences.")
+            prompt_segments_with_time = []
+
+            for seg in merged_segments:
+                seg_sents = split_sentences_v2(seg["text"], strict=is_strict)
+                if not seg_sents:
+                    continue
+
+                word_counts = [max(len(s.split()), 1) for s in seg_sents]
+                total_words = sum(word_counts)
+                seg_total_dur = seg["end"] - seg["start"]
+                cursor = seg["start"]
+
+                for sent_index, sent in enumerate(seg_sents):
+                    frac = word_counts[sent_index] / total_words
+                    sent_dur = seg_total_dur * frac
+                    sent_start = round(cursor, 3)
+                    sent_end = round(cursor + sent_dur, 3)
+                    prompt_segments_with_time.append(
+                        {"text": sent, "start": sent_start, "end": sent_end}
+                    )
+                    cursor += sent_dur
+
+            emit_progress("normalizing", 85, "Aligning every visible word.")
+            try:
+                aligned_segments = align_text(prompt_segments_with_time, audio_path, MODEL_ALIGN_EN)
+            except Exception as e:
+                logger.error(f"Alignment fully failed: {e}. Cannot generate timestamps.")
+                raise
+
+            clamped_segments = []
+            for seg in aligned_segments:
+                if "words" in seg:
+                    seg["words"] = clamp_alignment_drift(seg["words"])
+                clamped_segments.append(seg)
+
+            for i in range(1, len(clamped_segments)):
+                prev = clamped_segments[i - 1]
+                curr = clamped_segments[i]
+                if "start" in curr and "end" in prev and curr["start"] < prev["end"]:
+                    mid = (prev["end"] + curr["start"]) / 2
+                    prev["end"] = round(mid - 0.005, 3)
+                    curr["start"] = round(mid + 0.005, 3)
+
+            is_valid = validate_alignment(clamped_segments, adaptive_thresholds_dict)
+            if not is_valid:
+                logger.warning("Alignment validation failed. Output may have misaligned tokens.")
+
+            clamped_segments = normalize_aligned_segments(clamped_segments, language_mode)
+
+        _stage_log("caption chunks generated", segment_count=len(clamped_segments))
+        emit_progress("chunking", 92, "Preparing readable caption chunks.")
+
+        emit_progress("rendering", 95, "Generating SRT and VTT exports.")
         srt_content = generate_srt(clamped_segments)
         vtt_content = generate_vtt(clamped_segments)
-        
-        # Clean up temp files
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-            
-        for c in chunks:
-            if os.path.exists(c.audio_path):
-                os.remove(c.audio_path)
-                
-        emit_progress("Completed", 100)
-        
+        _stage_log("render completed", segment_count=len(clamped_segments))
+
+        emit_progress("completed", 100, "Captioning finished successfully.")
         pipeline_logger.end_run()
         log_summary = pipeline_logger.get_summary()
-        
+        provider_name = ",".join(sorted(transcription_providers)) or "unknown"
+        transcript = build_normalized_transcript(clamped_segments, language_mode, provider_name)
+        transcript["metadata"] = log_summary
+
         return {
             "status": "success",
+            "languageMode": language_mode,
             "srt": srt_content,
             "vtt": vtt_content,
             "segments": clamped_segments,
-            "metrics": log_summary
+            "transcript": transcript,
+            "metrics": log_summary,
         }
-        
+
+    except TranscriptValidationError as e:
+        logger.exception("Pipeline transcript validation failed.")
+        emit_progress("failed", -1, str(e))
+        pipeline_logger.end_run(error=str(e))
+        return {"status": "error", "message": str(e), "languageMode": language_mode}
     except Exception as e:
         logger.exception("Pipeline failed critically.")
-        emit_progress("Failed", -1, str(e))
+        emit_progress("failed", -1, str(e))
         pipeline_logger.end_run(error=str(e))
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e), "languageMode": language_mode}
+    finally:
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+
+        for c in chunks:
+            if os.path.exists(c.audio_path):
+                os.remove(c.audio_path)
+        _stage_log("temp cleanup completed", video_path=video_path)

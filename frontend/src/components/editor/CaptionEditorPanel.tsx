@@ -17,25 +17,39 @@ import { usePlaybackStore } from "@/store/playbackStore";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { uploadVideo, getJob } from "@/lib/api";
-import { segmentsToCapptions, formatTime, parseTime } from "@/lib/captionUtils";
+import { segmentsToCaptions, formatTime, parseTime } from "@/lib/captionUtils";
 import { Language, CaptionTheme, CAPTION_THEMES } from "@/lib/types";
+import CaptionStylePanel from "./CaptionStylePanel";
 
 const LANGUAGES: { value: Language; label: string }[] = [
-  { value: "auto", label: "Auto Detect" },
+  { value: "auto_mixed_indian", label: "Auto Mixed Indian" },
   { value: "english", label: "English" },
-  { value: "hindi", label: "Hindi" },
   { value: "hinglish", label: "Hinglish" },
-  { value: "bengali", label: "Bengali" },
+  { value: "telgish", label: "Telgish / Teluglish" },
 ];
 
 export default function CaptionEditorPanel() {
-  const { language, setLanguage, mediaFiles, activeMediaId, pipelineStatus, pipelinePercent, setJobId, setPipelineProgress } =
+  const {
+    language,
+    setLanguage,
+    mediaFiles,
+    activeMediaId,
+    pipelineStatus,
+    pipelinePercent,
+    setJobId,
+    setPipelineProgress,
+    captionChunkingConfig,
+    setCaptionChunkingConfig,
+    transcriptSegments,
+    setTranscriptSegments,
+  } =
     useEditorStore();
   const { captions, selectedIds, editingId, selectCaption, setEditingId, updateCaption, deleteCaption, deleteSelected, addCaption, splitCaption, setCaptions } =
     useCaptionStore();
   const { currentTime } = usePlaybackStore();
   const { exportSRT, exportASS } = useCaptionExport();
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState("");
   const [stylePickerForId, setStylePickerForId] = useState<string | null>(null);
   const [editingTimeId, setEditingTimeId] = useState<string | null>(null);
   const [editingTimeField, setEditingTimeField] = useState<"start" | "end">("start");
@@ -46,20 +60,23 @@ export default function CaptionEditorPanel() {
 
   const handleGenerate = useCallback(async () => {
     if (!activeMedia || isGenerating) return;
+    if (activeMedia.type !== "video") {
+      setGenerateError("Upload an MP4 or MOV video before generating captions.");
+      return;
+    }
+
+    const lowerName = activeMedia.name.toLowerCase();
+    if (!lowerName.endsWith(".mp4") && !lowerName.endsWith(".mov") && !lowerName.endsWith(".m4v")) {
+      setGenerateError("Only MP4 and MOV uploads are supported for burned captions.");
+      return;
+    }
 
     setIsGenerating(true);
+    setGenerateError("");
     setPipelineProgress("Uploading...", 5);
 
     try {
-      const langMap: Record<string, string> = {
-        auto: "auto",
-        english: "en",
-        hindi: "hi",
-        hinglish: "hinglish",
-        bengali: "bn",
-      };
-
-      const result = await uploadVideo(activeMedia.file, langMap[language] || "auto");
+      const result = await uploadVideo(activeMedia.file, language);
       setJobId(result.job_id);
 
       // Poll for completion
@@ -70,36 +87,81 @@ export default function CaptionEditorPanel() {
             clearInterval(pollInterval);
             setPipelineProgress("Done", 100);
 
-            if (job.segments) {
-              const newCaptions = segmentsToCapptions(
-                job.segments,
-                language,
-                useEditorStore.getState().theme
+            const sourceSegments = job.transcript?.segments?.length ? job.transcript.segments : job.segments || [];
+            if (sourceSegments.length) {
+              setTranscriptSegments(sourceSegments);
+              const newCaptions = segmentsToCaptions(
+                sourceSegments,
+                job.languageMode || language,
+                useEditorStore.getState().theme,
+                useEditorStore.getState().captionChunkingConfig
               );
               setCaptions(newCaptions);
             }
             setIsGenerating(false);
           } else if (job.status === "failed") {
             clearInterval(pollInterval);
+            const message = job.error || "Caption generation failed.";
             setPipelineProgress("Failed", -1);
+            setGenerateError(message);
             setIsGenerating(false);
+          } else {
+            setPipelineProgress(job.status || "Processing", Math.max(0, job.progress || 0));
           }
-        } catch {
-          // continue polling
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Failed to read job status.";
+          setGenerateError(msg);
         }
       }, 2000);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Upload failed.";
       setPipelineProgress("Error", -1);
+      setGenerateError(msg);
       setIsGenerating(false);
     }
-  }, [activeMedia, isGenerating, language, setJobId, setPipelineProgress, setCaptions]);
+  }, [activeMedia, isGenerating, language, setJobId, setPipelineProgress, setCaptions, setTranscriptSegments]);
+
+  const rebuildCaptions = useCallback(() => {
+    const sourceSegments = transcriptSegments.length ? transcriptSegments : [];
+    if (!sourceSegments.length) {
+      setGenerateError("Generate captions first before rebuilding chunks.");
+      return;
+    }
+    const rebuilt = segmentsToCaptions(
+      sourceSegments,
+      language,
+      useEditorStore.getState().theme,
+      captionChunkingConfig
+    );
+    setCaptions(rebuilt);
+    setGenerateError("");
+  }, [captionChunkingConfig, language, setCaptions, transcriptSegments]);
+
+  const updateChunking = useCallback(
+    (patch: Partial<typeof captionChunkingConfig>) => {
+      const nextConfig = { ...captionChunkingConfig, ...patch };
+      setCaptionChunkingConfig(patch);
+      if (transcriptSegments.length) {
+        setCaptions(
+          segmentsToCaptions(
+            transcriptSegments,
+            language,
+            useEditorStore.getState().theme,
+            nextConfig
+          )
+        );
+        setGenerateError("");
+      }
+    },
+    [captionChunkingConfig, language, setCaptionChunkingConfig, setCaptions, transcriptSegments]
+  );
 
   const handleAddCaption = useCallback(() => {
     addCaption({
       start: currentTime,
       end: currentTime + 3,
       text: "New caption",
-      lang: language === "auto" ? "english" : language,
+      lang: language,
       theme: useEditorStore.getState().theme,
     });
   }, [currentTime, addCaption, language]);
@@ -142,6 +204,8 @@ export default function CaptionEditorPanel() {
   const sortedCaptions = [...captions].sort((a, b) => a.start - b.start);
 
   const THEME_NAMES: { id: CaptionTheme; label: string }[] = [
+    { id: "word_highlight_box", label: "Box" },
+    { id: "viral_word_highlight", label: "Word" },
     { id: "minimal", label: "Minimal" },
     { id: "viral_shorts", label: "Viral" },
     { id: "cinematic", label: "Cinema" },
@@ -232,7 +296,132 @@ export default function CaptionEditorPanel() {
             </div>
           </div>
         )}
+
+        {generateError && (
+          <div
+            className="text-[11px] leading-snug rounded px-2 py-1.5"
+            style={{ color: "#ffb4b4", background: "rgba(255, 77, 77, 0.12)", border: "1px solid rgba(255, 77, 77, 0.25)" }}
+          >
+            {generateError}
+          </div>
+        )}
+
+        <div className="grid gap-2 rounded p-2" style={{ background: "var(--bg-panel-dark)" }}>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase" style={{ color: "var(--text-muted)" }}>
+              Caption Chunking
+            </span>
+            <button className="btn-ghost text-[10px]" onClick={rebuildCaptions}>
+              Rebuild Captions
+            </button>
+          </div>
+          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <span>Max words per caption: {captionChunkingConfig.maxWordsPerCaption}</span>
+            <input
+              type="range"
+              min={2}
+              max={8}
+              value={captionChunkingConfig.maxWordsPerCaption}
+              onChange={(e) => updateChunking({ maxWordsPerCaption: Number(e.target.value) })}
+              className="accent-[var(--accent)]"
+            />
+          </label>
+          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <span>Max characters: {captionChunkingConfig.maxCharsPerCaption}</span>
+            <input
+              type="range"
+              min={24}
+              max={48}
+              value={captionChunkingConfig.maxCharsPerCaption}
+              onChange={(e) => updateChunking({ maxCharsPerCaption: Number(e.target.value) })}
+              className="accent-[var(--accent)]"
+            />
+          </label>
+          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <span>Target reading speed: {captionChunkingConfig.targetReadingSpeedCps} cps</span>
+            <input
+              type="range"
+              min={12}
+              max={24}
+              value={captionChunkingConfig.targetReadingSpeedCps}
+              onChange={(e) => updateChunking({ targetReadingSpeedCps: Number(e.target.value) })}
+              className="accent-[var(--accent)]"
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>Min duration {captionChunkingConfig.minCaptionDuration.toFixed(1)}s</span>
+              <input
+                type="range"
+                min={0.4}
+                max={1.6}
+                step={0.1}
+                value={captionChunkingConfig.minCaptionDuration}
+                onChange={(e) => updateChunking({ minCaptionDuration: Number(e.target.value) })}
+                className="accent-[var(--accent)]"
+              />
+            </label>
+            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>Max duration {captionChunkingConfig.maxCaptionDuration.toFixed(1)}s</span>
+              <input
+                type="range"
+                min={1.4}
+                max={5}
+                step={0.1}
+                value={captionChunkingConfig.maxCaptionDuration}
+                onChange={(e) => updateChunking({ maxCaptionDuration: Number(e.target.value) })}
+                className="accent-[var(--accent)]"
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>Pause split {captionChunkingConfig.pauseSplitThreshold.toFixed(2)}s</span>
+              <input
+                type="range"
+                min={0.15}
+                max={1}
+                step={0.05}
+                value={captionChunkingConfig.pauseSplitThreshold}
+                onChange={(e) => updateChunking({ pauseSplitThreshold: Number(e.target.value) })}
+                className="accent-[var(--accent)]"
+              />
+            </label>
+            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>Merge gap {captionChunkingConfig.mergeSmallGapThreshold.toFixed(2)}s</span>
+              <input
+                type="range"
+                min={0}
+                max={0.4}
+                step={0.02}
+                value={captionChunkingConfig.mergeSmallGapThreshold}
+                onChange={(e) => updateChunking({ mergeSmallGapThreshold: Number(e.target.value) })}
+                className="accent-[var(--accent)]"
+              />
+            </label>
+          </div>
+          <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <span>Avoid single-word captions</span>
+            <input
+              type="checkbox"
+              checked={captionChunkingConfig.avoidSingleWordCaptions}
+              onChange={(e) => updateChunking({ avoidSingleWordCaptions: e.target.checked })}
+              className="accent-[var(--accent)]"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <span>Balance line length</span>
+            <input
+              type="checkbox"
+              checked={captionChunkingConfig.balanceLineLength}
+              onChange={(e) => updateChunking({ balanceLineLength: e.target.checked })}
+              className="accent-[var(--accent)]"
+            />
+          </label>
+        </div>
       </div>
+
+      <CaptionStylePanel />
 
       {/* Caption list */}
       <div className="flex-1 overflow-y-auto p-1">
@@ -310,11 +499,9 @@ export default function CaptionEditorPanel() {
                     background:
                       caption.lang === "english"
                         ? "var(--caption-en)"
-                        : caption.lang === "hindi"
-                        ? "var(--caption-hi)"
                         : caption.lang === "hinglish"
                         ? "var(--caption-hing)"
-                        : "var(--caption-bn)",
+                        : "var(--caption-tel)",
                     color: "var(--text-primary)",
                   }}
                 >
@@ -472,3 +659,4 @@ export default function CaptionEditorPanel() {
     </div>
   );
 }
+

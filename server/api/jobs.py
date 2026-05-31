@@ -4,6 +4,7 @@ import uuid
 import logging
 from threading import Thread
 from typing import List
+from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, WebSocket, WebSocketDisconnect
 import aiosqlite
@@ -13,6 +14,9 @@ from ..database import get_db, DB_PATH
 from ..models import JobResponse, JobDetailResponse
 from ..pipeline_runner import run_pipeline_sync
 from ..progress import manager
+from ai_pipeline.config import MAX_UPLOAD_SIZE_MB
+from ai_pipeline.language_modes import SUPPORTED_LANGUAGE_MODES, normalize_language_mode
+from ai_pipeline.transcriber import validate_transcription_config
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
@@ -20,45 +24,115 @@ logger = logging.getLogger(__name__)
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'storage', 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v"}
+ALLOWED_CONTENT_TYPES = {"video/mp4", "video/quicktime", "application/octet-stream"}
+
+
+def _log_stage(job_id: str | None, stage: str, **fields):
+    logger.info("job_stage", extra={"job_id": job_id, "stage": stage, **fields})
+
+
+def _validate_upload_metadata(file: UploadFile) -> str:
+    filename = os.path.basename(file.filename or "")
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Upload MP4 or MOV ({allowed}).")
+
+    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported media type '{file.content_type}'. Upload an MP4 or MOV video.",
+        )
+
+    return filename or f"upload{ext or '.mp4'}"
+
+
+def _stored_language_mode(value: str | None) -> str:
+    try:
+        return normalize_language_mode(value)
+    except ValueError:
+        return "auto_mixed_indian"
+
+@router.post("", response_model=JobResponse)
 @router.post("/", response_model=JobResponse)
 async def create_job(
-    target_lang: str = Form('en'),
+    languageMode: str = Form(None),
+    target_lang: str = Form(None),
     file: UploadFile = File(...)
 ):
     """Uploads a video and starts a background captioning job."""
     job_id = str(uuid.uuid4())
-    filename = file.filename
+    requested_mode = languageMode or target_lang or "auto_mixed_indian"
+    _log_stage(job_id, "request received", language_mode=requested_mode, upload_filename=file.filename)
+
+    try:
+        normalized_mode = normalize_language_mode(requested_mode)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{exc} Supported modes: {', '.join(SUPPORTED_LANGUAGE_MODES)}.",
+        )
+
+    filename = _validate_upload_metadata(file)
+
+    try:
+        validate_transcription_config(normalized_mode)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     
     # Save file to disk
     file_path = os.path.join(UPLOAD_DIR, f"{job_id}_{filename}")
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    bytes_written = 0
     try:
         async with aiofiles.open(file_path, 'wb') as out_file:
-            content = await file.read()
-            await out_file.write(content)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File is too large. Maximum upload size is {MAX_UPLOAD_SIZE_MB} MB.",
+                    )
+                await out_file.write(chunk)
     except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    finally:
+        await file.close()
+
+    _log_stage(job_id, "file saved", file_path=file_path, bytes=bytes_written)
 
     # Insert initial job state
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO jobs (id, status, filename, target_lang) VALUES (?, ?, ?, ?)",
-            (job_id, "processing", filename, target_lang)
+            (job_id, "queued", filename, normalized_mode)
         )
         await db.commit()
 
     # Start background thread for heavy processing
-    t = Thread(target=run_pipeline_sync, args=(job_id, file_path, target_lang))
+    t = Thread(target=run_pipeline_sync, args=(job_id, file_path, normalized_mode))
     t.daemon = True
     t.start()
 
     return JobResponse(
         job_id=job_id,
-        status="processing",
+        status="queued",
         progress=0,
         filename=filename,
-        target_lang=target_lang
+        target_lang=normalized_mode,
+        languageMode=normalized_mode,
+        video_url=f"/api/jobs/{job_id}/video",
     )
 
+@router.get("", response_model=List[JobDetailResponse])
 @router.get("/", response_model=List[JobDetailResponse])
 async def list_jobs(db: aiosqlite.Connection = Depends(get_db)):
     """List all recent jobs."""
@@ -73,6 +147,7 @@ async def list_jobs(db: aiosqlite.Connection = Depends(get_db)):
             progress=r['progress'],
             filename=r['filename'],
             target_lang=r['target_lang'],
+            languageMode=_stored_language_mode(r['target_lang']),
             error=r['error'],
             created_at=r['created_at'],
             completed_at=r['completed_at']
@@ -95,6 +170,12 @@ async def get_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
             segments = json.loads(r['segments_json'])
         except (json.JSONDecodeError, TypeError):
             segments = None
+    transcript = None
+    if "transcript_json" in r.keys() and r["transcript_json"]:
+        try:
+            transcript = json.loads(r["transcript_json"])
+        except (json.JSONDecodeError, TypeError):
+            transcript = None
 
     return JobDetailResponse(
         job_id=r['id'],
@@ -102,10 +183,18 @@ async def get_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
         progress=r['progress'],
         filename=r['filename'],
         target_lang=r['target_lang'],
+        languageMode=_stored_language_mode(r['target_lang']),
         error=r['error'],
         vtt=r['vtt_content'],
         srt=r['srt_content'],
         segments=segments,
+        transcript=transcript or {
+            "languageMode": _stored_language_mode(r['target_lang']),
+            "provider": "unknown",
+            "romanized": False,
+            "segments": segments or [],
+        },
+        output_video_url=f"/api/jobs/{job_id}/export" if r['status'] == "completed" else None,
         created_at=r['created_at'],
         completed_at=r['completed_at']
     )
@@ -132,6 +221,7 @@ async def export_video(
     db: aiosqlite.Connection = Depends(get_db),
     captions_json: str = Form(None),
     theme: str = Form("viral_shorts"),
+    style_config_json: str = Form(None),
     ass_content: str = Form(None),
     resolution: str = Form("1080p"),
     render_mode: str = Form("headless"),
@@ -167,6 +257,16 @@ async def export_video(
             })
 
         try:
+            if theme == "word_highlight_box":
+                try:
+                    parsed_captions = json.loads(captions_json)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid captions JSON.")
+                if any(c.get("text") and not c.get("words") for c in parsed_captions):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Word-level timestamps are required for automatic word highlighting.",
+                    )
             output_path = await export_headless(
                 job_id=job_id,
                 video_path=original_video_path,
@@ -174,12 +274,15 @@ async def export_video(
                 theme=theme,
                 resolution=resolution,
                 progress_callback=progress_cb,
+                style_config_json=style_config_json,
             )
             return FileResponse(
                 output_path,
                 media_type="video/mp4",
                 filename=f"captioned_{resolution}_{r['filename']}",
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Headless export failed: {e}")
             await manager.broadcast(job_id, {

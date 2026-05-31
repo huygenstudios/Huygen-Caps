@@ -1,10 +1,29 @@
 /* Caption utilities for Caption AI */
 
-import { Caption, AlignedSegment, AlignedWord, CaptionTheme, CaptionStyle, CAPTION_THEMES } from "./types";
+import {
+  Caption,
+  AlignedSegment,
+  AlignedWord,
+  CaptionTheme,
+  CaptionStyle,
+  CAPTION_THEMES,
+  CaptionChunkingConfig,
+} from "./types";
 
 let captionIdCounter = 0;
 
-const WORDS_PER_GROUP = 3;
+export const DEFAULT_CAPTION_CHUNKING_CONFIG: CaptionChunkingConfig = {
+  maxWordsPerCaption: 5,
+  minWordsPerCaption: 2,
+  maxCharsPerCaption: 32,
+  minCaptionDuration: 0.8,
+  maxCaptionDuration: 3.0,
+  pauseSplitThreshold: 0.45,
+  mergeSmallGapThreshold: 0.18,
+  targetReadingSpeedCps: 17,
+  avoidSingleWordCaptions: true,
+  balanceLineLength: true,
+};
 
 export function generateCaptionId(): string {
   return `c_${Date.now()}_${++captionIdCounter}`;
@@ -15,10 +34,75 @@ export function generateCaptionId(): string {
  * Splits aligned segments into 2-3 word groups, each with per-word timing
  * for word-by-word pop-in animation (like CapCut / MrBeast style).
  */
-export function segmentsToCapptions(
+export function buildCaptionPages(
+  words: AlignedWord[],
+  options: CaptionChunkingConfig = DEFAULT_CAPTION_CHUNKING_CONFIG
+): AlignedWord[][] {
+  const pages: AlignedWord[][] = [];
+  let current: AlignedWord[] = [];
+
+  const flush = () => {
+    if (current.length > 0) {
+      pages.push(current);
+      current = [];
+    }
+  };
+
+  for (const word of words) {
+    const cleanWord = word.word?.trim();
+    if (!cleanWord || word.start === undefined || word.end === undefined || word.end <= word.start) {
+      continue;
+    }
+
+    const candidate = [...current, { ...word, word: cleanWord }];
+    const candidateText = candidate.map((w) => w.word).join(" ");
+    const currentDuration = current.length > 0 ? current[current.length - 1].end - current[0].start : 0;
+    const pauseSeconds = current.length > 0 ? word.start - current[current.length - 1].end : 0;
+    const candidateDuration = candidate.length > 0 ? candidate[candidate.length - 1].end - candidate[0].start : 0;
+    const readingSpeed = candidateDuration > 0 ? candidateText.length / candidateDuration : 0;
+    const minWords = Math.max(1, options.minWordsPerCaption);
+    const maxWords = Math.max(minWords, options.maxWordsPerCaption);
+    const targetWords = Math.min(maxWords, Math.max(minWords, 4));
+    const splitForPause =
+      pauseSeconds >= options.pauseSplitThreshold && pauseSeconds > options.mergeSmallGapThreshold;
+    const tooFast = readingSpeed > options.targetReadingSpeedCps && current.length >= minWords;
+    const shouldSplit =
+      current.length >= minWords &&
+      currentDuration >= options.minCaptionDuration &&
+      (current.length >= maxWords ||
+        (options.balanceLineLength && current.length >= targetWords && candidateText.length > options.maxCharsPerCaption * 0.82) ||
+        candidateText.length > options.maxCharsPerCaption ||
+        splitForPause ||
+        tooFast ||
+        currentDuration >= options.maxCaptionDuration);
+
+    if (shouldSplit) {
+      flush();
+    }
+
+    current.push({ ...word, word: cleanWord });
+  }
+
+  flush();
+  if (!options.avoidSingleWordCaptions) return pages;
+
+  const merged: AlignedWord[][] = [];
+  for (const page of pages) {
+    const last = merged[merged.length - 1];
+    if (page.length === 1 && last && last.length + page.length <= options.maxWordsPerCaption) {
+      last.push(...page);
+    } else {
+      merged.push(page);
+    }
+  }
+  return merged;
+}
+
+export function segmentsToCaptions(
   segments: AlignedSegment[],
-  lang: string = "hinglish",
-  theme: string = "viral_shorts"
+  lang: string = "english",
+  theme: string = "word_highlight_box",
+  options: CaptionChunkingConfig = DEFAULT_CAPTION_CHUNKING_CONFIG
 ): Caption[] {
   const captions: Caption[] = [];
 
@@ -31,8 +115,7 @@ export function segmentsToCapptions(
     );
 
     if (validWords.length > 0) {
-      for (let i = 0; i < validWords.length; i += WORDS_PER_GROUP) {
-        const group = validWords.slice(i, i + WORDS_PER_GROUP);
+      for (const group of buildCaptionPages(validWords, options)) {
         if (group.length === 0) continue;
 
         captions.push({
@@ -59,6 +142,17 @@ export function segmentsToCapptions(
   }
 
   return captions;
+}
+
+export const segmentsToCapptions = segmentsToCaptions;
+
+export function getActiveWordIndex(words: AlignedWord[] | undefined, currentTime: number): number {
+  if (!words || words.length === 0) return -1;
+  return words.findIndex((word) => currentTime >= word.start && currentTime < word.end);
+}
+
+export function wordActivationProgressFrames(word: AlignedWord, currentTime: number, fps: number): number {
+  return Math.max(0, (currentTime - word.start) * fps);
 }
 
 export function formatTimecode(seconds: number): string {
@@ -140,6 +234,8 @@ function rgbaToAss(rgba: string): string {
 
 // Per-theme highlight color matching CaptionOverlay.tsx
 const THEME_HIGHLIGHT_COLORS: Partial<Record<CaptionTheme, string>> = {
+  word_highlight_box: "#FFD43B",
+  viral_word_highlight: "#22f4b8",
   viral_shorts: "#FFD700",
   kalakar_fire: "#ff6b35",
   karaoke_neon: "#00ff88",
@@ -152,7 +248,7 @@ const THEME_HIGHLIGHT_COLORS: Partial<Record<CaptionTheme, string>> = {
  * Build a named ASS style line from a theme (or custom style override).
  */
 function buildAssStyle(styleName: string, theme: CaptionTheme, styleOverride?: CaptionStyle): string {
-  const t = styleOverride || CAPTION_THEMES[theme] || CAPTION_THEMES.viral_shorts;
+  const t = styleOverride || CAPTION_THEMES[theme] || CAPTION_THEMES.word_highlight_box;
   const font = (t.fontFamily || "Arial").replace(/'/g, "").split(",")[0].trim();
   const size = t.fontSize || 24;
   const bold = t.bold ? -1 : 0;
@@ -219,7 +315,7 @@ export function generateASS(captions: Caption[], _theme?: CaptionTheme, enableKa
 
   // Fallback if no captions
   if (styleMap.size === 0) {
-    const fb = _theme || "viral_shorts";
+    const fb = _theme || "word_highlight_box";
     styleMap.set(`Theme_${fb}`, buildAssStyle(`Theme_${fb}`, fb));
   }
 

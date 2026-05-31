@@ -57,6 +57,7 @@ def _rescue_missing_words(input_segments: list, aligned_segments: list) -> list:
                         "start": round(seg["start"] + i * dur, 3),
                         "end": round(seg["start"] + (i + 1) * dur, 3),
                         "score": 0.5,
+                        "timing_source": "low_confidence_interpolated",
                     })
             continue
 
@@ -83,6 +84,7 @@ def _rescue_missing_words(input_segments: list, aligned_segments: list) -> list:
                 "start": round(last_end, 3),
                 "end": round(last_end + gap, 3),
                 "score": 0.3,  # low confidence marker
+                "timing_source": "low_confidence_interpolated",
             })
             last_end += gap + 0.02
 

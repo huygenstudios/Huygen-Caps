@@ -1,5 +1,7 @@
 # config.py — Caption AI Engine Configuration
 
+import os
+
 PIPELINE_VERSION = 'v4.3'
 
 # -- Server --
@@ -11,7 +13,7 @@ UPLOAD_DIR  = 'storage/uploads'
 OUTPUT_DIR  = 'storage/outputs'
 DB_PATH     = 'storage/caption_ai.db'
 
-MAX_UPLOAD_SIZE_MB = 500
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "500"))
 
 # -- Config Profile --
 PROFILE = 'accurate'  # 'fast' | 'balanced' | 'accurate'
@@ -98,11 +100,12 @@ MAX_WORD_DIFF_RATIO      = 0.40
 WHISPER_PROMPTS = {
     "hindi":    "bahut, nahi, kya, kaise, phir, toh, aur, lekin, business, margin",
     "hinglish": "bahut achha, nahi yaar, kya kar rahe, phir bhi, toh theek hai",
+    "telgish":  "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
+    "auto_mixed_indian": "nenu today client call lo cheppanu, main kal client se baat ki, budget high undi but design premium ga undali",
     "english":  "",
-    "bengali":  "",
     "hi":       "bahut, nahi, kya, kaise, phir, toh, aur, lekin, business, margin",
     "en":       "",
-    "bn":       "",
+    "te":       "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
 }
 
 # -- Weak Segment Re-Transcription --
