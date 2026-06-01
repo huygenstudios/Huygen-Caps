@@ -1,6 +1,6 @@
-import librosa
 import numpy as np
 import logging
+import soundfile as sf
 from .config import (
     DUAL_SCORE_THRESHOLD, ALIGN_AVG_THRESHOLD, CONFIDENCE_REPROCESS,
     NOISY_SNR_THRESHOLD, NOISY_DUAL_DELTA, NOISY_ALIGN_DELTA,
@@ -11,24 +11,32 @@ logger = logging.getLogger(__name__)
 
 def measure_audio_quality(audio_path: str) -> dict:
     try:
-        y, sr = librosa.load(audio_path, sr=16000)
-        
-        # Volume RMS
-        volume_rms = float(np.mean(librosa.feature.rms(y=y)))
-        
-        # SNR (Signal-to-Noise Ratio) estimation
-        # Very rough estimate using harmonic/percussive source separation
-        # Assuming harmonic is signal, percussive+margin is noise
-        S = np.abs(librosa.stft(y))
-        y_harmonic, y_percussive = librosa.decompose.hpss(S)
-        signal_power = np.mean(y_harmonic**2)
-        noise_power = np.mean(y_percussive**2) + 1e-10
-        snr_db = float(10 * np.log10(signal_power / noise_power))
-        
-        # Speech rate estimation via onset detection
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='time')
-        duration = librosa.get_duration(y=y, sr=sr)
-        speech_rate = len(onsets) / duration if duration > 0 else 0
+        y, sr = sf.read(audio_path, dtype="float32", always_2d=False)
+        if getattr(y, "ndim", 1) > 1:
+            y = np.mean(y, axis=1)
+
+        if len(y) == 0:
+            raise ValueError("empty audio")
+
+        duration = len(y) / float(sr or 16000)
+        volume_rms = float(np.sqrt(np.mean(np.square(y))))
+
+        # Lightweight SNR estimate for production containers. The optional
+        # local AI requirements can install librosa for richer analysis.
+        abs_y = np.abs(y)
+        noise_floor = float(np.percentile(abs_y, 12)) + 1e-8
+        signal_level = float(np.percentile(abs_y, 82)) + 1e-8
+        snr_db = float(20 * np.log10(signal_level / noise_floor))
+
+        frame = max(1, int((sr or 16000) * 0.04))
+        envelope = np.array([
+            float(np.sqrt(np.mean(np.square(y[i:i + frame]))))
+            for i in range(0, len(y), frame)
+            if len(y[i:i + frame]) > 0
+        ])
+        threshold = max(noise_floor * 2.5, volume_rms * 0.35)
+        active_frames = int(np.sum(envelope > threshold)) if len(envelope) else 0
+        speech_rate = active_frames / duration if duration > 0 else 0
         
         return {
             'snr_db': round(snr_db, 2),

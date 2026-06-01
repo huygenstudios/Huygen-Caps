@@ -1,75 +1,96 @@
-/* CaptionBlock — individual caption block on timeline */
+/* CaptionBlock - individual caption block on timeline */
 
 "use client";
 
 import React, { useCallback, useRef } from "react";
-import { Caption } from "@/lib/types";
-import { useCaptionStore } from "@/store/captionStore";
-import { useTimelineStore } from "@/store/timelineStore";
-import { useEditorStore } from "@/store/editorStore";
+import { Caption, TimelineTrack } from "@/lib/types";
+import { canDropOnTrack, getDropRejectReason } from "@/lib/editorModel";
 import { timeToPixel, pixelToTime } from "@/lib/timelineUtils";
+import { useCaptionStore } from "@/store/captionStore";
+import { useEditorStore } from "@/store/editorStore";
+import { useTimelineStore } from "@/store/timelineStore";
 
 interface Props {
   caption: Caption;
+  track: TimelineTrack;
 }
 
-export default function CaptionBlock({ caption }: Props) {
-  const { selectedIds, selectCaption, setEditingId, updateCaption, splitCaption } =
-    useCaptionStore();
-  const { pixelsPerSecond, scrollLeft } = useTimelineStore();
+export default function CaptionBlock({ caption, track }: Props) {
+  const { selectedIds, selectCaption, setEditingId, updateCaption, splitCaption } = useCaptionStore();
+  const { pixelsPerSecond, scrollLeft, tracks, setNotice } = useTimelineStore();
   const activeTool = useEditorStore((s) => s.activeTool);
+  const setRightPanelTab = useEditorStore((s) => s.setRightPanelTab);
 
   const left = timeToPixel(caption.start, pixelsPerSecond, scrollLeft);
   const width = (caption.end - caption.start) * pixelsPerSecond;
   const isSelected = selectedIds.has(caption.id);
-
-  const dragRef = useRef<{ type: "move" | "left" | "right"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const dragRef = useRef<{ type: "move" | "left" | "right"; startX: number; startY: number; origStart: number; origEnd: number } | null>(null);
+  const lastPointerRef = useRef({ x: 0, y: 0 });
 
   const handleMouseDown = useCallback(
-    (e: React.MouseEvent, type: "move" | "left" | "right") => {
-      e.stopPropagation();
-      e.preventDefault();
+    (event: React.MouseEvent, type: "move" | "left" | "right") => {
+      event.stopPropagation();
+      event.preventDefault();
+      if (track.locked) return;
 
-      // Razor tool — split caption at click position
       if (activeTool === "razor" && type === "move") {
-        const container = (e.target as HTMLElement).closest("[data-timeline-area]");
+        const container = (event.target as HTMLElement).closest("[data-timeline-area]");
         if (!container) return;
         const rect = container.getBoundingClientRect();
-        const localX = e.clientX - rect.left + scrollLeft;
-        const splitTime = pixelToTime(localX, pixelsPerSecond);
-        splitCaption(caption.id, splitTime);
+        const localX = event.clientX - rect.left + scrollLeft;
+        splitCaption(caption.id, pixelToTime(localX, pixelsPerSecond));
         return;
       }
 
       dragRef.current = {
         type,
-        startX: e.clientX,
+        startX: event.clientX,
+        startY: event.clientY,
         origStart: caption.start,
         origEnd: caption.end,
       };
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
 
-      const onMove = (ev: MouseEvent) => {
+      const onMove = (moveEvent: MouseEvent) => {
         if (!dragRef.current) return;
-        const dx = ev.clientX - dragRef.current.startX;
+        lastPointerRef.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+        const dx = moveEvent.clientX - dragRef.current.startX;
         const dt = dx / pixelsPerSecond;
 
         if (dragRef.current.type === "move") {
-          const newStart = Math.max(0, dragRef.current.origStart + dt);
           const duration = dragRef.current.origEnd - dragRef.current.origStart;
-          updateCaption(caption.id, {
-            start: newStart,
-            end: newStart + duration,
-          });
-        } else if (dragRef.current.type === "left") {
-          const newStart = Math.max(0, Math.min(caption.end - 0.1, dragRef.current.origStart + dt));
-          updateCaption(caption.id, { start: newStart });
-        } else {
-          const newEnd = Math.max(caption.start + 0.1, dragRef.current.origEnd + dt);
-          updateCaption(caption.id, { end: newEnd });
+          const start = Math.max(0, dragRef.current.origStart + dt);
+          updateCaption(caption.id, { start, end: start + duration });
+          return;
         }
+
+        if (dragRef.current.type === "left") {
+          const start = Math.max(0, Math.min(caption.end - 0.1, dragRef.current.origStart + dt));
+          updateCaption(caption.id, { start });
+          return;
+        }
+
+        const end = Math.max(caption.start + 0.1, dragRef.current.origEnd + dt);
+        updateCaption(caption.id, { end });
       };
 
       const onUp = () => {
+        if (dragRef.current?.type === "move") {
+          const targetElement = document
+            .elementFromPoint(lastPointerRef.current.x, lastPointerRef.current.y)
+            ?.closest("[data-timeline-track-id]") as HTMLElement | null;
+          const targetTrack = tracks.find((candidate) => candidate.id === targetElement?.dataset.timelineTrackId);
+
+          if (targetTrack && targetTrack.id !== track.id) {
+            if (canDropOnTrack(targetTrack, "caption")) {
+              updateCaption(caption.id, { trackId: targetTrack.id });
+            } else {
+              const reason = getDropRejectReason(track, targetTrack, "caption");
+              if (reason) setNotice(reason);
+            }
+          }
+        }
+
         dragRef.current = null;
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
@@ -78,7 +99,7 @@ export default function CaptionBlock({ caption }: Props) {
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
-    [caption, pixelsPerSecond, scrollLeft, activeTool, updateCaption, splitCaption]
+    [activeTool, caption, pixelsPerSecond, scrollLeft, setNotice, splitCaption, track, tracks, updateCaption]
   );
 
   const langClass =
@@ -86,6 +107,8 @@ export default function CaptionBlock({ caption }: Props) {
       ? "lang-en"
       : caption.lang === "telgish"
       ? "lang-telgish"
+      : caption.lang === "auto_mixed_indian"
+      ? "lang-auto"
       : "lang-hinglish";
 
   if (left + width < 0) return null;
@@ -96,28 +119,28 @@ export default function CaptionBlock({ caption }: Props) {
       style={{
         left: Math.max(0, left),
         width: Math.max(20, width),
-        cursor: activeTool === "razor" ? "crosshair" : "grab",
+        cursor: track.locked ? "not-allowed" : activeTool === "razor" ? "crosshair" : "grab",
+        opacity: track.locked ? 0.72 : 1,
       }}
-      onClick={(e) => {
-        e.stopPropagation();
-        selectCaption(caption.id, e.ctrlKey || e.metaKey);
+      title={track.locked ? "Track locked" : caption.text}
+      onClick={(event) => {
+        event.stopPropagation();
+        selectCaption(caption.id, event.ctrlKey || event.metaKey);
+        setRightPanelTab("effect-controls");
       }}
-      onDoubleClick={() => setEditingId(caption.id)}
-      onMouseDown={(e) => handleMouseDown(e, "move")}
+      onDoubleClick={() => {
+        if (!track.locked) setEditingId(caption.id);
+      }}
+      onMouseDown={(event) => handleMouseDown(event, "move")}
     >
-      {/* Left resize handle */}
       <div
         className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-white/20"
-        onMouseDown={(e) => handleMouseDown(e, "left")}
+        onMouseDown={(event) => handleMouseDown(event, "left")}
       />
-
-      {/* Text */}
       <span className="text-[10px] leading-tight">{caption.text}</span>
-
-      {/* Right resize handle */}
       <div
         className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-white/20"
-        onMouseDown={(e) => handleMouseDown(e, "right")}
+        onMouseDown={(event) => handleMouseDown(event, "right")}
       />
     </div>
   );

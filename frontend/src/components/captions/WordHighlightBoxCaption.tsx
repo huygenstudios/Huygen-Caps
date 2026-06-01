@@ -2,8 +2,20 @@
 
 import React from "react";
 import { Caption, CaptionStyleConfig } from "@/lib/types";
-import { backgroundRgba, normalizeCaptionStyleConfig, resolveFontFamily } from "@/lib/captionStyleConfig";
-import { getActiveWordIndex, wordActivationProgressFrames } from "@/lib/captionUtils";
+import {
+  CaptionCanvasSize,
+  SAFE_CAPTION_TEXT_STYLE,
+  buildSafeCaptionPositionStyle,
+  resolveSafeCaptionLayout,
+} from "@/lib/captionLayoutSafety";
+import {
+  backgroundRgba,
+  colorToRgba,
+  directionalShadow,
+  normalizeCaptionStyleConfig,
+  resolveFontFamily,
+} from "@/lib/captionStyleConfig";
+import { getActiveWordIndex, getRenderableCaptionWords, getWordDisplayText, wordActivationProgressFrames } from "@/lib/captionUtils";
 
 interface Props {
   caption: Caption;
@@ -12,6 +24,7 @@ interface Props {
   fps?: number;
   scale?: number;
   transition?: boolean;
+  canvasSize?: CaptionCanvasSize;
 }
 
 function interpolate(input: number, inMin: number, inMax: number, outMin: number, outMax: number) {
@@ -79,46 +92,29 @@ export default function WordHighlightBoxCaption({
   fps = 30,
   scale = 1,
   transition = false,
+  canvasSize,
 }: Props) {
   const config = normalizeCaptionStyleConfig(styleConfig);
-  const words = (caption.words || []).filter((word) => word.word && word.end > word.start);
-  const fontSize = Math.max(14, Math.round(config.fontSize * scale));
-
-  if (words.length === 0) {
-    return (
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: "78%",
-          transform: "translate(-50%, -50%)",
-          maxWidth: "86%",
-          padding: "10px 14px",
-          borderRadius: 10,
-          background: "rgba(120, 20, 20, 0.86)",
-          color: "#fff",
-          fontFamily: "'Inter', Arial, sans-serif",
-          fontSize: Math.max(12, Math.round(18 * scale)),
-          fontWeight: 700,
-          textAlign: "center",
-          lineHeight: 1.25,
-        }}
-      >
-        Word-level timestamps are required for automatic word highlighting.
-      </div>
-    );
-  }
+  const words = getRenderableCaptionWords(caption);
+  const layout = resolveSafeCaptionLayout(config, { canvas: canvasSize, previewScale: scale, words, text: caption.text });
+  const fontSize = layout.fontSize;
 
   const activeIndex = getActiveWordIndex(words, currentTime);
-  const safeX = Math.max(config.safeAreaEnabled ? 5 : 0, Math.min(config.safeAreaEnabled ? 95 : 100, config.positionX));
-  const safeY = Math.max(config.safeAreaEnabled ? 8 : 0, Math.min(config.safeAreaEnabled ? 92 : 100, config.positionY));
   const entrance = entranceTransform(currentTime, caption.start, config, fps);
 
   const justifyContent =
     config.alignment === "left" ? "flex-start" : config.alignment === "right" ? "flex-end" : "center";
   const textAlign = config.alignment;
   const boxShadow = [
-    config.backgroundShadow ? "0 8px 28px rgba(0,0,0,0.42)" : "",
+    config.backgroundShadow
+      ? directionalShadow(
+          config.backgroundShadowColor,
+          config.backgroundShadowOpacity,
+          config.backgroundShadowDistance,
+          config.backgroundShadowBlur,
+          config.backgroundShadowAngle
+        ) || "0 8px 28px rgba(0,0,0,0.42)"
+      : "",
     config.textShadowEnabled ? "0 2px 2px rgba(0,0,0,0.45)" : "",
   ].filter(Boolean).join(", ");
 
@@ -126,15 +122,8 @@ export default function WordHighlightBoxCaption({
     <div
       data-caption-theme="word_highlight_box"
       style={{
-        position: "absolute",
-        left: `${safeX}%`,
-        top: `${safeY}%`,
-        transform: entrance.transform,
-        opacity: entrance.opacity,
-        display: "flex",
-        justifyContent,
-        width: `${config.maxWidth}%`,
-        pointerEvents: "none",
+        ...buildSafeCaptionPositionStyle(config, layout, entrance.transform),
+        opacity: entrance.opacity * config.opacity,
       }}
     >
       <div
@@ -146,27 +135,36 @@ export default function WordHighlightBoxCaption({
           maxWidth: "100%",
           columnGap: "0.32em",
           rowGap: "0.08em",
-          padding: `${Math.max(4, config.paddingY * scale)}px ${Math.max(6, config.paddingX * scale)}px`,
+          padding: `${Math.max(0, config.paddingY * scale)}px ${Math.max(0, config.paddingX * scale)}px`,
           borderRadius: Math.max(0, config.borderRadius * scale),
           background: config.backgroundEnabled ? backgroundRgba(config) : "transparent",
+          border: config.backgroundBorderEnabled
+            ? `${config.backgroundBorderWidth}px solid ${config.backgroundBorderColor}`
+            : "none",
           boxShadow,
           lineHeight: config.lineHeight,
           textAlign,
           transform: "translateZ(0)",
-          overflowWrap: "anywhere",
+          overflow: "hidden",
+          ...SAFE_CAPTION_TEXT_STYLE,
         }}
       >
         {words.map((word, index) => {
           const isActive = index === activeIndex;
+          const isVisible = currentTime >= word.start;
           const ageFrames = wordActivationProgressFrames(word, currentTime, fps);
           const glow = config.activeWordGlow && isActive
             ? `0 0 ${Math.round(14 * config.animationStrength)}px ${config.activeWordColor}`
             : "";
           const textShadow = config.textShadowEnabled
             ? [
-                "0 2px 0 rgba(0,0,0,0.95)",
-                "1px 1px 0 rgba(0,0,0,0.8)",
-                "-1px 1px 0 rgba(0,0,0,0.8)",
+                directionalShadow(
+                  config.textShadowColor,
+                  config.textShadowOpacity,
+                  config.textShadowDistance,
+                  config.textShadowBlur,
+                  config.textShadowAngle
+                ),
                 glow,
               ].filter(Boolean).join(", ")
             : glow || undefined;
@@ -183,16 +181,33 @@ export default function WordHighlightBoxCaption({
                 letterSpacing: `${config.letterSpacing}px`,
                 lineHeight: config.lineHeight,
                 textTransform: config.textTransform,
-                color: isActive ? config.activeWordColor : config.textColor,
-                transform: isActive ? activeWordTransform(ageFrames, config) : "translateY(0) scale(1)",
+                color: isActive ? config.activeWordColor : isVisible ? config.textColor : "transparent",
+                background: isVisible && isActive && config.activeWordBackgroundEnabled
+                  ? colorToRgba(config.activeWordBackgroundColor, config.activeWordBackgroundOpacity)
+                  : "transparent",
+                borderRadius: config.activeWordBackgroundBorderRadius * scale,
+                padding: isVisible && isActive && config.activeWordBackgroundEnabled
+                  ? `${config.activeWordBackgroundPaddingY * scale}px ${config.activeWordBackgroundPaddingX * scale}px`
+                  : 0,
+                transform: !isVisible
+                  ? "translateY(6px) scale(0.98)"
+                  : isActive
+                  ? activeWordTransform(ageFrames, config)
+                  : "translateY(0) scale(1)",
                 transition: transition
                   ? "transform 120ms cubic-bezier(0.45, 0, 0.2, 1), color 100ms linear, text-shadow 100ms linear"
                   : "none",
-                textShadow,
+                textShadow: isVisible ? textShadow : undefined,
+                WebkitTextStroke: config.textStrokeEnabled
+                  ? `${config.textStrokeWidth * scale}px ${config.textStrokeColor}`
+                  : undefined,
                 willChange: "transform, color",
+                visibility: isVisible ? "visible" : "hidden",
+                opacity: isVisible ? 1 : 0,
+                ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {word.word}
+              {getWordDisplayText(word)}
             </span>
           );
         })}

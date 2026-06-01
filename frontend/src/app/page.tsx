@@ -1,4 +1,4 @@
-/* Caption AI — Main Editor Page
+/* Huygen Caps - Main Editor Page
    5-Panel Premiere Pro Layout using react-resizable-panels
    
    ┌─────────────────────────────────────────────────────────────┐
@@ -23,16 +23,21 @@ import {
 import Toolbar from "@/components/editor/Toolbar";
 import MediaPanel from "@/components/editor/MediaPanel";
 import ProgramMonitor from "@/components/editor/ProgramMonitor";
-import CaptionEditorPanel from "@/components/editor/CaptionEditorPanel";
+import RightPanel from "@/components/editor/RightPanel";
 import Timeline from "@/components/editor/Timeline";
 import ExportModal from "@/components/editor/ExportModal";
+import SequenceSettingsModal from "@/components/editor/SequenceSettingsModal";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useEditorStore } from "@/store/editorStore";
+import "@/store/projectHistoryStore";
 import { useTimelineStore } from "@/store/timelineStore";
 
 export default function EditorPage() {
   useKeyboardShortcuts();
 
   const initDefaultTracks = useTimelineStore((s) => s.initDefaultTracks);
+  const colorMode = useEditorStore((s) => s.colorMode);
+  const setColorMode = useEditorStore((s) => s.setColorMode);
 
   // Initialize default tracks if empty
   useEffect(() => {
@@ -41,6 +46,20 @@ export default function EditorPage() {
       initDefaultTracks();
     }
   }, [initDefaultTracks]);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("huygen-caps-theme");
+    if (stored === "dark" || stored === "light") {
+      setColorMode(stored);
+    } else {
+      document.documentElement.dataset.theme = "dark";
+    }
+  }, [setColorMode]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = colorMode;
+    window.localStorage.setItem("huygen-caps-theme", colorMode);
+  }, [colorMode]);
 
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: "var(--bg-app)" }}>
@@ -66,9 +85,9 @@ export default function EditorPage() {
 
             <PanelResizeHandle />
 
-            {/* Right: Caption Editor */}
+            {/* Right: inspector/editor tabs */}
             <Panel defaultSize={30} minSize={18}>
-              <CaptionEditorPanel />
+              <RightPanel />
             </Panel>
           </PanelGroup>
         </Panel>
@@ -83,6 +102,7 @@ export default function EditorPage() {
 
       {/* Export Modal */}
       <ExportModal />
+      <SequenceSettingsModal />
     </div>
   );
 }

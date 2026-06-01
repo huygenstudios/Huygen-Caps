@@ -1,11 +1,28 @@
-/* Types for Caption AI */
+/* Types for Huygen Caps */
 
 export type Language = "english" | "hinglish" | "telgish" | "auto_mixed_indian";
 export type ToolMode = "selection" | "razor" | "hand" | "zoom";
 export type ExportFormat = "mp4" | "srt" | "json" | "ass" | "project";
+export type RightPanelTab = "effect-controls" | "caption-editor" | "caption-style" | "export-settings";
+export type ColorMode = "dark" | "light";
+export type VideoFrameRate = 24 | 25 | 30 | 50 | 60;
+export type SequenceAspectRatio = "9:16" | "16:9" | "1:1" | "4:5" | "custom";
+export type SequenceResolutionPreset = "1080x1920" | "1920x1080" | "1080x1080" | "1080x1350" | "720x1280" | "custom";
+export type ExportMode = "full_video" | "captions_only";
+export type ExportResolutionPreset = "sequence" | SequenceResolutionPreset;
+export type ExportAspectRatio = "sequence" | SequenceAspectRatio;
+export type ExportFrameRate = "sequence" | VideoFrameRate;
+export type ExportQualityPreset = "best" | "high" | "balanced" | "low_bitrate" | "custom";
+export type ExportBitrateMode = "auto" | "low" | "medium" | "high" | "custom";
+export type ExportDurationSource = "caption" | "sequence" | "timeline" | "custom";
 
 export type CaptionTheme =
   | "word_highlight_box"
+  | "kinetic_fade"
+  | "attention_punch"
+  | "mrbeast_style"
+  | "apple_cinematic"
+  | "modern_minimalist_lockup"
   | "viral_word_highlight"
   | "minimal"
   | "viral_shorts"
@@ -24,6 +41,16 @@ export type CaptionTheme =
   | "shadow_3d"
   | "highlight_box";
 
+export type CaptionStylePresetId =
+  | "word_highlight_box"
+  | "kinetic_fade"
+  | "attention_punch"
+  | "mrbeast_style"
+  | "apple_cinematic"
+  | "modern_minimalist_lockup";
+
+export type CaptionTimingSource = "provider" | "aligned" | "manual" | "estimated";
+
 export interface MediaFile {
   id: string;
   name: string;
@@ -38,6 +65,8 @@ export interface MediaFile {
 
 export interface Caption {
   id: string;
+  trackId?: string;
+  sourceMediaId?: string;
   start: number;
   end: number;
   text: string;
@@ -45,6 +74,10 @@ export interface Caption {
   theme: CaptionTheme;
   style?: CaptionStyle;
   words?: AlignedWord[];
+  originalText?: string;
+  manuallyEdited?: boolean;
+  timingNeedsReview?: boolean;
+  timingWarning?: string;
 }
 
 export interface CaptionStyle {
@@ -69,11 +102,23 @@ export interface CaptionStyle {
 
 export interface TimelineTrack {
   id: string;
-  type: "video" | "audio" | "caption";
+  type: "video" | "audio" | "caption" | "image" | "overlay";
   label: string;
+  name?: string;
   locked: boolean;
   visible: boolean;
+  muted?: boolean;
   height: number;
+  zIndex?: number;
+  clips?: TimelineClip[];
+}
+
+export interface ClipTransform {
+  xPercent: number;
+  yPercent: number;
+  scale: number;
+  rotation: number;
+  opacity: number;
 }
 
 export interface TimelineClip {
@@ -82,7 +127,27 @@ export interface TimelineClip {
   start: number;
   end: number;
   mediaId?: string;
-  type: "video" | "audio" | "caption";
+  type: "video" | "audio" | "caption" | "image" | "overlay";
+  trimStart?: number;
+  trimEnd?: number;
+  captionChunkId?: string;
+  visible?: boolean;
+  volume?: number;
+  muted?: boolean;
+  transform?: ClipTransform;
+}
+
+export interface CaptionDocument {
+  id: string;
+  name: string;
+  sourceMediaId?: string;
+  languageMode: Language;
+  transcript?: {
+    segments: AlignedSegment[];
+    metadata?: Record<string, unknown>;
+  };
+  chunks: Caption[];
+  style: CaptionStyleConfig;
 }
 
 export interface ProjectData {
@@ -93,13 +158,49 @@ export interface ProjectData {
     clips: TimelineClip[];
   };
   captions: Caption[];
+  captionDocuments?: CaptionDocument[];
   settings: {
     language: Language;
     theme: CaptionTheme;
     captionStyleConfig?: CaptionStyleConfig;
     captionChunkingConfig?: CaptionChunkingConfig;
     captionLayerTransform?: CaptionLayerTransform;
+    sequenceSettings?: SequenceSettings;
+    exportSettings?: ExportSettings;
   };
+}
+
+export interface TimelineViewState {
+  pixelsPerSecond: number;
+  scrollLeft: number;
+  snapEnabled: boolean;
+}
+
+export interface MonitorViewState {
+  zoom: number;
+  panX: number;
+  panY: number;
+  mode: "fit" | "fill" | "manual";
+}
+
+export interface EditorProject {
+  id: string;
+  name: string;
+  sequence: SequenceSettings;
+  duration: number;
+  media: MediaFile[];
+  captionDocuments: CaptionDocument[];
+  tracks: TimelineTrack[];
+  selectedClipIds: string[];
+  selectedTrackId?: string;
+  selectedPanel: RightPanelTab;
+  playback: {
+    currentTime: number;
+    duration: number;
+    isPlaying: boolean;
+  };
+  timelineView: TimelineViewState;
+  monitorView: MonitorViewState;
 }
 
 export interface PipelineProgress {
@@ -146,7 +247,9 @@ export interface AlignedWord {
   confidence?: number;
   provider?: string;
   timing_source?: string;
+  timingSource?: CaptionTimingSource;
   originalWord?: string;
+  displayedWord?: string;
   languageHint?: "english" | "hindi" | "telugu" | "unknown";
   timing_repair?: string;
 }
@@ -154,14 +257,44 @@ export interface AlignedWord {
 export interface CaptionChunkingConfig {
   maxWordsPerCaption: number;
   minWordsPerCaption: number;
+  targetWordsPerCaption: number;
   maxCharsPerCaption: number;
   minCaptionDuration: number;
   maxCaptionDuration: number;
   pauseSplitThreshold: number;
   mergeSmallGapThreshold: number;
   targetReadingSpeedCps: number;
+  wordTimingSensitivity: number;
+  minWordDuration: number;
+  maxHoldAfterWord: number;
+  snapToWaveformPeaks: boolean;
   avoidSingleWordCaptions: boolean;
   balanceLineLength: boolean;
+}
+
+export interface CaptionTimingConfig {
+  globalOffsetSeconds: number;
+  wordPreRollSeconds: number;
+  wordPostHoldSeconds: number;
+  phrasePostHoldSeconds: number;
+  pauseClearThresholdSeconds: number;
+  preventChunkOverlap: boolean;
+  snapChunkStartToFirstWord: boolean;
+  snapChunkEndToLastWord: boolean;
+}
+
+export interface CaptionLayoutSafetyConfig {
+  maxWidthPercent: number;
+  maxHeightPercent: number;
+  safeMarginPercent: number;
+  defaultFontSize: number;
+  minFontSize: number;
+  maxFontSize: number;
+  defaultScale: number;
+  minScale: number;
+  maxScale: number;
+  lineClamp: number;
+  wrapMode: "balanced" | "normal" | "none";
 }
 
 export interface CaptionLayerTransform {
@@ -169,12 +302,49 @@ export interface CaptionLayerTransform {
   yPercent: number;
   scale: number;
   rotation: number;
+  opacity: number;
   anchor: "center" | "top" | "bottom";
 }
 
+export interface SequenceSettings {
+  width: number;
+  height: number;
+  fps: VideoFrameRate;
+  aspectRatio: SequenceAspectRatio;
+  resolutionPreset: SequenceResolutionPreset;
+  backgroundColor: string;
+  safeMarginsEnabled: boolean;
+  safeMarginsPercent: number;
+  /** Legacy projects stored this as a raw percent. Kept for migration. */
+  safeMargins: number;
+}
+
+export interface ExportSettings {
+  format: "mp4";
+  mode: ExportMode;
+  resolutionPreset: ExportResolutionPreset;
+  width: number;
+  height: number;
+  aspectRatio: ExportAspectRatio;
+  fps: ExportFrameRate;
+  quality: ExportQualityPreset;
+  bitrate: ExportBitrateMode;
+  customBitrateMbps: number;
+  includeAudio: boolean;
+  visibleTracksOnly: boolean;
+  burnCaptions: boolean;
+  hardwareAcceleration: boolean;
+  backgroundColor: string;
+  durationSource: ExportDurationSource;
+  customDuration: number;
+  /** Legacy UI/API preset. New code resolves real dimensions from the model. */
+  resolution?: "480p" | "720p" | "1080p";
+}
+
 export type CaptionAlignment = "left" | "center" | "right";
-export type CaptionEntranceAnimation = "none" | "fade" | "pop" | "slide_up";
+export type CaptionEntranceAnimation = "none" | "hard_cut" | "fade" | "pop" | "slide_up" | "blur_fade";
 export type CaptionWordAnimation = "none" | "pop" | "bounce";
+export type KineticAnimateBy = "word" | "letter";
 
 export interface CaptionStyleConfig {
   presetName: string;
@@ -193,19 +363,58 @@ export interface CaptionStyleConfig {
   lineHeight: number;
   textTransform: "none" | "uppercase";
   textShadowEnabled: boolean;
+  textStrokeEnabled: boolean;
+  textStrokeColor: string;
+  textStrokeWidth: number;
+  textShadowColor: string;
+  textShadowOpacity: number;
+  textShadowBlur: number;
+  textShadowDistance: number;
+  textShadowAngle: number;
   activeWordScale: number;
   activeWordGlow: boolean;
+  activeWordBackgroundEnabled: boolean;
+  activeWordBackgroundColor: string;
+  activeWordBackgroundOpacity: number;
+  activeWordBackgroundPaddingX: number;
+  activeWordBackgroundPaddingY: number;
+  activeWordBackgroundBorderRadius: number;
   animationType: CaptionWordAnimation;
   animationStrength: number;
   animationSpeed: number;
   animationSmoothness: number;
   entranceAnimation: CaptionEntranceAnimation;
   backgroundShadow: boolean;
+  backgroundBorderEnabled: boolean;
+  backgroundBorderColor: string;
+  backgroundBorderWidth: number;
+  backgroundShadowColor: string;
+  backgroundShadowOpacity: number;
+  backgroundShadowBlur: number;
+  backgroundShadowDistance: number;
+  backgroundShadowAngle: number;
   safeAreaEnabled: boolean;
   positionX: number;
   positionY: number;
+  scale: number;
+  rotation: number;
+  opacity: number;
   alignment: CaptionAlignment;
   maxWidth: number;
+  randomTiltEnabled?: boolean;
+  smartHighlightEnabled?: boolean;
+  emphasisGreenColor?: string;
+  emphasisYellowColor?: string;
+  emphasisRedColor?: string;
+  revealDuration?: number;
+  revealYOffset?: number;
+  revealBlur?: number;
+  phraseHoldDuration?: number;
+  anchorSizeMultiplier?: number;
+  supportSizeMultiplier?: number;
+  layoutMode?: "auto" | "a" | "b" | "c";
+  tightness?: number;
+  hardCutReveal?: boolean;
 }
 
 // Theme presets
@@ -224,6 +433,83 @@ export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
     padding: "14px 24px",
     shadow: "0 4px 16px rgba(0,0,0,0.55)",
     animation: "pop",
+  },
+  kinetic_fade: {
+    fontSize: 54,
+    fontFamily: "'Poppins', 'Inter', Arial, sans-serif",
+    color: "#ffffff",
+    backgroundColor: "transparent",
+    bold: true,
+    outline: false,
+    position: "bottom",
+    textTransform: "none",
+    letterSpacing: "0",
+    borderRadius: "12px",
+    padding: "10px 18px",
+    shadow: "0 3px 10px rgba(0,0,0,0.45)",
+    animation: "fade-in",
+  },
+  attention_punch: {
+    fontSize: 62,
+    fontFamily: "'Anton', 'Poppins', Impact, sans-serif",
+    color: "#ffffff",
+    backgroundColor: "transparent",
+    bold: true,
+    outline: true,
+    outlineColor: "#000000",
+    position: "bottom",
+    textTransform: "uppercase",
+    letterSpacing: "0",
+    borderRadius: "8px",
+    padding: "8px 16px",
+    shadow: "0 5px 16px rgba(0,0,0,0.65)",
+    animation: "pop",
+  },
+  mrbeast_style: {
+    fontSize: 72,
+    fontFamily: "'Komika Axis', 'CCSignLanguage', 'Obelix Pro', 'Anton', Impact, 'Arial Black', sans-serif",
+    color: "#ffffff",
+    backgroundColor: "transparent",
+    bold: true,
+    outline: true,
+    outlineColor: "#000000",
+    position: "center",
+    textTransform: "uppercase",
+    letterSpacing: "0",
+    borderRadius: "0",
+    padding: "4px 10px",
+    shadow: "0 7px 0 #000000, 0 12px 18px rgba(0,0,0,0.72)",
+    animation: "pop",
+  },
+  apple_cinematic: {
+    fontSize: 68,
+    fontFamily: "'SF Pro Display', 'Inter', 'Helvetica Neue', Arial, sans-serif",
+    color: "#ffffff",
+    backgroundColor: "transparent",
+    bold: true,
+    outline: false,
+    position: "center",
+    textTransform: "none",
+    letterSpacing: "-0.02em",
+    borderRadius: "0",
+    padding: "0",
+    shadow: "0 10px 34px rgba(0,0,0,0.22)",
+    animation: "fade-in",
+  },
+  modern_minimalist_lockup: {
+    fontSize: 112,
+    fontFamily: "'Inter', 'Helvetica Neue', 'SF Pro Display', Arial, sans-serif",
+    color: "#ffffff",
+    backgroundColor: "transparent",
+    bold: true,
+    outline: false,
+    position: "center",
+    textTransform: "none",
+    letterSpacing: "0",
+    borderRadius: "0",
+    padding: "0",
+    shadow: "none",
+    animation: "slide-up",
   },
   viral_word_highlight: {
     fontSize: 64,

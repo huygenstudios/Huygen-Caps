@@ -12,6 +12,7 @@ export function useVideoPlayer() {
 
   const {
     isPlaying,
+    currentTime,
     volume,
     playbackRate,
     pause,
@@ -77,6 +78,14 @@ export function useVideoPlayer() {
       frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
     };
   }, [isPlaying, pause, setCurrentTime]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (Math.abs(el.currentTime - currentTime) > 0.08) {
+      el.currentTime = currentTime;
+    }
+  }, [currentTime]);
 
   // Volume sync
   useEffect(() => {

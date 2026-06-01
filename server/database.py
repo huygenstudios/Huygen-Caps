@@ -1,13 +1,12 @@
 import aiosqlite
-import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'storage', 'database.sqlite')
+from .settings import DB_PATH, ensure_runtime_dirs
 
 async def init_db():
     # Ensure storage folder exists
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    ensure_runtime_dirs()
     
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute('''
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY,
@@ -40,7 +39,7 @@ async def init_db():
             pass  # Column already exists
 
 async def get_db():
-    db = await aiosqlite.connect(DB_PATH)
+    db = await aiosqlite.connect(str(DB_PATH))
     db.row_factory = aiosqlite.Row
     try:
         yield db

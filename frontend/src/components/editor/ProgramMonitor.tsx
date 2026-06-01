@@ -1,22 +1,17 @@
-/* ProgramMonitor — Video preview with controls and caption overlay */
+/* ProgramMonitor - Premiere-style composition preview */
+
+/* eslint-disable @next/next/no-img-element */
 
 "use client";
 
-import React, { useRef } from "react";
-import {
-  Play,
-  Pause,
-  Square,
-  SkipForward,
-  SkipBack,
-  Eye,
-  EyeOff,
-  Grid3X3,
-} from "lucide-react";
-import { usePlaybackStore } from "@/store/playbackStore";
-import { useEditorStore } from "@/store/editorStore";
-import { useVideoPlayer } from "@/hooks/useVideoPlayer";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Eye, EyeOff, Grid3X3, Pause, Play, SkipBack, SkipForward, Square } from "lucide-react";
+import { normalizeClipTransform } from "@/lib/editorModel";
 import { formatTimecode } from "@/lib/captionUtils";
+import { useEditorStore } from "@/store/editorStore";
+import { usePlaybackStore } from "@/store/playbackStore";
+import { useTimelineStore } from "@/store/timelineStore";
+import { useVideoPlayer } from "@/hooks/useVideoPlayer";
 import CaptionOverlay from "./CaptionOverlay";
 
 export default function ProgramMonitor() {
@@ -35,185 +30,282 @@ export default function ProgramMonitor() {
     toggleSafeZone,
     toggleCaptionOverlay,
   } = usePlaybackStore();
-
-  const { mediaFiles, activeMediaId } = useEditorStore();
+  const { mediaFiles, activeTool, sequenceSettings } = useEditorStore();
+  const tracks = useTimelineStore((s) => s.tracks);
+  const captionsVisible = useTimelineStore((s) => s.tracks.some((track) => (track.type === "caption" || track.type === "overlay") && track.visible));
   const { attachVideo, frameForward, frameBack } = useVideoPlayer();
-  const videoContainerRef = useRef<HTMLDivElement>(null);
 
-  const activeMedia = mediaFiles.find((f) => f.id === activeMediaId);
-  const videoUrl = activeMedia?.type === "video" ? activeMedia.url : null;
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const panRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+
+    const updateViewport = () => {
+      setViewportSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      });
+    };
+
+    updateViewport();
+    const observer = new ResizeObserver(updateViewport);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
+
+  const activeVisualLayers = useMemo(() => {
+    return tracks
+      .filter((track) => track.visible && (track.type === "video" || track.type === "overlay" || track.type === "image"))
+      .flatMap((track) => (track.clips || []).map((clip) => ({ clip, track })))
+      .filter(({ clip }) => clip.visible !== false && clip.type !== "audio" && currentTime >= clip.start && currentTime <= clip.end)
+      .sort((a, b) => (a.track.zIndex || 0) - (b.track.zIndex || 0));
+  }, [currentTime, tracks]);
+
+  const firstVideoLayerId = activeVisualLayers.find(({ clip }) => clip.type === "video")?.clip.id;
+  const audioEnabled = useMemo(
+    () =>
+      tracks.some((track) =>
+        track.type === "audio" &&
+        track.visible &&
+        !track.muted &&
+        (track.clips || []).some((clip) => clip.visible !== false && !clip.muted && currentTime >= clip.start && currentTime <= clip.end)
+      ),
+    [currentTime, tracks]
+  );
+  const hasVisibleComposition = activeVisualLayers.length > 0 || (showCaptionOverlay && captionsVisible);
+
+  const handleWheel = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const nextZoom = Math.max(25, Math.min(200, zoom + (event.deltaY < 0 ? 25 : -25)));
+      setZoom(nextZoom);
+      if (nextZoom <= 100) setPan({ x: 0, y: 0 });
+    },
+    [setZoom, zoom]
+  );
+
+  const handlePanDown = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (zoom <= 100 && activeTool !== "hand") return;
+      panRef.current = { ...pan, startX: event.clientX, startY: event.clientY };
+
+      const onMove = (moveEvent: MouseEvent) => {
+        if (!panRef.current) return;
+        setPan({
+          x: panRef.current.x + moveEvent.clientX - panRef.current.startX,
+          y: panRef.current.y + moveEvent.clientY - panRef.current.startY,
+        });
+      };
+
+      const onUp = () => {
+        panRef.current = null;
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [activeTool, pan, zoom]
+  );
+
+  const compositionFit = useMemo(() => {
+    const sequenceWidth = Math.max(1, sequenceSettings.width);
+    const sequenceHeight = Math.max(1, sequenceSettings.height);
+    const viewportWidth = Math.max(1, viewportSize.width);
+    const viewportHeight = Math.max(1, viewportSize.height);
+    const sequenceAspect = sequenceWidth / sequenceHeight;
+    const viewportAspect = viewportWidth / viewportHeight;
+
+    if (viewportAspect > sequenceAspect) {
+      const height = viewportHeight;
+      return { width: height * sequenceAspect, height };
+    }
+
+    const width = viewportWidth;
+    return { width, height: width / sequenceAspect };
+  }, [sequenceSettings.height, sequenceSettings.width, viewportSize.height, viewportSize.width]);
+
+  const compositionAspect = `${sequenceSettings.width} / ${sequenceSettings.height}`;
+  const safeMargin = sequenceSettings.safeMarginsEnabled
+    ? sequenceSettings.safeMarginsPercent ?? sequenceSettings.safeMargins ?? 8
+    : 0;
 
   return (
-    <div className="panel flex flex-col h-full">
-      {/* Header */}
+    <div className="panel flex h-full flex-col">
       <div className="panel-header">
         <span>Program</span>
       </div>
 
-      {/* Video area */}
       <div
-        ref={videoContainerRef}
-        className="flex-1 relative flex items-center justify-center overflow-hidden"
+        ref={viewportRef}
+        className="relative flex flex-1 items-center justify-center overflow-hidden p-3"
         style={{ background: "#000" }}
+        onWheel={handleWheel}
+        onMouseDown={handlePanDown}
       >
-        {videoUrl ? (
-          <>
-            <video
-              ref={attachVideo}
-              src={videoUrl}
-              className="max-w-full max-h-full"
-              style={{
-                transform: `scale(${zoom / 100})`,
-                imageRendering: quality === "quarter" ? "pixelated" : "auto",
-              }}
-            />
+        <div
+          className="relative max-h-full max-w-full overflow-visible"
+          style={{
+            aspectRatio: compositionAspect,
+            width: `${compositionFit.width}px`,
+            height: `${compositionFit.height}px`,
+            maxWidth: "100%",
+            maxHeight: "100%",
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom / 100})`,
+            transformOrigin: "center center",
+            cursor: zoom > 100 || activeTool === "hand" ? "grab" : "default",
+          }}
+        >
+          <div
+            className="absolute inset-0 overflow-hidden"
+            style={{ background: sequenceSettings.backgroundColor }}
+          >
+            {activeVisualLayers.map(({ clip, track }) => {
+              const media = mediaFiles.find((file) => file.id === clip.mediaId);
+              if (!media) return null;
+              const transform = normalizeClipTransform(clip.transform);
+              const commonStyle: React.CSSProperties = {
+                zIndex: track.zIndex || 0,
+                opacity: transform.opacity,
+                left: `${transform.xPercent}%`,
+                top: `${transform.yPercent}%`,
+                transform: `translate(-50%, -50%) scale(${transform.scale}) rotate(${transform.rotation}deg)`,
+                transformOrigin: "center center",
+              };
 
-            {/* Safe zone overlay */}
+              if (clip.type === "video" && media.type === "video") {
+                return (
+                  <div key={clip.id} className="absolute h-full w-full" style={commonStyle}>
+                    <video
+                      ref={clip.id === firstVideoLayerId ? attachVideo : undefined}
+                      src={media.url}
+                      muted={!audioEnabled}
+                      className="h-full w-full object-contain"
+                      style={{ imageRendering: quality === "quarter" ? "pixelated" : "auto" }}
+                    />
+                  </div>
+                );
+              }
+
+              if (clip.type === "image" && media.type === "image") {
+                return (
+                  <img
+                    key={clip.id}
+                    src={media.url}
+                    alt={media.name}
+                    className="absolute max-h-[70%] max-w-[70%] pointer-events-none"
+                    style={commonStyle}
+                  />
+                );
+              }
+
+              return null;
+            })}
+
             {showSafeZone && (
-              <div className="absolute inset-0 pointer-events-none">
+              <div className="absolute inset-0 z-40 pointer-events-none">
                 <div
-                  className="absolute border border-dashed border-yellow-500/30"
+                  className="absolute border border-dashed"
                   style={{
-                    top: "10%",
-                    left: "10%",
-                    right: "10%",
-                    bottom: "10%",
+                    top: `${safeMargin}%`,
+                    left: `${safeMargin}%`,
+                    right: `${safeMargin}%`,
+                    bottom: `${safeMargin}%`,
+                    borderColor: "var(--accent)",
                   }}
                 />
                 <div
-                  className="absolute border border-dashed border-red-500/30"
-                  style={{
-                    top: "5%",
-                    left: "5%",
-                    right: "5%",
-                    bottom: "5%",
-                  }}
+                  className="absolute border border-dashed"
+                  style={{ top: "4%", left: "4%", right: "4%", bottom: "4%", borderColor: "var(--huygen-red)" }}
                 />
               </div>
             )}
 
-            {/* Caption overlay */}
-            <CaptionOverlay />
-          </>
-        ) : (
-          <div className="text-center">
-            <div className="text-sm mb-1" style={{ color: "var(--text-muted)" }}>
-              No media loaded
+            <div className="absolute inset-0" style={{ zIndex: 80 }}>
+              <CaptionOverlay />
             </div>
-            <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Import a video to get started
-            </div>
+
+            {!hasVisibleComposition && (
+              <div className="absolute inset-0 flex items-center justify-center text-center">
+                <div className="brutal-empty px-8 py-6">
+                  <img className="empty-logo mx-auto" src="/brand/huygen-logo.png" alt="Huygen Caps" />
+                  <div className="text-sm mb-1" style={{ color: "var(--text-muted)" }}>
+                    Import media to start editing.
+                  </div>
+                  <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    Generate captions to edit subtitle timing.
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
-      {/* Transport controls */}
       <div
-        className="flex items-center gap-1 px-3 py-1.5 shrink-0"
+        className="flex shrink-0 items-center gap-1 px-3 py-1.5"
         style={{ background: "var(--bg-panel-dark)", borderTop: "1px solid var(--border)" }}
       >
-        {/* Playback buttons */}
-        <button
-          className="p-1 rounded hover:bg-white/10"
-          onClick={stop}
-          title="Stop"
-        >
+        <button className="p-1 rounded hover:bg-white/10" onClick={stop} title="Stop">
           <Square size={14} style={{ color: "var(--text-muted)" }} />
         </button>
-        <button
-          className="p-1 rounded hover:bg-white/10"
-          onClick={frameBack}
-          title="Frame Back (←)"
-        >
+        <button className="p-1 rounded hover:bg-white/10" onClick={frameBack} title="Frame Back">
           <SkipBack size={14} style={{ color: "var(--text-muted)" }} />
         </button>
-        <button
-          className="p-1.5 rounded hover:bg-white/10"
-          onClick={togglePlayPause}
-          title="Play/Pause (Space)"
-        >
-          {isPlaying ? (
-            <Pause size={18} style={{ color: "var(--text-primary)" }} />
-          ) : (
-            <Play size={18} style={{ color: "var(--text-primary)" }} />
-          )}
+        <button className="p-1.5 rounded hover:bg-white/10" onClick={togglePlayPause} title="Play/Pause">
+          {isPlaying ? <Pause size={18} style={{ color: "var(--text-primary)" }} /> : <Play size={18} style={{ color: "var(--text-primary)" }} />}
         </button>
-        <button
-          className="p-1 rounded hover:bg-white/10"
-          onClick={frameForward}
-          title="Frame Forward (→)"
-        >
+        <button className="p-1 rounded hover:bg-white/10" onClick={frameForward} title="Frame Forward">
           <SkipForward size={14} style={{ color: "var(--text-muted)" }} />
         </button>
 
-        {/* Timecode */}
-        <div
-          className="font-mono text-xs px-2 py-0.5 rounded ml-2"
-          style={{ background: "#000", color: "var(--text-primary)" }}
-        >
+        <div className="ml-2 rounded px-2 py-0.5 font-mono text-xs" style={{ background: "var(--timecode-bg)", color: "var(--timecode-text)" }}>
           {formatTimecode(currentTime)}
         </div>
-        <span className="text-[10px] mx-1" style={{ color: "var(--text-muted)" }}>
+        <span className="mx-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
           /
         </span>
-        <div
-          className="font-mono text-xs px-2 py-0.5 rounded"
-          style={{ background: "#000", color: "var(--text-muted)" }}
-        >
+        <div className="rounded px-2 py-0.5 font-mono text-xs" style={{ background: "var(--timecode-bg)", color: "var(--timecode-muted)" }}>
           {formatTimecode(duration)}
         </div>
 
-        {/* Spacer */}
         <div className="flex-1" />
 
-        {/* View toggles */}
-        <button
-          className="p-1 rounded hover:bg-white/10"
-          onClick={toggleCaptionOverlay}
-          title="Toggle Caption Overlay"
-        >
-          {showCaptionOverlay ? (
-            <Eye size={14} style={{ color: "var(--accent)" }} />
-          ) : (
-            <EyeOff size={14} style={{ color: "var(--text-muted)" }} />
-          )}
+        <button className="p-1 rounded hover:bg-white/10" onClick={toggleCaptionOverlay} title="Toggle Captions">
+          {showCaptionOverlay ? <Eye size={14} style={{ color: "var(--accent)" }} /> : <EyeOff size={14} style={{ color: "var(--text-muted)" }} />}
         </button>
-        <button
-          className="p-1 rounded hover:bg-white/10"
-          onClick={toggleSafeZone}
-          title="Toggle Safe Zone"
-        >
-          <Grid3X3
-            size={14}
-            style={{ color: showSafeZone ? "var(--accent)" : "var(--text-muted)" }}
-          />
+        <button className="p-1 rounded hover:bg-white/10" onClick={toggleSafeZone} title="Toggle Safe Zone">
+          <Grid3X3 size={14} style={{ color: showSafeZone ? "var(--accent)" : "var(--text-muted)" }} />
         </button>
 
-        {/* Zoom */}
         <select
-          className="text-[10px] px-1 py-0.5 rounded border-0 outline-none cursor-pointer"
-          style={{
-            background: "var(--bg-panel)",
-            color: "var(--text-muted)",
-          }}
+          className="rounded border-0 px-1 py-0.5 text-[10px] outline-none"
+          style={{ background: "var(--bg-panel)", color: "var(--text-muted)" }}
           value={zoom}
-          onChange={(e) => setZoom(Number(e.target.value))}
+          onChange={(event) => {
+            const nextZoom = Number(event.target.value);
+            setZoom(nextZoom);
+            if (nextZoom <= 100) setPan({ x: 0, y: 0 });
+          }}
         >
           <option value={25}>25%</option>
           <option value={50}>50%</option>
-          <option value={75}>75%</option>
           <option value={100}>Fit</option>
+          <option value={125}>Fill</option>
+          <option value={200}>200%</option>
         </select>
 
-        {/* Quality */}
         <select
-          className="text-[10px] px-1 py-0.5 rounded border-0 outline-none cursor-pointer"
-          style={{
-            background: "var(--bg-panel)",
-            color: "var(--text-muted)",
-          }}
+          className="rounded border-0 px-1 py-0.5 text-[10px] outline-none"
+          style={{ background: "var(--bg-panel)", color: "var(--text-muted)" }}
           value={quality}
-          onChange={(e) => setQuality(e.target.value as "full" | "half" | "quarter")}
+          onChange={(event) => setQuality(event.target.value as "full" | "half" | "quarter")}
         >
           <option value="full">Full</option>
           <option value="half">1/2</option>

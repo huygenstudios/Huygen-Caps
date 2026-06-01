@@ -1,12 +1,8 @@
-import whisperx
 import logging
-import torch
-import librosa
 
 try:
     from .retry import with_retry
     from .config import RETRY_ALIGN
-    from .alignment_models import get_alignment_model
 except ImportError:
     # Handle circular imports or relative imports nicely
     import sys
@@ -14,12 +10,8 @@ except ImportError:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from retry import with_retry
     from config import RETRY_ALIGN
-    from alignment_models import get_alignment_model
 
 logger = logging.getLogger(__name__)
-
-# Only load heavy models onto device if they're actually requested
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def _rescue_missing_words(input_segments: list, aligned_segments: list) -> list:
@@ -94,6 +86,58 @@ def _rescue_missing_words(input_segments: list, aligned_segments: list) -> list:
     return aligned_segments
 
 
+def _fallback_align_segments(tokens: list) -> list:
+    """Create deterministic word timestamps when optional WhisperX alignment is unavailable."""
+    if not tokens:
+        return []
+
+    segments = []
+    if isinstance(tokens[0], dict):
+        prompt_segments = [
+            {
+                "text": str(token.get("text", "")).strip(),
+                "start": float(token.get("start", 0.0) or 0.0),
+                "end": float(token.get("end", token.get("start", 0.0)) or 0.0),
+            }
+            for token in tokens
+        ]
+    else:
+        prompt_segments = []
+        cursor = 0.0
+        for token in tokens:
+            text = str(token).strip()
+            duration = max(0.35, len(text.split()) * 0.22)
+            prompt_segments.append({"text": text, "start": cursor, "end": cursor + duration})
+            cursor += duration
+
+    for segment in prompt_segments:
+        text = segment["text"]
+        words = text.split()
+        start = float(segment["start"])
+        end = max(start + 0.08, float(segment["end"]))
+        duration = max(0.08, end - start)
+        word_duration = duration / max(1, len(words))
+        segments.append(
+            {
+                "text": text,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "words": [
+                    {
+                        "word": word,
+                        "start": round(start + index * word_duration, 3),
+                        "end": round(start + (index + 1) * word_duration, 3),
+                        "score": 0.45,
+                        "timing_source": "interpolated_no_whisperx",
+                    }
+                    for index, word in enumerate(words)
+                ],
+            }
+        )
+
+    return segments
+
+
 @with_retry(max_retries=RETRY_ALIGN)
 def align_text(tokens: list, audio_path: str, model_id: str):
     """
@@ -102,8 +146,19 @@ def align_text(tokens: list, audio_path: str, model_id: str):
     Rescues any words that WhisperX failed to align.
     """
     try:
+        import librosa
+        import torch
+        import whisperx
+
+        try:
+            from .alignment_models import get_alignment_model
+        except ImportError:
+            from alignment_models import get_alignment_model
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
         # Get model directly
-        model, metadata = get_alignment_model(model_id, DEVICE)
+        model, metadata = get_alignment_model(model_id, device)
         
         # Get audio duration for distributing segment timestamps
         duration = librosa.get_duration(filename=audio_path)
@@ -139,7 +194,7 @@ def align_text(tokens: list, audio_path: str, model_id: str):
             model, 
             metadata, 
             audio, 
-            DEVICE
+            device
         )
         aligned = result["segments"]
 
@@ -148,6 +203,11 @@ def align_text(tokens: list, audio_path: str, model_id: str):
 
         return aligned
     except Exception as e:
-        logger.error(f"Alignment failed for {audio_path} with {model_id}: {e}")
-        raise
-
+        logger.warning(
+            "WhisperX alignment unavailable or failed for %s with %s: %s. "
+            "Using deterministic interpolated word timestamps.",
+            audio_path,
+            model_id,
+            e,
+        )
+        return _fallback_align_segments(tokens)

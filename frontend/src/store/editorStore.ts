@@ -2,19 +2,30 @@
 
 import { create } from "zustand";
 import { DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG, normalizeCaptionStyleConfig } from "@/lib/captionStyleConfig";
+import { getCaptionPreset } from "@/lib/captionStylePresets";
 import { DEFAULT_CAPTION_CHUNKING_CONFIG } from "@/lib/captionUtils";
+import { DEFAULT_EXPORT_SETTINGS, DEFAULT_SEQUENCE_SETTINGS, normalizeExportSettings, normalizeSequenceSettings } from "@/lib/editorModel";
+import { recordProjectHistory } from "@/lib/projectHistory";
 import {
   AlignedSegment,
   CaptionChunkingConfig,
   CaptionLayerTransform,
+  CaptionStylePresetId,
+  ColorMode,
+  ExportSettings,
   CaptionStyleConfig,
   CaptionTheme,
   Language,
   MediaFile,
+  RightPanelTab,
+  SequenceSettings,
   ToolMode,
 } from "@/lib/types";
 
 interface EditorState {
+  colorMode: ColorMode;
+  setColorMode: (mode: ColorMode) => void;
+
   // Tool
   activeTool: ToolMode;
   setActiveTool: (tool: ToolMode) => void;
@@ -31,6 +42,7 @@ interface EditorState {
   setLanguage: (lang: Language) => void;
   theme: CaptionTheme;
   setTheme: (theme: CaptionTheme) => void;
+  applyCaptionStylePreset: (presetId: CaptionStylePresetId) => void;
   captionStyleConfig: CaptionStyleConfig;
   setCaptionStyleConfig: (config: Partial<CaptionStyleConfig>) => void;
   resetCaptionStyleConfig: () => void;
@@ -42,6 +54,10 @@ interface EditorState {
   setTranscriptSegments: (segments: AlignedSegment[]) => void;
   captionLayerTransform: CaptionLayerTransform;
   setCaptionLayerTransform: (transform: Partial<CaptionLayerTransform>) => void;
+  sequenceSettings: SequenceSettings;
+  setSequenceSettings: (settings: Partial<SequenceSettings>) => void;
+  exportSettings: ExportSettings;
+  setExportSettings: (settings: Partial<ExportSettings>) => void;
 
   // Pipeline
   jobId: string | null;
@@ -53,13 +69,20 @@ interface EditorState {
   // Panels
   mediaPanelTab: "project" | "effects" | "history";
   setMediaPanelTab: (tab: "project" | "effects" | "history") => void;
+  rightPanelTab: RightPanelTab;
+  setRightPanelTab: (tab: RightPanelTab) => void;
 
   // Export
   showExportModal: boolean;
   setShowExportModal: (show: boolean) => void;
+  showSequenceSettings: boolean;
+  setShowSequenceSettings: (show: boolean) => void;
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
+  colorMode: "dark",
+  setColorMode: (mode) => set({ colorMode: mode }),
+
   activeTool: "selection",
   setActiveTool: (tool) => set({ activeTool: tool }),
 
@@ -80,10 +103,36 @@ export const useEditorStore = create<EditorState>((set) => ({
   language: "auto_mixed_indian",
   setLanguage: (lang) => set({ language: lang }),
   theme: "word_highlight_box",
-  setTheme: (theme) => set({ theme }),
+  setTheme: (theme) => {
+    recordProjectHistory("Caption theme");
+    set({ theme });
+  },
+  applyCaptionStylePreset: (presetId) =>
+    set((state) => {
+      recordProjectHistory("Caption style preset");
+      const preset = getCaptionPreset(presetId);
+      const captionStyleConfig = normalizeCaptionStyleConfig(preset.defaultStyleConfig);
+      return {
+        theme: presetId,
+        captionStyleConfig,
+        captionChunkingConfig: {
+          ...state.captionChunkingConfig,
+          ...preset.defaultChunkingConfig,
+        },
+        captionLayerTransform: {
+          xPercent: captionStyleConfig.positionX,
+          yPercent: captionStyleConfig.positionY,
+          scale: captionStyleConfig.scale,
+          rotation: captionStyleConfig.rotation,
+          opacity: captionStyleConfig.opacity,
+          anchor: "center",
+        },
+      };
+    }),
   captionStyleConfig: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG,
   setCaptionStyleConfig: (config) =>
     set((state) => {
+      recordProjectHistory("Caption style", { debounceKey: "caption-style-config", debounceMs: 700 });
       const captionStyleConfig = normalizeCaptionStyleConfig({
         ...state.captionStyleConfig,
         ...config,
@@ -94,11 +143,28 @@ export const useEditorStore = create<EditorState>((set) => ({
           ...state.captionLayerTransform,
           xPercent: captionStyleConfig.positionX,
           yPercent: captionStyleConfig.positionY,
+          scale: captionStyleConfig.scale,
+          rotation: captionStyleConfig.rotation,
+          opacity: captionStyleConfig.opacity,
         },
       };
     }),
   resetCaptionStyleConfig: () =>
-    set({ captionStyleConfig: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG, theme: "word_highlight_box" }),
+    set(() => {
+      recordProjectHistory("Reset caption style");
+      return {
+        captionStyleConfig: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG,
+        theme: "word_highlight_box",
+        captionLayerTransform: {
+          xPercent: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.positionX,
+          yPercent: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.positionY,
+          scale: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.scale,
+          rotation: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.rotation,
+          opacity: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.opacity,
+          anchor: "center",
+        },
+      };
+    }),
   savedCaptionPresets: [],
   saveCaptionPreset: (name) =>
     set((state) => ({
@@ -125,17 +191,20 @@ export const useEditorStore = create<EditorState>((set) => ({
     yPercent: 78,
     scale: 1,
     rotation: 0,
+    opacity: 1,
     anchor: "center",
   },
   setCaptionLayerTransform: (transform) =>
     set((state) => {
+      recordProjectHistory("Caption transform", { debounceKey: "caption-layer-transform", debounceMs: 700 });
       const next = {
         ...state.captionLayerTransform,
         ...transform,
         xPercent: Math.min(100, Math.max(0, transform.xPercent ?? state.captionLayerTransform.xPercent)),
         yPercent: Math.min(100, Math.max(0, transform.yPercent ?? state.captionLayerTransform.yPercent)),
-        scale: Math.min(3, Math.max(0.2, transform.scale ?? state.captionLayerTransform.scale)),
+        scale: Math.min(3, Math.max(0, transform.scale ?? state.captionLayerTransform.scale)),
         rotation: Math.min(180, Math.max(-180, transform.rotation ?? state.captionLayerTransform.rotation)),
+        opacity: Math.min(1, Math.max(0, transform.opacity ?? state.captionLayerTransform.opacity)),
       };
       return {
         captionLayerTransform: next,
@@ -143,7 +212,28 @@ export const useEditorStore = create<EditorState>((set) => ({
           ...state.captionStyleConfig,
           positionX: next.xPercent,
           positionY: next.yPercent,
+          scale: next.scale,
+          rotation: next.rotation,
+          opacity: next.opacity,
         }),
+      };
+    }),
+  sequenceSettings: DEFAULT_SEQUENCE_SETTINGS,
+  setSequenceSettings: (settings) =>
+    set((state) => {
+      recordProjectHistory("Sequence settings");
+      const sequenceSettings = normalizeSequenceSettings({ ...state.sequenceSettings, ...settings });
+      return {
+        sequenceSettings,
+        exportSettings: normalizeExportSettings(state.exportSettings, sequenceSettings),
+      };
+    }),
+  exportSettings: DEFAULT_EXPORT_SETTINGS,
+  setExportSettings: (settings) =>
+    set((state) => {
+      recordProjectHistory("Export settings", { debounceKey: "export-settings", debounceMs: 500 });
+      return {
+        exportSettings: normalizeExportSettings({ ...state.exportSettings, ...settings }, state.sequenceSettings),
       };
     }),
 
@@ -156,7 +246,11 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   mediaPanelTab: "project",
   setMediaPanelTab: (tab) => set({ mediaPanelTab: tab }),
+  rightPanelTab: "effect-controls",
+  setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
 
   showExportModal: false,
   setShowExportModal: (show) => set({ showExportModal: show }),
+  showSequenceSettings: false,
+  setShowSequenceSettings: (show) => set({ showSequenceSettings: show }),
 }));

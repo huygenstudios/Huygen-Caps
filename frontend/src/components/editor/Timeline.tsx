@@ -2,11 +2,13 @@
 
 "use client";
 
-import React, { useRef, useCallback } from "react";
+import React, { useRef, useCallback, useEffect } from "react";
 import { Plus, Magnet, ZoomIn, ZoomOut, Trash2 } from "lucide-react";
 import { useTimelineStore } from "@/store/timelineStore";
 import { useCaptionStore } from "@/store/captionStore";
+import { usePlaybackStore } from "@/store/playbackStore";
 import { useTimelineSync } from "@/hooks/useTimelineSync";
+import { TRACK_HEADER_WIDTH } from "@/lib/timelineUtils";
 import TimelineRuler from "./TimelineRuler";
 import TimelineTrack from "./TimelineTrack";
 import Playhead from "./Playhead";
@@ -16,17 +18,27 @@ export default function Timeline() {
   const {
     tracks,
     scrollLeft,
+    pixelsPerSecond,
     setScrollLeft,
     snapEnabled,
     toggleSnap,
     zoomIn,
     zoomOut,
     addTrack,
+    notice,
+    clearNotice,
   } = useTimelineStore();
 
   const clearAll = useCaptionStore((s) => s.clearAll);
+  const duration = usePlaybackStore((s) => s.duration);
 
   const { handleTimelineSeek } = useTimelineSync();
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(clearNotice, 3200);
+    return () => window.clearTimeout(timer);
+  }, [clearNotice, notice]);
 
   // Horizontal scroll
   const handleWheel = useCallback(
@@ -49,25 +61,44 @@ export default function Timeline() {
     (e: React.MouseEvent) => {
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
-      handleTimelineSeek(e.clientX, rect.left + 80); // 80 = track header width
+      handleTimelineSeek(e.clientX, rect.left);
     },
     [handleTimelineSeek]
   );
 
-  const handleAddCaptionTrack = useCallback(() => {
-    const captionTracks = tracks.filter((t) => t.type === "caption");
-    const nextId = `c${captionTracks.length + 1}`;
-    addTrack({
-      id: nextId,
-      type: "caption",
-      label: nextId.toUpperCase(),
-      locked: false,
-      visible: true,
-      height: 36,
-    });
-  }, [tracks, addTrack]);
+  const handleAddTrack = useCallback(
+    (type: "video" | "audio" | "caption" | "image" | "overlay") => {
+      const prefix = type === "audio" ? "A" : type === "caption" ? "C" : "V";
+      const matching = prefix === "V"
+        ? tracks.filter((t) => t.type === "video" || t.type === "image" || t.type === "overlay")
+        : tracks.filter((t) => t.type === type);
+      const label = `${prefix}${matching.length + 1}`;
+      addTrack({
+        id: `${type}_${Date.now()}`,
+        type,
+        label,
+        name: label,
+        locked: false,
+        visible: true,
+        muted: type === "audio" ? false : undefined,
+        height: type === "caption" ? 36 : 48,
+        zIndex: tracks.length + 1,
+        clips: [],
+      });
+    },
+    [tracks, addTrack]
+  );
 
   const containerWidth = containerRef.current?.clientWidth || 800;
+  const projectDuration = Math.max(
+    30,
+    duration,
+    ...tracks.flatMap((track) => (track.clips || []).map((clip) => clip.end))
+  );
+  const maxScrollLeft = Math.max(
+    0,
+    projectDuration * pixelsPerSecond - (containerWidth - TRACK_HEADER_WIDTH)
+  );
 
   return (
     <div className="panel flex flex-col h-full">
@@ -98,31 +129,43 @@ export default function Timeline() {
           >
             <Trash2 size={12} style={{ color: "var(--text-muted)" }} />
           </button>
-          <button
-            className="p-1 rounded hover:bg-white/10 flex items-center gap-0.5 text-[10px]"
-            style={{ color: "var(--text-muted)" }}
-            onClick={handleAddCaptionTrack}
-            title="Add Track"
-          >
-            <Plus size={12} /> Track
-          </button>
+          {(["video", "audio", "caption", "overlay"] as const).map((type) => (
+            <button
+              key={type}
+              className="p-1 rounded hover:bg-white/10 flex items-center gap-0.5 text-[10px]"
+              style={{ color: "var(--text-muted)" }}
+              onClick={() => handleAddTrack(type)}
+              title={`Add ${type} track`}
+            >
+              <Plus size={12} /> {type}
+            </button>
+          ))}
         </div>
       </div>
+
+      {notice && (
+        <div className="editor-notice mx-2 mt-2 flex items-center justify-between gap-3">
+          <span>{notice}</span>
+          <button className="text-xs font-bold" onClick={clearNotice}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Timeline body */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-hidden relative"
+        className="relative flex-1 overflow-auto"
         onWheel={handleWheel}
         data-timeline-area
       >
         {/* Ruler row */}
-        <div className="flex">
+        <div className="sticky top-0 z-40 flex">
           {/* Track header spacer */}
           <div
             className="shrink-0"
             style={{
-              width: 80,
+              width: TRACK_HEADER_WIDTH,
               background: "var(--bg-panel-dark)",
               borderRight: "1px solid var(--border)",
               borderBottom: "1px solid var(--border)",
@@ -131,12 +174,12 @@ export default function Timeline() {
           />
           {/* Ruler */}
           <div className="flex-1 overflow-hidden cursor-pointer" onClick={handleRulerClick}>
-            <TimelineRuler width={containerWidth - 80} />
+            <TimelineRuler width={containerWidth - TRACK_HEADER_WIDTH} />
           </div>
         </div>
 
         {/* Tracks */}
-        <div className="relative">
+        <div className="relative min-h-full">
           {tracks.map((track) => (
             <TimelineTrack key={track.id} track={track} />
           ))}
@@ -147,12 +190,27 @@ export default function Timeline() {
           {/* Empty state */}
           {tracks.length === 0 && (
             <div className="flex items-center justify-center py-8">
-              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                Import media to start editing
+              <p className="brutal-empty px-4 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
+                Drag media into the timeline.
               </p>
             </div>
           )}
         </div>
+      </div>
+
+      <div
+        className="h-4 px-2 flex items-center"
+        style={{ background: "var(--bg-panel-dark)", borderTop: "1px solid var(--border)" }}
+      >
+        <input
+          type="range"
+          min={0}
+          max={Math.max(0, Math.round(maxScrollLeft))}
+          value={Math.min(scrollLeft, maxScrollLeft)}
+          onChange={(event) => setScrollLeft(Number(event.target.value))}
+          className="w-full"
+          aria-label="Timeline horizontal scroll"
+        />
       </div>
     </div>
   );

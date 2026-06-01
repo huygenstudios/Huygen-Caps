@@ -6,7 +6,9 @@ import { useEffect } from "react";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { usePlaybackStore } from "@/store/playbackStore";
+import { useProjectHistoryStore } from "@/store/projectHistoryStore";
 import { useTimelineStore } from "@/store/timelineStore";
+import { isCaptionLocked } from "@/lib/editorModel";
 
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -30,12 +32,20 @@ export function useKeyboardShortcuts() {
           if (ctrl) {
             e.preventDefault();
             if (shift) {
-              useCaptionStore.getState().redo();
+              useProjectHistoryStore.getState().redo();
             } else {
-              useCaptionStore.getState().undo();
+              useProjectHistoryStore.getState().undo();
             }
           } else if (!shift) {
             useEditorStore.getState().setActiveTool("zoom");
+          }
+          break;
+
+        case "y":
+        case "Y":
+          if (ctrl) {
+            e.preventDefault();
+            useProjectHistoryStore.getState().redo();
           }
           break;
 
@@ -56,17 +66,32 @@ export function useKeyboardShortcuts() {
 
         case "ArrowRight":
           e.preventDefault();
-          usePlaybackStore.getState().seekBy(shift ? 5 / 30 : 1 / 30);
+          {
+            const fps = useEditorStore.getState().sequenceSettings.fps || 30;
+            usePlaybackStore.getState().seekBy(shift ? 5 / fps : 1 / fps);
+          }
           break;
 
         case "ArrowLeft":
           e.preventDefault();
-          usePlaybackStore.getState().seekBy(shift ? -5 / 30 : -1 / 30);
+          {
+            const fps = useEditorStore.getState().sequenceSettings.fps || 30;
+            usePlaybackStore.getState().seekBy(shift ? -5 / fps : -1 / fps);
+          }
           break;
 
         case "Delete":
         case "Backspace":
-          useCaptionStore.getState().deleteSelected();
+          {
+            const captionState = useCaptionStore.getState();
+            const tracks = useTimelineStore.getState().tracks;
+            Array.from(captionState.selectedIds).forEach((captionId) => {
+              const caption = captionState.captions.find((candidate) => candidate.id === captionId);
+              if (!caption || isCaptionLocked(caption, tracks)) return;
+              captionState.deleteCaption(captionId);
+            });
+            useTimelineStore.getState().deleteSelectedClips();
+          }
           break;
 
         case "a":
@@ -115,4 +140,3 @@ export function useKeyboardShortcuts() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 }
-

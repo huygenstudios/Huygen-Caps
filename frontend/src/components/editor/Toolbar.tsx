@@ -1,22 +1,33 @@
-/* Toolbar — Premiere Pro-style top toolbar */
+/* Toolbar - Huygen Caps top chrome */
+/* eslint-disable @next/next/no-img-element */
 
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
-  MousePointer2,
-  Scissors,
+  Circle,
+  Copy,
+  Download,
   Hand,
-  ZoomIn,
-  Undo2,
+  Moon,
+  MousePointer2,
   Redo2,
   Save,
-  Download,
-  Circle,
+  Scissors,
+  Settings2,
+  Sun,
+  Trash2,
+  Undo2,
+  Wand2,
+  ZoomIn,
 } from "lucide-react";
-import { useEditorStore } from "@/store/editorStore";
-import { useCaptionStore } from "@/store/captionStore";
+import { isCaptionLocked } from "@/lib/editorModel";
 import { ToolMode } from "@/lib/types";
+import { useCaptionExport } from "@/hooks/useCaptionExport";
+import { useCaptionStore } from "@/store/captionStore";
+import { useEditorStore } from "@/store/editorStore";
+import { useProjectHistoryStore } from "@/store/projectHistoryStore";
+import { useTimelineStore } from "@/store/timelineStore";
 
 const tools: { mode: ToolMode; icon: React.ReactNode; label: string; shortcut: string }[] = [
   { mode: "selection", icon: <MousePointer2 size={16} />, label: "Selection", shortcut: "V" },
@@ -25,102 +36,184 @@ const tools: { mode: ToolMode; icon: React.ReactNode; label: string; shortcut: s
   { mode: "zoom", icon: <ZoomIn size={16} />, label: "Zoom", shortcut: "Z" },
 ];
 
+function MenuItem({
+  children,
+  disabled = false,
+  onClick,
+}: {
+  children: React.ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button className="menu-item" disabled={disabled} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
 export default function Toolbar() {
-  const { activeTool, setActiveTool, setShowExportModal } = useEditorStore();
-  const { undo, redo } = useCaptionStore();
+  const {
+    activeTool,
+    setActiveTool,
+    setShowExportModal,
+    setShowSequenceSettings,
+    setMediaPanelTab,
+    setRightPanelTab,
+    colorMode,
+    setColorMode,
+  } = useEditorStore();
+  const { undo, redo, canUndo, canRedo } = useProjectHistoryStore();
+  const { deleteCaption, selectedIds, captions } = useCaptionStore();
+  const tracks = useTimelineStore((s) => s.tracks);
+  const selectedClipIds = useTimelineStore((s) => s.selectedClipIds);
+  const deleteSelectedClips = useTimelineStore((s) => s.deleteSelectedClips);
+  const duplicateSelectedClips = useTimelineStore((s) => s.duplicateSelectedClips);
+  const { exportSRT, exportASS } = useCaptionExport();
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+
+  const closeMenu = () => setOpenMenu(null);
+
+  const deleteSelection = () => {
+    Array.from(selectedIds).forEach((captionId) => {
+      const caption = captions.find((candidate) => candidate.id === captionId);
+      if (!caption || isCaptionLocked(caption, tracks)) return;
+      deleteCaption(captionId);
+    });
+    deleteSelectedClips();
+    closeMenu();
+  };
+
+  const openImport = () => {
+    setMediaPanelTab("project");
+    window.dispatchEvent(new Event("huygen-caps-open-import"));
+    closeMenu();
+  };
+
+  const openExport = () => {
+    setRightPanelTab("export-settings");
+    setShowExportModal(true);
+    closeMenu();
+  };
+
+  const clickById = (id: string) => {
+    setRightPanelTab("caption-editor");
+    window.setTimeout(() => document.getElementById(id)?.click(), 0);
+    closeMenu();
+  };
+
+  const menuButton = (menu: string) => (
+    <button
+      key={menu}
+      className={`top-menu-button ${openMenu === menu ? "active" : ""}`}
+      onClick={() => setOpenMenu(openMenu === menu ? null : menu)}
+    >
+      {menu}
+    </button>
+  );
 
   return (
-    <div
-      className="flex items-center h-9 px-2 gap-1 select-none shrink-0"
-      style={{ background: "var(--bg-toolbar)", borderBottom: "1px solid var(--border)" }}
-    >
-      {/* App title */}
-      <div className="flex items-center gap-2 mr-4">
-        <span className="text-sm font-bold tracking-tight" style={{ color: "var(--accent)" }}>
-          Caption AI
-        </span>
+    <div className="toolbar-shell flex h-10 shrink-0 select-none items-center gap-1 px-2">
+      <div className="brand-mark mr-3">
+        <img className="brand-logo" src="/brand/huygen-logo.png" alt="Huygen Caps" />
+        <span className="brand-name">Huygen Caps</span>
       </div>
 
-      {/* Menu items */}
-      {["File", "Edit", "Sequence", "Captions", "Export"].map((menu) => (
+      <div className="relative flex items-center">
+        {["File", "Edit", "Sequence", "Captions", "Export"].map(menuButton)}
+        {openMenu && (
+          <div className="menu-popover absolute left-0 top-9 z-[80] min-w-64 p-2">
+            {openMenu === "File" && (
+              <>
+                <MenuItem onClick={openImport}>Import media</MenuItem>
+                <MenuItem onClick={() => { setShowExportModal(true); closeMenu(); }}>Export project data</MenuItem>
+              </>
+            )}
+            {openMenu === "Edit" && (
+              <>
+                <MenuItem disabled={!canUndo} onClick={() => { undo(); closeMenu(); }}>
+                  Undo
+                </MenuItem>
+                <MenuItem disabled={!canRedo} onClick={() => { redo(); closeMenu(); }}>
+                  Redo
+                </MenuItem>
+                <MenuItem disabled={!selectedClipIds.length} onClick={() => { duplicateSelectedClips(); closeMenu(); }}>
+                  <span className="inline-flex items-center gap-2"><Copy size={12} /> Duplicate selected clip</span>
+                </MenuItem>
+                <MenuItem disabled={!selectedClipIds.length && selectedIds.size === 0} onClick={deleteSelection}>
+                  <span className="inline-flex items-center gap-2"><Trash2 size={12} /> Delete selected</span>
+                </MenuItem>
+              </>
+            )}
+            {openMenu === "Sequence" && (
+              <MenuItem onClick={() => { setShowSequenceSettings(true); closeMenu(); }}>
+                <span className="inline-flex items-center gap-2"><Settings2 size={12} /> Sequence Settings...</span>
+              </MenuItem>
+            )}
+            {openMenu === "Captions" && (
+              <>
+                <MenuItem onClick={() => clickById("generate-captions-btn")}>
+                  <span className="inline-flex items-center gap-2"><Wand2 size={12} /> Generate captions</span>
+                </MenuItem>
+                <MenuItem onClick={() => clickById("rebuild-captions-btn")}>Rebuild caption chunks</MenuItem>
+                <MenuItem onClick={() => { setRightPanelTab("caption-editor"); closeMenu(); }}>Open caption editor</MenuItem>
+                <MenuItem disabled={!captions.length} onClick={() => { exportSRT(); closeMenu(); }}>Export SRT</MenuItem>
+                <MenuItem disabled={!captions.length} onClick={() => { exportASS(); closeMenu(); }}>Export ASS</MenuItem>
+              </>
+            )}
+            {openMenu === "Export" && (
+              <>
+                <MenuItem onClick={() => { setRightPanelTab("export-settings"); closeMenu(); }}>Open export settings</MenuItem>
+                <MenuItem onClick={openExport}>
+                  <span className="inline-flex items-center gap-2"><Download size={12} /> Export MP4</span>
+                </MenuItem>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="toolbar-divider" />
+
+      {tools.map((tool) => (
         <button
-          key={menu}
-          className="px-2 py-1 text-xs rounded hover:bg-white/5 transition-colors"
-          style={{ color: "var(--text-muted)" }}
-          onClick={() => {
-            if (menu === "Export") setShowExportModal(true);
-          }}
+          key={tool.mode}
+          className={`icon-button ${activeTool === tool.mode ? "active" : ""}`}
+          onClick={() => setActiveTool(tool.mode)}
+          title={`${tool.label} (${tool.shortcut})`}
         >
-          {menu}
+          {tool.icon}
         </button>
       ))}
 
-      {/* Separator */}
-      <div className="w-px h-5 mx-2" style={{ background: "var(--border)" }} />
+      <div className="toolbar-divider" />
 
-      {/* Tools */}
-      {tools.map((t) => (
-        <button
-          key={t.mode}
-          className="p-1.5 rounded transition-colors"
-          style={{
-            background: activeTool === t.mode ? "var(--accent)" : "transparent",
-            color: activeTool === t.mode ? "white" : "var(--text-muted)",
-          }}
-          onClick={() => setActiveTool(t.mode)}
-          title={`${t.label} (${t.shortcut})`}
-        >
-          {t.icon}
-        </button>
-      ))}
-
-      {/* Separator */}
-      <div className="w-px h-5 mx-2" style={{ background: "var(--border)" }} />
-
-      {/* Undo/Redo */}
-      <button
-        className="p-1.5 rounded hover:bg-white/5 transition-colors"
-        style={{ color: "var(--text-muted)" }}
-        onClick={undo}
-        title="Undo (Ctrl+Z)"
-      >
+      <button className="icon-button" disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">
         <Undo2 size={16} />
       </button>
-      <button
-        className="p-1.5 rounded hover:bg-white/5 transition-colors"
-        style={{ color: "var(--text-muted)" }}
-        onClick={redo}
-        title="Redo (Ctrl+Shift+Z)"
-      >
+      <button className="icon-button" disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Shift+Z)">
         <Redo2 size={16} />
       </button>
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Right side */}
-      <button
-        className="p-1.5 rounded hover:bg-white/5 transition-colors"
-        style={{ color: "var(--text-muted)" }}
-        title="Save Project (Ctrl+S)"
-      >
+      <button className="icon-button" title="Save project">
         <Save size={16} />
       </button>
-      <button
-        className="p-1.5 rounded hover:bg-white/5 transition-colors"
-        style={{ color: "var(--text-muted)" }}
-        onClick={() => setShowExportModal(true)}
-        title="Export (Ctrl+M)"
-      >
+      <button className="icon-button export-button" onClick={openExport} title="Export (Ctrl+M)">
         <Download size={16} />
       </button>
+      <button
+        className="icon-button"
+        onClick={() => setColorMode(colorMode === "dark" ? "light" : "dark")}
+        title={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      >
+        {colorMode === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+      </button>
 
-      {/* Live indicator */}
-      <div className="flex items-center gap-1 ml-2">
-        <Circle size={8} fill="#4caf76" stroke="none" />
-        <span className="text-[10px] font-medium" style={{ color: "var(--accent-green)" }}>
-          LIVE
-        </span>
+      <div className="live-chip ml-1">
+        <Circle size={8} fill="currentColor" stroke="none" />
+        LIVE
       </div>
     </div>
   );

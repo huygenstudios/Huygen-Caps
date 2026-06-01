@@ -65,6 +65,36 @@ def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, A
     return normalized
 
 
+def _expand_compound_raw_word(raw_word: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_text = str(raw_word.get("word") or raw_word.get("text") or "").strip()
+    tokens = [token for token in raw_text.split() if token]
+    start = _as_float(raw_word.get("start"))
+    end = _as_float(raw_word.get("end"))
+
+    if len(tokens) <= 1 or start is None or end is None or end <= start:
+        return [raw_word]
+
+    duration = end - start
+    source = str(raw_word.get("timing_source") or "provider_word")
+    timing_source = source if "interpolated" in source else f"{source}_interpolated"
+    expanded: list[dict[str, Any]] = []
+
+    for index, token in enumerate(tokens):
+        token_start = start + (duration * index / len(tokens))
+        token_end = end if index == len(tokens) - 1 else start + (duration * (index + 1) / len(tokens))
+        expanded.append(
+            {
+                **raw_word,
+                "word": token,
+                "start": round(token_start, 3),
+                "end": round(max(token_start + MIN_WORD_DURATION, token_end), 3),
+                "timing_source": timing_source,
+            }
+        )
+
+    return expanded
+
+
 def _mark_timing_repaired(word: dict[str, Any], reason: str) -> None:
     source = str(word.get("timing_source") or "provider_word")
     if "repaired" not in source:
@@ -139,9 +169,10 @@ def normalize_aligned_segments(segments: list[dict[str, Any]], language_mode: st
     for seg in segments:
         words = []
         for raw_word in seg.get("words") or []:
-            normalized = _normalize_word(raw_word, language_mode)
-            if normalized:
-                words.append(normalized)
+            for expanded_raw_word in _expand_compound_raw_word(raw_word):
+                normalized = _normalize_word(expanded_raw_word, language_mode)
+                if normalized:
+                    words.append(normalized)
 
         text = normalize_caption_text(seg.get("text") or text_from_words(w["word"] for w in words), mode)
         try:
@@ -236,15 +267,14 @@ def build_word_timed_transcript_from_chunks(
             if start is None or end is None:
                 continue
 
-            absolute_words.append(
-                {
-                    **raw,
-                    "start": round(chunk.start_time + start, 3),
-                    "end": round(chunk.start_time + end, 3),
-                    "provider": provider,
-                    "timing_source": raw.get("timing_source") or "provider_word",
-                }
-            )
+            absolute_word = {
+                **raw,
+                "start": round(chunk.start_time + start, 3),
+                "end": round(chunk.start_time + end, 3),
+                "provider": provider,
+                "timing_source": raw.get("timing_source") or "provider_word",
+            }
+            absolute_words.extend(_expand_compound_raw_word(absolute_word))
 
         normalized_words = [
             w for w in (_normalize_word(w, mode) for w in absolute_words) if w

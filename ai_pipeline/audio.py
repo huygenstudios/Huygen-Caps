@@ -1,5 +1,6 @@
 import os
 import subprocess
+import shutil
 from pydub import AudioSegment
 from dotenv import load_dotenv
 
@@ -8,6 +9,7 @@ load_dotenv()
 ffmpeg_path = os.getenv("FFMPEG_PATH")
 if ffmpeg_path and os.path.exists(ffmpeg_path):
     AudioSegment.converter = ffmpeg_path
+FFMPEG_BINARY = ffmpeg_path if ffmpeg_path and os.path.exists(ffmpeg_path) else "ffmpeg"
 
 from .config import (
     CHUNK_SIZE_NORMAL, CHUNK_OVERLAP_NORMAL,
@@ -32,8 +34,11 @@ class Chunk:
 
 def extract_audio(video_path: str, output_path: str) -> str:
     """Extracts mono 16k PCM WAV audio for stable transcription and alignment."""
+    if not shutil.which(FFMPEG_BINARY) and not os.path.exists(FFMPEG_BINARY):
+        raise RuntimeError("FFmpeg is not available. Install FFmpeg or set FFMPEG_PATH to the ffmpeg executable.")
+
     ffmpeg_cmd = [
-        "ffmpeg", "-i", video_path,
+        FFMPEG_BINARY, "-i", video_path,
         "-vn",
         "-ac", "1",
         "-ar", "16000",
@@ -41,7 +46,11 @@ def extract_audio(video_path: str, output_path: str) -> str:
         output_path,
         "-y"
     ]
-    subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg audio extraction failed: {detail[-600:] or exc}") from exc
     return output_path
 
 def overlap_chunk(audio_path: str, profile: str = 'balanced', mode: str = 'normal') -> list[Chunk]:

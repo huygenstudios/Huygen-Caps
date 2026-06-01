@@ -1,8 +1,9 @@
 /* Caption Store — caption list state and operations */
 
 import { create } from "zustand";
-import { Caption, CaptionTheme } from "@/lib/types";
-import { generateCaptionId } from "@/lib/captionUtils";
+import { Caption, CaptionTheme, CAPTION_THEMES } from "@/lib/types";
+import { applyManualCaptionTiming, generateCaptionId, normalizeCaptionWords } from "@/lib/captionUtils";
+import { recordProjectHistory } from "@/lib/projectHistory";
 
 interface CaptionState {
   captions: Caption[];
@@ -47,24 +48,38 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
   historyIndex: -1,
 
   setCaptions: (captions) => {
+    recordProjectHistory("Set captions");
     get().pushHistory();
     set({ captions });
   },
 
   addCaption: (caption) => {
+    recordProjectHistory("Add caption");
     get().pushHistory();
     const newCaption: Caption = { ...caption, id: generateCaptionId() };
     set((s) => ({ captions: [...s.captions, newCaption] }));
   },
 
   updateCaption: (id, updates) => {
+    recordProjectHistory("Update caption", { debounceKey: `caption:${id}`, debounceMs: 700 });
     get().pushHistory();
     set((s) => ({
-      captions: s.captions.map((c) => (c.id === id ? { ...c, ...updates } : c)),
+      captions: s.captions.map((c) => {
+        if (c.id !== id) return c;
+        if ((updates.start !== undefined || updates.end !== undefined) && updates.words === undefined) {
+          const timed = applyManualCaptionTiming(c, updates.start ?? c.start, updates.end ?? c.end);
+          const restUpdates = { ...updates };
+          delete restUpdates.start;
+          delete restUpdates.end;
+          return { ...timed, ...restUpdates, words: timed.words, timingWarning: timed.timingWarning };
+        }
+        return { ...c, ...updates };
+      }),
     }));
   },
 
   deleteCaption: (id) => {
+    recordProjectHistory("Delete caption");
     get().pushHistory();
     set((s) => ({
       captions: s.captions.filter((c) => c.id !== id),
@@ -75,6 +90,7 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
   deleteSelected: () => {
     const { selectedIds } = get();
     if (selectedIds.size === 0) return;
+    recordProjectHistory("Delete selected captions");
     get().pushHistory();
     set((s) => ({
       captions: s.captions.filter((c) => !selectedIds.has(c.id)),
@@ -83,6 +99,7 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
   },
 
   clearAll: () => {
+    recordProjectHistory("Clear captions");
     get().pushHistory();
     set({ captions: [], selectedIds: new Set(), editingId: null });
   },
@@ -111,24 +128,36 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
     if (!caption || splitTime <= caption.start || splitTime >= caption.end)
       return;
 
+    recordProjectHistory("Split caption");
     get().pushHistory();
+    const timedWords = normalizeCaptionWords(caption);
     const words = caption.text.split(" ");
     const ratio = (splitTime - caption.start) / (caption.end - caption.start);
     const splitIndex = Math.max(1, Math.round(words.length * ratio));
 
     const text1 = words.slice(0, splitIndex).join(" ");
     const text2 = words.slice(splitIndex).join(" ");
+    const firstWords = timedWords.filter((word) => word.start < splitTime);
+    const secondWords = timedWords.filter((word) => word.end >= splitTime);
 
     set((s) => ({
       captions: s.captions.flatMap((c) =>
         c.id === id
           ? [
-              { ...c, end: splitTime, text: text1 },
+              {
+                ...c,
+                end: splitTime,
+                text: firstWords.length ? firstWords.map((word) => word.displayedWord || word.word).join(" ") : text1,
+                words: firstWords,
+                originalText: firstWords.length ? firstWords.map((word) => word.originalWord || word.word).join(" ") : c.originalText,
+              },
               {
                 ...c,
                 id: generateCaptionId(),
                 start: splitTime,
-                text: text2,
+                text: secondWords.length ? secondWords.map((word) => word.displayedWord || word.word).join(" ") : text2,
+                words: secondWords,
+                originalText: secondWords.length ? secondWords.map((word) => word.originalWord || word.word).join(" ") : c.originalText,
               },
             ]
           : [c]
@@ -138,6 +167,7 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
 
   mergeCaptions: (ids) => {
     if (ids.length < 2) return;
+    recordProjectHistory("Merge captions");
     get().pushHistory();
     const toMerge = get()
       .captions.filter((c) => ids.includes(c.id))
@@ -150,8 +180,16 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
       start: toMerge[0].start,
       end: toMerge[toMerge.length - 1].end,
       text: toMerge.map((c) => c.text).join(" "),
+      originalText: toMerge.map((c) => c.originalText || c.text).join(" "),
+      words: toMerge.flatMap(normalizeCaptionWords).sort((a, b) => a.start - b.start),
+      manuallyEdited: toMerge.some((c) => c.manuallyEdited),
+      timingNeedsReview: toMerge.some((c) => c.timingNeedsReview),
+      timingWarning: toMerge.find((c) => c.timingWarning)?.timingWarning,
       lang: toMerge[0].lang,
       theme: toMerge[0].theme,
+      trackId: toMerge[0].trackId,
+      sourceMediaId: toMerge[0].sourceMediaId,
+      style: toMerge[0].style,
     };
 
     const mergeIds = new Set(ids.slice(1));
@@ -164,9 +202,10 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
   },
 
   setThemeForAll: (theme) => {
+    recordProjectHistory("Caption style");
     get().pushHistory();
     set((s) => ({
-      captions: s.captions.map((c) => ({ ...c, theme })),
+      captions: s.captions.map((c) => ({ ...c, theme, style: CAPTION_THEMES[theme] })),
     }));
   },
 

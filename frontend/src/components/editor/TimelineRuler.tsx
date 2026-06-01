@@ -27,7 +27,7 @@ export default function TimelineRuler({ width }: Props) {
           <React.Fragment key={`maj-${t}`}>
             <div
               className="absolute top-0 bottom-0 w-px"
-              style={{ left: x, background: "rgba(255,255,255,0.2)" }}
+              style={{ left: x, background: "var(--ruler-tick-major)" }}
             />
             <span
               className="absolute top-1 text-[9px] font-mono"
@@ -47,7 +47,7 @@ export default function TimelineRuler({ width }: Props) {
           <div
             key={`min-${t}`}
             className="absolute bottom-0 w-px h-2"
-            style={{ left: x, background: "rgba(255,255,255,0.08)" }}
+            style={{ left: x, background: "var(--ruler-tick-minor)" }}
           />
         );
       })}

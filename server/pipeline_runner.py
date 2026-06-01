@@ -9,10 +9,15 @@ from .progress import manager
 
 logger = logging.getLogger(__name__)
 
+
+def _log_stage(job_id: str, stage: str, **fields):
+    details = " ".join(f"{key}={value!r}" for key, value in fields.items())
+    logger.info("job_stage job_id=%s stage=%s %s", job_id, stage, details)
+
 async def update_job_status(job_id: str, status: str, progress: int = None, 
                             error: str = None, srt: str = None, vtt: str = None,
                             segments: list = None, transcript: dict = None):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
         
         updates = []
         params = []
@@ -69,7 +74,7 @@ def run_pipeline_sync(job_id: str, video_path: str, target_lang: str):
         loop.run_until_complete(manager.broadcast_progress(job_id, status, percent, details))
 
     try:
-        logger.info("job_stage", extra={"job_id": job_id, "stage": "pipeline started"})
+        _log_stage(job_id, "pipeline started", video_path=video_path, language_mode=target_lang)
         on_progress("extracting_audio", 1, "Pipeline started.")
         
         result = run_pipeline(
@@ -91,12 +96,13 @@ def run_pipeline_sync(job_id: str, video_path: str, target_lang: str):
             loop.run_until_complete(
                 manager.broadcast_progress(job_id, "completed", 100, "Captioning finished successfully.")
             )
-            logger.info("job_stage", extra={"job_id": job_id, "stage": "output returned"})
+            _log_stage(job_id, "response returned", status="completed")
         else:
             err_msg = result.get("message", "Unknown pipeline error")
             logger.error(f"Job {job_id} Failed gracefully: {err_msg}")
             loop.run_until_complete(update_job_status(job_id, "failed", progress=-1, error=err_msg))
             loop.run_until_complete(manager.broadcast_progress(job_id, "failed", 0, err_msg))
+            _log_stage(job_id, "response returned", status="failed", error=err_msg)
 
     except Exception as e:
         logger.exception(f"Job {job_id} Pipeline crashed.")

@@ -1,4 +1,6 @@
-/* Timeline utilities for Caption AI Pro v5.0 */
+/* Timeline utilities for Huygen Caps */
+
+export const TRACK_HEADER_WIDTH = 80;
 
 /**
  * Convert seconds to pixel position given a zoom level.
@@ -6,6 +8,10 @@
  */
 export function timeToPixel(time: number, pixelsPerSecond: number, scrollOffset: number = 0): number {
   return time * pixelsPerSecond - scrollOffset;
+}
+
+export function timeToTimelinePixel(time: number, pixelsPerSecond: number, scrollOffset: number = 0): number {
+  return TRACK_HEADER_WIDTH + timeToPixel(time, pixelsPerSecond, scrollOffset);
 }
 
 /**
@@ -67,6 +73,10 @@ export function snapToGrid(time: number, gridInterval: number): number {
  */
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+export function clampTime(time: number, duration: number): number {
+  return clamp(Number.isFinite(time) ? time : 0, 0, Math.max(0, duration));
 }
 
 /**

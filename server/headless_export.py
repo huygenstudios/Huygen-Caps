@@ -10,7 +10,18 @@ import json
 import asyncio
 import logging
 import struct
+import shutil
+import time
 from typing import Callable, Awaitable, Optional
+
+from .asyncio_compat import needs_proactor_thread, run_on_proactor_loop
+from .settings import (
+    EXPORT_DIR,
+    bundled_render_page_url,
+    default_render_page_url,
+    ensure_runtime_dirs,
+    frontend_dist_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +31,115 @@ RESOLUTION_MAP = {
     "720p": (1280, 720),
     "480p": (854, 480),
 }
+QUALITY_CRF = {
+    "draft": "28",
+    "standard": "23",
+    "high": "18",
+    "best": "16",
+    "balanced": "23",
+    "low_bitrate": "30",
+    "custom": "20",
+}
+BITRATE_PRESETS = {
+    "low": "3M",
+    "medium": "8M",
+    "high": "16M",
+}
 
-RENDER_PAGE_URL = os.getenv("RENDER_PAGE_URL", "http://localhost:3000/render")
 EXPORT_FPS = 30
+
+
+class ExportStageError(RuntimeError):
+    """Raised when a known export stage fails with a user-actionable message."""
+
+    def __init__(self, stage: str, message: str, cause: Exception | None = None):
+        self.stage = stage
+        self.cause = cause
+        super().__init__(message)
+
+
+def _log_export_event(event: str, **payload: object) -> None:
+    logger.info("%s %s", event, json.dumps(payload, default=str, sort_keys=True))
+
+
+def _tail(text: str, limit: int = 3000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def check_export_runtime() -> dict[str, object]:
+    """Runtime export diagnostics for /api/health/export."""
+    ensure_runtime_dirs()
+
+    export_writable = False
+    export_write_error = None
+    probe_path = EXPORT_DIR / ".export_health_probe"
+    try:
+        probe_path.write_text("ok", encoding="utf-8")
+        export_writable = True
+    except OSError as exc:
+        export_write_error = str(exc)
+    finally:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    try:
+        import playwright  # noqa: F401
+
+        playwright_package = True
+    except Exception:
+        playwright_package = False
+
+    return {
+        "status": "ok" if shutil.which("ffmpeg") and shutil.which("ffprobe") and export_writable and playwright_package else "degraded",
+        "ffmpeg": bool(shutil.which("ffmpeg")),
+        "ffmpeg_path": shutil.which("ffmpeg"),
+        "ffprobe": bool(shutil.which("ffprobe")),
+        "ffprobe_path": shutil.which("ffprobe"),
+        "playwright_package": playwright_package,
+        "exports_dir": str(EXPORT_DIR),
+        "exports_writable": export_writable,
+        "exports_write_error": export_write_error,
+        "render_page_url": default_render_page_url(),
+    }
+
+
+async def check_export_runtime_async() -> dict[str, object]:
+    if needs_proactor_thread():
+        return await run_on_proactor_loop(check_export_runtime_async)
+
+    payload = check_export_runtime()
+    chromium_launch = False
+    chromium_launch_error = None
+
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            chromium_launch = True
+            await browser.close()
+    except Exception as exc:
+        chromium_launch_error = f"{type(exc).__name__}: {exc}"
+
+    payload["chromium_launch"] = chromium_launch
+    payload["chromium_launch_error"] = chromium_launch_error
+    if not chromium_launch:
+        payload["status"] = "degraded"
+    return payload
 
 
 async def get_video_duration(video_path: str) -> float:
     """Get video duration in seconds via ffprobe."""
+    if not shutil.which("ffprobe"):
+        logger.error("ffprobe not found on PATH")
+        return 0.0
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error",
@@ -36,11 +149,57 @@ async def get_video_duration(video_path: str) -> float:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, _ = await proc.communicate()
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            logger.error("ffprobe failed exit=%s stderr=%s", proc.returncode, err.decode(errors="replace"))
+            return 0.0
         return float(out.decode().strip())
     except Exception as e:
         logger.error(f"ffprobe failed: {e}")
         return 0.0
+
+
+async def get_video_dimensions(video_path: str) -> tuple[int, int] | None:
+    """Get source video width/height via ffprobe."""
+    if not shutil.which("ffprobe"):
+        return None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            video_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _err = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        payload = json.loads(out.decode("utf-8", errors="replace") or "{}")
+        streams = payload.get("streams") or []
+        if not streams:
+            return None
+        width = int(streams[0].get("width") or 0)
+        height = int(streams[0].get("height") or 0)
+        if width <= 0 or height <= 0:
+            return None
+        return width, height
+    except Exception:
+        return None
+
+
+def _even(value: float) -> int:
+    return max(2, int(round(value / 2.0) * 2))
+
+
+def scale_dimensions_to_longest_edge(width: int, height: int, target_longest_edge: int) -> tuple[int, int]:
+    longest = max(width, height)
+    if longest <= 0 or target_longest_edge <= 0:
+        return width, height
+    factor = target_longest_edge / float(longest)
+    return _even(width * factor), _even(height * factor)
 
 
 async def export_headless(
@@ -51,93 +210,357 @@ async def export_headless(
     resolution: str,
     progress_callback: Callable[[str, int, str], Awaitable[None]],
     style_config_json: str | None = None,
+    export_width: int | None = None,
+    export_height: int | None = None,
+    export_fps: int = EXPORT_FPS,
+    include_audio: bool = True,
+    quality: str = "standard",
+    bitrate: str = "auto",
+    custom_bitrate_mbps: float | None = None,
+    export_mode: str = "full_video",
+    background_color: str = "#101010",
+    duration_override: float | None = None,
+    duration_source: str | None = None,
+    hardware_acceleration: bool = False,
 ) -> str:
     """
     Export video with pixel-perfect burned captions using headless browser.
     
     Returns the path to the output MP4 file.
     """
-    from playwright.async_api import async_playwright
+    if needs_proactor_thread():
+        return await run_on_proactor_loop(
+            lambda: export_headless(
+                job_id=job_id,
+                video_path=video_path,
+                captions_json=captions_json,
+                theme=theme,
+                resolution=resolution,
+                progress_callback=progress_callback,
+                style_config_json=style_config_json,
+                export_width=export_width,
+                export_height=export_height,
+                export_fps=export_fps,
+                include_audio=include_audio,
+                quality=quality,
+                bitrate=bitrate,
+                custom_bitrate_mbps=custom_bitrate_mbps,
+                export_mode=export_mode,
+                background_color=background_color,
+                duration_override=duration_override,
+                duration_source=duration_source,
+                hardware_acceleration=hardware_acceleration,
+            )
+        )
 
-    width, height = RESOLUTION_MAP.get(resolution, (1920, 1080))
-    output_dir = os.path.dirname(video_path)
-    output_path = os.path.join(output_dir, f"{job_id}_exported_{resolution}.mp4")
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        raise ExportStageError(
+            "headless_launch",
+            "Playwright is not installed or cannot be imported. Install backend requirements and run `python -m playwright install chromium`.",
+            exc,
+        ) from exc
+
+    export_fps = max(1, min(120, int(export_fps or EXPORT_FPS)))
+    crf = QUALITY_CRF.get(quality, QUALITY_CRF["standard"])
+    video_bitrate = None
+    if bitrate == "custom" and custom_bitrate_mbps and custom_bitrate_mbps > 0:
+        video_bitrate = f"{custom_bitrate_mbps}M"
+    elif bitrate in BITRATE_PRESETS:
+        video_bitrate = BITRATE_PRESETS[bitrate]
+    is_captions_only = export_mode in {"captions_only", "captions_only_solid_background"}
+    ensure_runtime_dirs()
+    output_dir = str(EXPORT_DIR)
+    output_suffix = "captions_only" if is_captions_only else "exported"
+    export_job_id = f"{job_id}-{int(time.time())}"
+
+    try:
+        parsed_captions = json.loads(captions_json or "[]")
+    except json.JSONDecodeError as exc:
+        raise ExportStageError("render_input", "Invalid captions JSON sent to export.", exc) from exc
+    if not isinstance(parsed_captions, list):
+        raise ExportStageError("render_input", "Captions JSON must be a list of caption chunks.")
+
+    media_exists = os.path.exists(video_path)
+    if (not is_captions_only or include_audio) and not media_exists:
+        raise ExportStageError(
+            "media_resolution",
+            f"Source media file was not found for export: {video_path}",
+        )
+    if not shutil.which("ffmpeg"):
+        raise ExportStageError("runtime_check", "FFmpeg was not found on PATH. Install FFmpeg or set FFMPEG_PATH.")
+
+    source_dimensions = await get_video_dimensions(video_path) if media_exists else None
+    if export_width and export_height and export_width > 0 and export_height > 0:
+        width, height = int(export_width), int(export_height)
+    else:
+        preset_dimensions = RESOLUTION_MAP.get(resolution)
+        if source_dimensions and preset_dimensions:
+            width, height = scale_dimensions_to_longest_edge(
+                source_dimensions[0],
+                source_dimensions[1],
+                max(preset_dimensions),
+            )
+        elif source_dimensions:
+            width, height = source_dimensions
+        elif preset_dimensions:
+            width, height = preset_dimensions
+        else:
+            width, height = (1080, 1920)
+
+    output_path = os.path.join(output_dir, f"{job_id}_{output_suffix}_{width}x{height}.mp4")
+
+    _log_export_event(
+        "export_job_started",
+        exportJobId=export_job_id,
+        jobId=job_id,
+        mode=export_mode,
+        mediaPath=video_path,
+        mediaExists=media_exists,
+        captions=len(parsed_captions),
+        width=width,
+        height=height,
+        fps=export_fps,
+        includeAudio=include_audio,
+        quality=quality,
+        bitrate=bitrate,
+        outputPath=output_path,
+    )
 
     await progress_callback("export_started", 0, "Launching headless browser...")
 
-    # Get video duration
-    duration = await get_video_duration(video_path)
+    # Get export duration. The editor sends a duration resolved from timeline,
+    # media metadata, captions, or custom settings; ffprobe is a fallback only.
+    duration = float(duration_override or 0)
+    resolved_duration_source = duration_source or ("frontend" if duration > 0 else "ffprobe")
     if duration <= 0:
-        raise RuntimeError("Could not determine video duration")
+        if not shutil.which("ffprobe"):
+            raise ExportStageError(
+                "duration_detection",
+                "Export duration was not provided and FFprobe is not available to inspect the source video.",
+            )
+        duration = await get_video_duration(video_path)
+        resolved_duration_source = "ffprobe"
+    if duration <= 0:
+        raise ExportStageError(
+            "duration_detection",
+            "Export failed because project duration could not be determined. "
+            "Please check media metadata, timeline clips, captions, or export duration settings."
+        )
 
-    total_frames = int(duration * EXPORT_FPS)
-    logger.info(f"Headless export: {total_frames} frames @ {EXPORT_FPS}fps, duration={duration:.2f}s")
+    total_frames = max(1, int(duration * export_fps))
+    logger.info(
+        "Headless export: %s frames @ %sfps, duration=%.2fs source=%s mode=%s",
+        total_frames,
+        export_fps,
+        duration,
+        resolved_duration_source,
+        export_mode,
+    )
+    _log_export_event(
+        "export_duration_resolved",
+        exportJobId=export_job_id,
+        duration=duration,
+        source=resolved_duration_source,
+        totalFrames=total_frames,
+    )
 
+    browser = None
+    page = None
+    ffmpeg_proc = None
+    stderr_chunks: list[bytes] = []
     async with async_playwright() as p:
-        # Launch headless Chromium
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        page = await browser.new_page(
-            viewport={"width": width, "height": height},
-            device_scale_factor=1,
-        )
+        try:
+            # Launch headless Chromium
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
+            )
+        except Exception as exc:
+            raise ExportStageError(
+                "headless_launch",
+                f"Chromium could not launch for export: {exc}",
+                exc,
+            ) from exc
+
+        page_logs: list[str] = []
+
+        def capture_page_log(prefix: str, message: str) -> None:
+            line = f"{prefix}: {message}"
+            page_logs.append(line)
+            if len(page_logs) > 40:
+                del page_logs[: len(page_logs) - 40]
+
+        async def close_page_safely() -> None:
+            nonlocal page
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                page = None
+
+        async def close_browser_safely() -> None:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
         await progress_callback("exporting", 2, "Loading render page...")
 
-        # Navigate to the render page
-        await page.goto(RENDER_PAGE_URL, wait_until="networkidle")
+        # Prefer the configured render page, but fall back to the bundled static
+        # render page when local dev on port 3000 is not running.
+        render_page_candidates = [default_render_page_url()]
+        bundled_render_url = bundled_render_page_url()
+        if frontend_dist_available() and bundled_render_url not in render_page_candidates:
+            render_page_candidates.append(bundled_render_url)
 
-        # Wait for the page to be ready
-        await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=10000)
+        render_page_url = render_page_candidates[0]
+        render_load_errors: list[str] = []
+        loaded_render_page = False
+        for candidate_url in render_page_candidates:
+            logger.info("headless_render_page url=%s", candidate_url)
+            try:
+                await close_page_safely()
+                page_logs.clear()
+                page = await browser.new_page(
+                    viewport={"width": width, "height": height},
+                    device_scale_factor=1,
+                )
+                page.on("console", lambda msg: capture_page_log("console", msg.text))
+                page.on("pageerror", lambda exc: capture_page_log("pageerror", str(exc)))
+                page.on("requestfailed", lambda request: capture_page_log("requestfailed", f"{request.url} {request.failure}"))
+
+                response = await page.goto(candidate_url, wait_until="networkidle", timeout=30000)
+                if response is None:
+                    raise ExportStageError("composition_load", f"Render page did not return a response: {candidate_url}")
+                if response.status >= 400:
+                    raise ExportStageError(
+                        "composition_load",
+                        f"Render page returned HTTP {response.status}: {candidate_url}",
+                    )
+
+                await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=10000)
+                render_page_url = candidate_url
+                loaded_render_page = True
+                break
+            except ExportStageError as exc:
+                render_load_errors.append(str(exc))
+                await close_page_safely()
+            except Exception as exc:
+                render_load_errors.append(f"Could not load the caption render page at {candidate_url}: {exc}")
+                await close_page_safely()
+
+        if not loaded_render_page:
+            logs = _tail("\n".join(page_logs), 1400)
+            detail_parts = render_load_errors[-2:] if render_load_errors else []
+            if logs:
+                detail_parts.append(f"Render logs: {logs}")
+            detail = f" {' | '.join(detail_parts)}" if detail_parts else ""
+            await close_browser_safely()
+            raise ExportStageError(
+                "composition_load",
+                f"Could not load the caption render page at {render_page_candidates[0]}.{detail}",
+            )
+
+        if page is None:
+            await close_browser_safely()
+            raise ExportStageError("composition_load", "Render page loaded flag was set, but no page instance remained available.")
 
         # Inject caption data via proper serialization (avoids string escaping issues)
-        inject_result = await page.evaluate(
-            "([json, t, w, h, styleJson]) => window.setCaptionData(json, t, w, h, styleJson)",
-            [captions_json, theme, width, height, style_config_json or ""]
-        )
+        try:
+            inject_result = await page.evaluate(
+                "([json, t, w, h, styleJson, fps, bg]) => window.setCaptionData(json, t, w, h, styleJson, fps, bg)",
+                [captions_json, theme, width, height, style_config_json or "", export_fps, background_color if is_captions_only else "transparent"]
+            )
+        except Exception as exc:
+            logs = _tail("\n".join(page_logs), 1400)
+            detail = f" Render logs: {logs}" if logs else ""
+            await close_browser_safely()
+            raise ExportStageError("composition_load", f"Failed to inject captions into render page.{detail}", exc) from exc
         if not inject_result:
-            await browser.close()
-            raise RuntimeError("Failed to inject caption data into render page")
+            await close_browser_safely()
+            raise ExportStageError("composition_load", "Render page rejected the caption data.")
 
         await progress_callback("exporting", 5, "Starting frame capture...")
 
-        # Start FFmpeg process for compositing
-        # Input 1: original video
-        # Input 2: PNG frames piped via stdin (transparent overlay)
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            # Input 0: original video
-            "-i", video_path,
-            # Input 1: piped PNG frames as overlay
-            "-f", "image2pipe", "-framerate", str(EXPORT_FPS), "-c:v", "png", "-i", "pipe:0",
-            # Filter: overlay transparent PNGs onto video
-            "-filter_complex",
-            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[base];"
-            f"[1:v]format=rgba[ov];"
-            f"[base][ov]overlay=0:0:shortest=1[out]",
-            "-map", "[out]",
-            "-map", "0:a?",
-            # Encoding
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-            "-c:a", "copy",
-            "-pix_fmt", "yuv420p",
-            output_path,
-        ]
+        encoder = "h264_nvenc" if hardware_acceleration else "libx264"
+        ffmpeg_cmd = ["ffmpeg", "-y"]
+        if is_captions_only:
+            ffmpeg_cmd.extend(["-f", "image2pipe", "-framerate", str(export_fps), "-c:v", "png", "-i", "pipe:0"])
+            if include_audio:
+                ffmpeg_cmd.extend(["-i", video_path])
+            ffmpeg_cmd.extend(["-map", "0:v", "-c:v", encoder, "-preset", "ultrafast"])
+            if video_bitrate:
+                ffmpeg_cmd.extend(["-b:v", video_bitrate])
+            else:
+                ffmpeg_cmd.extend(["-cq" if hardware_acceleration else "-crf", crf])
+            if include_audio:
+                ffmpeg_cmd.extend(["-map", "1:a?", "-c:a", "copy", "-shortest"])
+            else:
+                ffmpeg_cmd.append("-an")
+            ffmpeg_cmd.extend(["-t", f"{duration:.6f}", "-pix_fmt", "yuv420p", output_path])
+        else:
+            # Input 0: original video. Input 1: piped PNG caption frames.
+            ffmpeg_cmd.extend([
+                "-i", video_path,
+                "-f", "image2pipe", "-framerate", str(export_fps), "-c:v", "png", "-i", "pipe:0",
+                "-filter_complex",
+                f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[base];"
+                f"[1:v]format=rgba[ov];"
+                f"[base][ov]overlay=0:0:shortest=1[out]",
+                "-map", "[out]",
+                "-c:v", encoder, "-preset", "ultrafast",
+            ])
+            if video_bitrate:
+                ffmpeg_cmd.extend(["-b:v", video_bitrate])
+            else:
+                ffmpeg_cmd.extend(["-cq" if hardware_acceleration else "-crf", crf])
+            if include_audio:
+                ffmpeg_cmd.extend(["-map", "0:a?", "-c:a", "copy"])
+            else:
+                ffmpeg_cmd.append("-an")
+            ffmpeg_cmd.extend(["-t", f"{duration:.6f}", "-pix_fmt", "yuv420p", output_path])
 
-        ffmpeg_proc = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        _log_export_event(
+            "ffmpeg_encode_started",
+            exportJobId=export_job_id,
+            command=" ".join(ffmpeg_cmd),
         )
+
+        try:
+            ffmpeg_proc = await asyncio.create_subprocess_exec(
+                *ffmpeg_cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as exc:
+            raise ExportStageError("ffmpeg_encode", f"FFmpeg could not start: {exc}", exc) from exc
+
+        async def drain_stderr() -> None:
+            if not ffmpeg_proc or not ffmpeg_proc.stderr:
+                return
+            while True:
+                chunk = await ffmpeg_proc.stderr.read(4096)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+                if sum(len(part) for part in stderr_chunks) > 20000:
+                    joined = b"".join(stderr_chunks)[-12000:]
+                    stderr_chunks.clear()
+                    stderr_chunks.append(joined)
+
+        stderr_task = asyncio.create_task(drain_stderr())
 
         # Capture frames
         last_pct = 5
+        frame_idx = 0
         try:
             for frame_idx in range(total_frames):
-                current_time = frame_idx / EXPORT_FPS
+                current_time = frame_idx / export_fps
 
                 # Set the caption time in the render page. The page resolves
                 # after React has committed the frame.
@@ -147,7 +570,7 @@ async def export_headless(
                 element = page.locator("#render-frame")
                 screenshot_bytes = await element.screenshot(
                     type="png",
-                    omit_background=True,
+                    omit_background=not is_captions_only,
                 )
 
                 # Write PNG bytes to FFmpeg stdin
@@ -165,28 +588,48 @@ async def export_headless(
                     )
 
         except Exception as e:
-            logger.error(f"Frame capture error at frame {frame_idx}: {e}")
-            raise
+            if ffmpeg_proc and ffmpeg_proc.stdin:
+                try:
+                    ffmpeg_proc.stdin.close()
+                except Exception:
+                    pass
+            logger.exception("Frame capture error at frame %s", frame_idx)
+            raise ExportStageError("render_frames", f"Frame capture failed at frame {frame_idx + 1}/{total_frames}: {e}", e) from e
         finally:
             # Close FFmpeg stdin and wait for it to finish
-            if ffmpeg_proc.stdin:
-                ffmpeg_proc.stdin.close()
+            if ffmpeg_proc and ffmpeg_proc.stdin:
+                try:
+                    ffmpeg_proc.stdin.close()
+                except Exception:
+                    pass
 
-            await ffmpeg_proc.wait()
-            await browser.close()
+            if ffmpeg_proc:
+                await ffmpeg_proc.wait()
+            await stderr_task
+            if browser:
+                await browser.close()
 
         # Check FFmpeg result
         if ffmpeg_proc.returncode != 0:
-            stderr_out = b""
-            if ffmpeg_proc.stderr:
-                try:
-                    stderr_out = await ffmpeg_proc.stderr.read()
-                except Exception:
-                    pass
-            logger.error(f"FFmpeg failed (exit {ffmpeg_proc.returncode}): {stderr_out.decode(errors='replace')}")
-            raise RuntimeError(f"FFmpeg compositing failed (exit code {ffmpeg_proc.returncode})")
+            stderr_text = _tail(b"".join(stderr_chunks).decode(errors="replace"))
+            logger.error("FFmpeg failed (exit %s): %s", ffmpeg_proc.returncode, stderr_text)
+            raise ExportStageError(
+                "ffmpeg_encode",
+                f"FFmpeg failed while encoding the MP4 (exit {ffmpeg_proc.returncode}). {stderr_text}".strip(),
+            )
+
+        if not os.path.exists(output_path):
+            raise ExportStageError("output_write", f"FFmpeg finished but output file was not created: {output_path}")
+        output_size = os.path.getsize(output_path)
+        if output_size <= 0:
+            raise ExportStageError("output_write", f"FFmpeg created an empty output file: {output_path}")
 
         await progress_callback("export_complete", 100, "Done!")
-        logger.info(f"Headless export complete: {output_path}")
+        _log_export_event(
+            "export_job_complete",
+            exportJobId=export_job_id,
+            outputPath=output_path,
+            bytes=output_size,
+        )
 
     return output_path

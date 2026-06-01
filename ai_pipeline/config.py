@@ -5,13 +5,13 @@ import os
 PIPELINE_VERSION = 'v4.3'
 
 # -- Server --
-SERVER_HOST = '127.0.0.1'
-SERVER_PORT = 8000
+SERVER_HOST = os.getenv('HOST', '127.0.0.1')
+SERVER_PORT = int(os.getenv('PORT', '8000'))
 
-STORAGE_DIR = 'storage'
-UPLOAD_DIR  = 'storage/uploads'
-OUTPUT_DIR  = 'storage/outputs'
-DB_PATH     = 'storage/caption_ai.db'
+STORAGE_DIR = os.getenv('TEMP_DIR', 'storage')
+UPLOAD_DIR  = os.getenv('UPLOAD_DIR', os.path.join(STORAGE_DIR, 'uploads'))
+OUTPUT_DIR  = os.getenv('EXPORT_DIR', os.path.join(STORAGE_DIR, 'exports'))
+DB_PATH     = os.getenv('DB_PATH', os.path.join(STORAGE_DIR, 'caption_ai.db'))
 
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "500"))
 
@@ -76,7 +76,7 @@ LM_CHECK_MIN_SCORE       = 0.50
 CONSISTENCY_WORD_DIFF_MAX = 0.05
 
 # -- Cache --
-CACHE_DIR                = 'storage/cache'
+CACHE_DIR                = os.getenv('CACHE_DIR', os.path.join(STORAGE_DIR, 'cache'))
 
 # -- Alignment Models --
 MODEL_ALIGN_EN           = 'WAV2VEC2_ASR_BASE_960H'
@@ -115,4 +115,4 @@ RETRANSCRIBE_WEAK        = True    # enable double-pass for shaky segments
 
 # -- Observability --
 LOG_STRUCTURED           = True
-LOG_DIR                  = 'storage/logs'
+LOG_DIR                  = os.getenv('LOG_DIR', os.path.join(STORAGE_DIR, 'logs'))

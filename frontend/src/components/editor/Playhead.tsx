@@ -5,7 +5,7 @@
 import React, { useCallback, useRef } from "react";
 import { usePlaybackStore } from "@/store/playbackStore";
 import { useTimelineStore } from "@/store/timelineStore";
-import { timeToPixel } from "@/lib/timelineUtils";
+import { timeToTimelinePixel, TRACK_HEADER_WIDTH } from "@/lib/timelineUtils";
 
 export default function Playhead() {
   const currentTime = usePlaybackStore((s) => s.currentTime);
@@ -15,7 +15,7 @@ export default function Playhead() {
 
   const draggingRef = useRef(false);
 
-  const x = timeToPixel(currentTime, pixelsPerSecond, scrollLeft);
+  const x = timeToTimelinePixel(currentTime, pixelsPerSecond, scrollLeft);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -27,7 +27,7 @@ export default function Playhead() {
         const container = (e.target as HTMLElement).closest("[data-timeline-area]");
         if (!container) return;
         const rect = container.getBoundingClientRect();
-        const localX = ev.clientX - rect.left + scrollLeft;
+        const localX = ev.clientX - rect.left - TRACK_HEADER_WIDTH + scrollLeft;
         const time = Math.max(0, Math.min(duration, localX / pixelsPerSecond));
         setCurrentTime(time);
       };
@@ -44,7 +44,7 @@ export default function Playhead() {
     [scrollLeft, pixelsPerSecond, duration, setCurrentTime]
   );
 
-  if (x < -10) return null;
+  if (x < TRACK_HEADER_WIDTH - 10) return null;
 
   return (
     <>

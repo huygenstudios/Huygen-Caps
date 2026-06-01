@@ -42,7 +42,8 @@ def _has_enough_words(source_text: str, candidate_text: str) -> bool:
 
 
 def _stage_log(stage: str, **fields: Any) -> None:
-    logger.info("pipeline_stage", extra={"stage": stage, **fields})
+    details = " ".join(f"{key}={value!r}" for key, value in fields.items())
+    logger.info("pipeline_stage stage=%s %s", stage, details)
 
 
 def run_pipeline(
@@ -64,9 +65,10 @@ def run_pipeline(
             progress_callback(status, percent, details)
 
     try:
+        _stage_log("audio extraction started", video_path=video_path, language_mode=language_mode)
         emit_progress("extracting_audio", 5, "Extracting audio from uploaded video.")
         extract_audio(video_path, audio_path)
-        _stage_log("audio extracted", audio_path=audio_path, language_mode=language_mode)
+        _stage_log("audio extraction completed", audio_path=audio_path, language_mode=language_mode)
 
         emit_progress("normalizing", 10, "Estimating audio quality.")
         metrics = measure_audio_quality(audio_path)
@@ -254,6 +256,11 @@ def run_pipeline(
         provider_name = ",".join(sorted(transcription_providers)) or "unknown"
         transcript = build_normalized_transcript(clamped_segments, language_mode, provider_name)
         transcript["metadata"] = log_summary
+        _stage_log(
+            "transcript normalized",
+            provider=provider_name,
+            segment_count=len(transcript.get("segments") or []),
+        )
 
         return {
             "status": "success",

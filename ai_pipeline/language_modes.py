@@ -44,8 +44,8 @@ _LANGUAGE_ALIASES = {
 }
 
 TELUGU_CAPABLE_PROVIDER_ERROR = (
-    "Telgish and Auto Mixed Indian mode require a Telugu-capable transcription provider. "
-    "Configure SARVAM_API_KEY or a supported provider."
+    "Auto Mixed Indian and Telgish modes require a configured transcription provider. "
+    "Please set SARVAM_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY."
 )
 TELGISH_PROVIDER_ERROR = TELUGU_CAPABLE_PROVIDER_ERROR
 

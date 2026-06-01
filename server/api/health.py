@@ -1,13 +1,128 @@
+from pathlib import Path
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+import os
+
+from ai_pipeline.transcriber import get_stt_provider
+from ..settings import EXPORT_DIR, MAX_UPLOAD_SIZE_MB, TEMP_DIR, default_render_page_url, dependency_status
+from ..headless_export import check_export_runtime, check_export_runtime_async
 
 router = APIRouter(prefix="/health", tags=["health"])
 
 class HealthResponse(BaseModel):
     status: str
+    service: str = "huygen-caps-backend"
+    environment: str = "development"
     version: str
+    stt_provider: str | None = None
+    provider_keys: dict[str, bool] = Field(default_factory=dict)
+    dependencies: dict[str, bool | str] = Field(default_factory=dict)
+    max_upload_mb: int
+    render_page_url: str
+    message: str | None = None
 
+def _has_key(name: str) -> bool:
+    value = os.getenv(name, "").strip()
+    return bool(value and not value.startswith("your_") and "placeholder" not in value.lower())
+
+
+def health_payload() -> HealthResponse:
+    deps = dependency_status()
+    warnings: list[str] = []
+    try:
+        provider = get_stt_provider()
+    except RuntimeError as exc:
+        provider = None
+        warnings.append(str(exc))
+    if not deps.get("ffmpeg"):
+        warnings.append("FFmpeg is not available; MP4 export will fail.")
+    if not deps.get("ffprobe"):
+        warnings.append("FFprobe is not available; duration detection may fail.")
+
+    return HealthResponse(
+        status="ok",
+        environment=os.getenv("NODE_ENV", "development"),
+        version="5.0.0",
+        stt_provider=provider,
+        provider_keys={
+            "groq": _has_key("GROQ_API_KEY"),
+            "openai": _has_key("OPENAI_API_KEY"),
+            "sarvam": _has_key("SARVAM_API_KEY"),
+        },
+        dependencies=deps,
+        max_upload_mb=MAX_UPLOAD_SIZE_MB,
+        render_page_url=default_render_page_url(),
+        message=" ".join(warnings) if warnings else None,
+    )
+
+
+def _dir_writable(path: Path) -> tuple[bool, str | None]:
+    probe = path / ".health_write_probe"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        return True, None
+    except OSError as exc:
+        return False, str(exc)
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def export_health_payload() -> dict[str, object]:
+    """Focused diagnostics for MP4 export on local dev and Render."""
+    payload = check_export_runtime()
+    temp_writable, temp_error = _dir_writable(TEMP_DIR)
+    export_writable, export_error = _dir_writable(EXPORT_DIR)
+    renderer_available = bool(payload.get("playwright_package"))
+
+    payload.update({
+        "ffmpegAvailable": bool(payload.get("ffmpeg")),
+        "ffprobeAvailable": bool(payload.get("ffprobe")),
+        "tempDirWritable": temp_writable,
+        "tempDirWriteError": temp_error,
+        "exportDirWritable": export_writable,
+        "exportDirWriteError": export_error,
+        "rendererAvailable": renderer_available,
+        "tempDir": str(TEMP_DIR),
+        "exportDir": str(EXPORT_DIR),
+    })
+    if not (payload["ffmpegAvailable"] and payload["ffprobeAvailable"] and temp_writable and export_writable and renderer_available):
+        payload["status"] = "degraded"
+    return payload
+
+
+async def export_health_payload_async() -> dict[str, object]:
+    payload = await check_export_runtime_async()
+    temp_writable, temp_error = _dir_writable(TEMP_DIR)
+    export_writable, export_error = _dir_writable(EXPORT_DIR)
+    renderer_available = bool(payload.get("playwright_package") and payload.get("chromium_launch"))
+
+    payload.update({
+        "ffmpegAvailable": bool(payload.get("ffmpeg")),
+        "ffprobeAvailable": bool(payload.get("ffprobe")),
+        "tempDirWritable": temp_writable,
+        "tempDirWriteError": temp_error,
+        "exportDirWritable": export_writable,
+        "exportDirWriteError": export_error,
+        "rendererAvailable": renderer_available,
+        "tempDir": str(TEMP_DIR),
+        "exportDir": str(EXPORT_DIR),
+    })
+    if not (payload["ffmpegAvailable"] and payload["ffprobeAvailable"] and temp_writable and export_writable and renderer_available):
+        payload["status"] = "degraded"
+    return payload
+
+
+@router.get("", response_model=HealthResponse)
 @router.get("/", response_model=HealthResponse)
 async def health_check():
-    """Simple health check endpoint"""
-    return HealthResponse(status="ok", version="5.0.0")
+    """Runtime health check for Render and the editor connectivity probe."""
+    return health_payload()
+
+
+@router.get("/export")
+async def export_health_check():
+    return await export_health_payload_async()

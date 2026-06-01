@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: huygen-caps
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STT_PROVIDER
+        value: auto
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "500"
+      - key: TEMP_DIR
+        value: /tmp/huygen-caps
+      - key: UPLOAD_DIR
+        value: /tmp/huygen-caps/uploads
+      - key: EXPORT_DIR
+        value: /tmp/huygen-caps/exports
+      - key: DB_PATH
+        value: /tmp/huygen-caps/database.sqlite
+      - key: RUNTIME_CLEANUP_HOURS
+        value: "24"
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

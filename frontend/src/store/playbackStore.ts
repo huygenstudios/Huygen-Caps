@@ -28,6 +28,10 @@ interface PlaybackState {
   seekBy: (delta: number) => void;
 }
 
+function clampTime(time: number, duration: number) {
+  return Math.max(0, Math.min(Math.max(0, duration), Number.isFinite(time) ? time : 0));
+}
+
 export const usePlaybackStore = create<PlaybackState>((set) => ({
   isPlaying: false,
   currentTime: 0,
@@ -43,7 +47,7 @@ export const usePlaybackStore = create<PlaybackState>((set) => ({
   pause: () => set({ isPlaying: false }),
   togglePlayPause: () => set((s) => ({ isPlaying: !s.isPlaying })),
   stop: () => set({ isPlaying: false, currentTime: 0 }),
-  setCurrentTime: (time) => set({ currentTime: time }),
+  setCurrentTime: (time) => set((s) => ({ currentTime: clampTime(time, s.duration) })),
   setDuration: (duration) => set({ duration }),
   setVolume: (vol) => set({ volume: Math.max(0, Math.min(1, vol)) }),
   setPlaybackRate: (rate) => set({ playbackRate: rate }),

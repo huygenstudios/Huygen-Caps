@@ -2,11 +2,14 @@ import os
 import json
 import uuid
 import logging
+import re
+import asyncio
 from threading import Thread
 from typing import List
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 import aiosqlite
 import aiofiles
 
@@ -14,22 +17,46 @@ from ..database import get_db, DB_PATH
 from ..models import JobResponse, JobDetailResponse
 from ..pipeline_runner import run_pipeline_sync
 from ..progress import manager
-from ai_pipeline.config import MAX_UPLOAD_SIZE_MB
+from ..settings import EXPORT_DIR, MAX_UPLOAD_SIZE_MB, UPLOAD_DIR, ensure_runtime_dirs
 from ai_pipeline.language_modes import SUPPORTED_LANGUAGE_MODES, normalize_language_mode
 from ai_pipeline.transcriber import validate_transcription_config
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'storage', 'uploads')
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+ensure_runtime_dirs()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v"}
 ALLOWED_CONTENT_TYPES = {"video/mp4", "video/quicktime", "application/octet-stream"}
+INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+WINDOWS_RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
+# Keep a conservative length so the full path stays safe on Windows.
+MAX_SAFE_FILENAME_LEN = 120
 
 
 def _log_stage(job_id: str | None, stage: str, **fields):
-    logger.info("job_stage", extra={"job_id": job_id, "stage": stage, **fields})
+    details = " ".join(f"{key}={value!r}" for key, value in fields.items())
+    logger.info("job_stage job_id=%s stage=%s %s", job_id or "-", stage, details)
+
+
+def _sanitize_upload_filename(filename: str, ext: str) -> str:
+    stem = Path(filename).stem
+    stem = INVALID_FILENAME_CHARS.sub("_", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" ._")
+
+    if not stem:
+        stem = "upload"
+
+    if stem.upper() in WINDOWS_RESERVED_FILENAMES:
+        stem = f"{stem}_file"
+
+    max_stem_len = max(1, MAX_SAFE_FILENAME_LEN - len(ext))
+    stem = stem[:max_stem_len].rstrip(" ._") or "upload"
+    return f"{stem}{ext}"
 
 
 def _validate_upload_metadata(file: UploadFile) -> str:
@@ -45,7 +72,7 @@ def _validate_upload_metadata(file: UploadFile) -> str:
             detail=f"Unsupported media type '{file.content_type}'. Upload an MP4 or MOV video.",
         )
 
-    return filename or f"upload{ext or '.mp4'}"
+    return _sanitize_upload_filename(filename, ext)
 
 
 def _stored_language_mode(value: str | None) -> str:
@@ -53,6 +80,43 @@ def _stored_language_mode(value: str | None) -> str:
         return normalize_language_mode(value)
     except ValueError:
         return "auto_mixed_indian"
+
+
+def _public_export_stage(stage: str) -> str:
+    return {
+        "runtime_check": "validate_request",
+        "headless_launch": "render_video",
+        "render_input": "prepare_render_input",
+        "media_resolution": "resolve_media",
+        "duration_detection": "determine_duration",
+        "composition_load": "prepare_render_input",
+        "render_frames": "render_video",
+        "ffmpeg_encode": "render_video",
+        "output_write": "write_output",
+        "failed": "render_video",
+    }.get(stage, stage)
+
+
+def _export_failure(stage: str, error: str, response_format: str, status_code: int = 500):
+    public_stage = _public_export_stage(stage)
+    payload = {
+        "success": False,
+        "stage": public_stage,
+        "error": error,
+    }
+    if response_format == "json":
+        return JSONResponse(payload, status_code=status_code)
+    raise HTTPException(status_code=status_code, detail=f"Export failed during {public_stage}: {error}")
+
+
+def _resolve_export_dimensions(resolution: str, export_width: int | None, export_height: int | None) -> tuple[int, int]:
+    if export_width and export_height and export_width > 0 and export_height > 0:
+        return int(export_width), int(export_height)
+    if resolution == "720p":
+        return 1280, 720
+    if resolution == "480p":
+        return 854, 480
+    return 1920, 1080
 
 @router.post("", response_model=JobResponse)
 @router.post("/", response_model=JobResponse)
@@ -69,20 +133,30 @@ async def create_job(
     try:
         normalized_mode = normalize_language_mode(requested_mode)
     except ValueError as exc:
+        _log_stage(job_id, "request rejected", reason=str(exc))
         raise HTTPException(
             status_code=400,
             detail=f"{exc} Supported modes: {', '.join(SUPPORTED_LANGUAGE_MODES)}.",
         )
 
     filename = _validate_upload_metadata(file)
+    _log_stage(
+        job_id,
+        "selected media found",
+        filename=filename,
+        content_type=file.content_type,
+        language_mode=normalized_mode,
+    )
 
     try:
         validate_transcription_config(normalized_mode)
     except RuntimeError as exc:
+        _log_stage(job_id, "request rejected", reason=str(exc), language_mode=normalized_mode)
         raise HTTPException(status_code=400, detail=str(exc))
     
     # Save file to disk
-    file_path = os.path.join(UPLOAD_DIR, f"{job_id}_{filename}")
+    file_path = str(UPLOAD_DIR / f"{job_id}_{filename}")
+    _log_stage(job_id, "file path resolved", file_path=file_path)
     max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
     bytes_written = 0
     try:
@@ -110,7 +184,7 @@ async def create_job(
     _log_stage(job_id, "file saved", file_path=file_path, bytes=bytes_written)
 
     # Insert initial job state
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
             "INSERT INTO jobs (id, status, filename, target_lang) VALUES (?, ?, ?, ?)",
             (job_id, "queued", filename, normalized_mode)
@@ -121,6 +195,8 @@ async def create_job(
     t = Thread(target=run_pipeline_sync, args=(job_id, file_path, normalized_mode))
     t.daemon = True
     t.start()
+
+    _log_stage(job_id, "response returned", status="queued", bytes=bytes_written)
 
     return JobResponse(
         job_id=job_id,
@@ -209,7 +285,7 @@ async def get_video(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
     if not r:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    file_path = os.path.join(UPLOAD_DIR, f"{job_id}_{r['filename']}")
+    file_path = str(UPLOAD_DIR / f"{job_id}_{r['filename']}")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Video file not found")
     
@@ -224,6 +300,22 @@ async def export_video(
     style_config_json: str = Form(None),
     ass_content: str = Form(None),
     resolution: str = Form("1080p"),
+    export_width: int | None = Form(None),
+    export_height: int | None = Form(None),
+    export_fps: int = Form(30),
+    include_audio: bool = Form(True),
+    quality: str = Form("standard"),
+    bitrate: str = Form("auto"),
+    custom_bitrate_mbps: float | None = Form(None),
+    export_mode: str = Form("full_video"),
+    background_color: str = Form("#101010"),
+    duration_override: float | None = Form(None),
+    duration_source: str | None = Form(None),
+    visible_tracks_count: int | None = Form(None),
+    source_media_count: int | None = Form(None),
+    caption_chunks_count: int | None = Form(None),
+    hardware_acceleration: bool = Form(False),
+    response_format: str = Form("file"),
     render_mode: str = Form("headless"),
 ):
     """
@@ -232,24 +324,52 @@ async def export_video(
     render_mode='headless' (default): Pixel-perfect rendering via headless browser.
     render_mode='ass': Legacy ASS-based rendering via FFmpeg (faster but less accurate).
     """
-    import asyncio
     from fastapi.responses import FileResponse
 
     logger.info(f"EXPORT STARTED for job {job_id}, mode={render_mode}, resolution={resolution}")
+    response_format = (response_format or "file").lower().strip()
+    if response_format not in {"file", "json"}:
+        return _export_failure("validate_request", "response_format must be either 'file' or 'json'.", "json", 400)
     
     cursor = await db.execute("SELECT filename FROM jobs WHERE id = ?", (job_id,))
     r = await cursor.fetchone()
     if not r:
-        raise HTTPException(status_code=404, detail="Job not found")
+        return _export_failure("validate_project", "Job not found.", response_format, 404)
 
     original_video_name = f"{job_id}_{r['filename']}"
-    original_video_path = os.path.join(UPLOAD_DIR, original_video_name)
-    if not os.path.exists(original_video_path):
-        raise HTTPException(status_code=404, detail="Original video file not found")
+    original_video_path = str(UPLOAD_DIR / original_video_name)
+    is_captions_only_export = export_mode in {"captions_only", "captions_only_solid_background"}
+    if not os.path.exists(original_video_path) and not is_captions_only_export:
+        return _export_failure("resolve_media", "Original video file not found. Re-upload the source media before full-video export.", response_format, 404)
+    if not os.path.exists(original_video_path) and is_captions_only_export:
+        include_audio = False
+        logger.warning("captions_only_export_without_source_video job_id=%s", job_id)
+
+    try:
+        parsed_caption_count = len(json.loads(captions_json or "[]")) if captions_json else 0
+    except json.JSONDecodeError:
+        parsed_caption_count = -1
+    _log_stage(
+        job_id,
+        "export_request",
+        render_mode=render_mode,
+        export_mode=export_mode,
+        media_path=original_video_path,
+        media_exists=os.path.exists(original_video_path),
+        export_width=export_width,
+        export_height=export_height,
+        export_fps=export_fps,
+        duration_override=duration_override,
+        duration_source=duration_source,
+        include_audio=include_audio,
+        captions=caption_chunks_count if caption_chunks_count is not None else parsed_caption_count,
+        visible_tracks=visible_tracks_count,
+        source_media=source_media_count,
+    )
 
     # ── HEADLESS BROWSER EXPORT (pixel-perfect) ──
     if render_mode == "headless" and captions_json:
-        from ..headless_export import export_headless
+        from ..headless_export import ExportStageError, export_headless
 
         async def progress_cb(status: str, percent: int, details: str):
             await manager.broadcast(job_id, {
@@ -261,12 +381,7 @@ async def export_video(
                 try:
                     parsed_captions = json.loads(captions_json)
                 except json.JSONDecodeError:
-                    raise HTTPException(status_code=400, detail="Invalid captions JSON.")
-                if any(c.get("text") and not c.get("words") for c in parsed_captions):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Word-level timestamps are required for automatic word highlighting.",
-                    )
+                    return _export_failure("validate_request", "Invalid captions JSON.", response_format, 400)
             output_path = await export_headless(
                 job_id=job_id,
                 video_path=original_video_path,
@@ -275,45 +390,98 @@ async def export_video(
                 resolution=resolution,
                 progress_callback=progress_cb,
                 style_config_json=style_config_json,
+                export_width=export_width,
+                export_height=export_height,
+                export_fps=export_fps,
+                include_audio=include_audio,
+                quality=quality,
+                bitrate=bitrate,
+                custom_bitrate_mbps=custom_bitrate_mbps,
+                export_mode=export_mode,
+                background_color=background_color,
+                duration_override=duration_override,
+                duration_source=duration_source,
+                hardware_acceleration=hardware_acceleration,
             )
+            output_filename = Path(output_path).name
+            output_bytes = os.path.getsize(output_path)
+            if output_bytes <= 0:
+                return _export_failure("write_output", "Export finished but the MP4 file is empty.", response_format)
+            download_url = f"/exports/{output_filename}"
+            if response_format == "json":
+                width, height = _resolve_export_dimensions(resolution, export_width, export_height)
+                await manager.broadcast(job_id, {
+                    "status": "export_complete", "percent": 100, "details": "MP4 export is ready to download."
+                })
+                return {
+                    "success": True,
+                    "exportJobId": Path(output_filename).stem,
+                    "downloadUrl": download_url,
+                    "filename": output_filename,
+                    "duration": float(duration_override or 0),
+                    "width": width,
+                    "height": height,
+                    "fps": export_fps,
+                    "bytes": output_bytes,
+                }
             return FileResponse(
                 output_path,
                 media_type="video/mp4",
-                filename=f"captioned_{resolution}_{r['filename']}",
+                filename=f"captioned_{export_width or resolution}_{r['filename']}",
+                headers={
+                    "X-Export-File": output_filename,
+                    "X-Export-Url": download_url,
+                    "X-Export-Bytes": str(output_bytes),
+                },
             )
         except HTTPException:
             raise
-        except Exception as e:
-            logger.error(f"Headless export failed: {e}")
+        except ExportStageError as e:
+            public_stage = _public_export_stage(e.stage)
+            detail = f"Export failed during {public_stage}: {e}"
+            logger.exception("headless_export_stage_failed job_id=%s stage=%s detail=%s", job_id, e.stage, e)
             await manager.broadcast(job_id, {
-                "status": "export_failed", "percent": -1, "details": str(e)
+                "status": "export_failed", "percent": -1, "details": detail
             })
-            raise HTTPException(status_code=500, detail=f"Headless export failed: {e}")
+            return _export_failure(public_stage, str(e), response_format)
+        except Exception as e:
+            error_message = str(e).strip() or repr(e) or type(e).__name__
+            detail = f"Export failed during render_video: {type(e).__name__}: {error_message}"
+            logger.exception("headless_export_failed_without_stage job_id=%s detail=%s", job_id, detail)
+            await manager.broadcast(job_id, {
+                "status": "export_failed", "percent": -1, "details": detail
+            })
+            return _export_failure("render_video", f"{type(e).__name__}: {error_message}", response_format)
 
     # ── LEGACY ASS EXPORT (fallback) ──
     if not ass_content or not ass_content.strip():
-        raise HTTPException(status_code=400, detail="No captions data provided (need captions_json or ass_content)")
+        return _export_failure("validate_request", "No captions data provided (need captions_json or ass_content).", response_format, 400)
         
     if "[Script Info]" not in ass_content or "[Events]" not in ass_content:
-        raise HTTPException(status_code=400, detail="Invalid ASS content format")
+        return _export_failure("validate_request", "Invalid ASS content format.", response_format, 400)
 
     await manager.broadcast(job_id, {"status": "export_started", "percent": 0, "details": "Preparing export..."})
 
     ass_filename = f"{job_id}_temp.ass"
-    ass_filepath = os.path.join(UPLOAD_DIR, ass_filename)
+    ass_filepath = str(UPLOAD_DIR / ass_filename)
     with open(ass_filepath, 'w', encoding='utf-8') as f:
         f.write(ass_content)
 
-    output_filename = f"{job_id}_exported_{resolution}.mp4"
-    output_filepath = os.path.join(UPLOAD_DIR, output_filename)
+    output_dims = None
+    if export_width and export_height and export_width > 0 and export_height > 0:
+        output_dims = (int(export_width), int(export_height))
+
+    output_suffix = f"{output_dims[0]}x{output_dims[1]}" if output_dims else resolution
+    output_filename = f"{job_id}_exported_{output_suffix}.mp4"
+    output_filepath = str(EXPORT_DIR / output_filename)
 
     scale_filter = ""
-    if resolution == "1080p":
-        scale_filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
-    elif resolution == "720p":
-        scale_filter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
-    elif resolution == "480p":
-        scale_filter = "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,"
+    if output_dims:
+        target_w, target_h = output_dims
+        scale_filter = (
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
+        )
 
     vf_string = f"{scale_filter}ass={ass_filename}"
 
@@ -326,7 +494,7 @@ async def export_video(
             original_video_name,
         ]
         probe_proc = await asyncio.create_subprocess_exec(
-            *probe_cmd, cwd=UPLOAD_DIR,
+            *probe_cmd, cwd=str(UPLOAD_DIR),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         probe_out, _ = await probe_proc.communicate()
@@ -341,12 +509,12 @@ async def export_video(
         "-vf", vf_string,
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-c:a", "copy", "-progress", "pipe:1",
-        output_filename,
+        str(EXPORT_DIR / output_filename),
     ]
 
     try:
         process = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd, cwd=UPLOAD_DIR,
+            *ffmpeg_cmd, cwd=str(UPLOAD_DIR),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         last_broadcast_pct = 0
@@ -380,10 +548,31 @@ async def export_video(
         if os.path.exists(ass_filepath):
             os.remove(ass_filepath)
 
+    if response_format == "json":
+        if not os.path.exists(output_filepath) or os.path.getsize(output_filepath) <= 0:
+            return _export_failure("write_output", "ASS export finished but the MP4 file is missing or empty.", response_format)
+        width, height = _resolve_export_dimensions(resolution, export_width, export_height)
+        return {
+            "success": True,
+            "exportJobId": Path(output_filename).stem,
+            "downloadUrl": f"/exports/{output_filename}",
+            "filename": output_filename,
+            "duration": total_duration,
+            "width": width,
+            "height": height,
+            "fps": export_fps,
+            "bytes": os.path.getsize(output_filepath),
+        }
+
     return FileResponse(
         output_filepath,
         media_type="video/mp4",
         filename=f"captioned_{r['filename']}",
+        headers={
+            "X-Export-File": output_filename,
+            "X-Export-Url": f"/exports/{output_filename}",
+            "X-Export-Bytes": str(os.path.getsize(output_filepath)) if os.path.exists(output_filepath) else "0",
+        },
     )
 
 @router.websocket("/{job_id}/ws")

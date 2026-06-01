@@ -1,4 +1,4 @@
-# ─── Python ───
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,46 +12,53 @@ build/
 venv/
 .venv/
 env/
-.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# ─── Node / Frontend ───
+# Node / frontend
 node_modules/
 .next/
 out/
 .turbo/
 *.tsbuildinfo
-.vercel
+.vercel/
 
-# ─── IDE ───
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime storage and generated media
+storage/
+uploads/
+exports/
+temp/
+tmp/
+logs/
+*.log
+*.jsonl
+*.sqlite
+*.db
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.srt
+*.ass
+*.vtt
+
+# Test/build output
+coverage/
+
+# IDE / OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
-
-# ─── Storage & Runtime ───
-storage/
-*.sqlite
-*.db
-*.wav
-*.mp4
-*.mp3
-*.ass
-*.srt
-*.vtt
-logs/
-*.log
-*.jsonl
-
-# ─── Environment ───
-.env
-.env.local
-.env.production
-.env.development
-
-# ─── OS ───
 .DS_Store
 Thumbs.db
 Desktop.ini

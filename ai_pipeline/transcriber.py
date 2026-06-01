@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 from typing import Any
 
 import requests
@@ -242,8 +243,25 @@ def _call_sarvam(audio_path: str, language_mode: str) -> dict:
         )
 
     if response.status_code >= 400:
-        detail = response.text[:500]
-        raise RuntimeError(f"Sarvam transcription failed ({response.status_code}): {detail}")
+        raw_detail = response.text[:500]
+        try:
+            payload = response.json()
+            error = payload.get("error") or {}
+            provider_message = error.get("message") or raw_detail
+            provider_code = error.get("code")
+        except (ValueError, json.JSONDecodeError):
+            provider_message = raw_detail
+            provider_code = None
+
+        if response.status_code == 429:
+            raise RuntimeError(
+                "Sarvam transcription rate limit exceeded. Wait and try again, "
+                "or switch STT_PROVIDER to openai_whisper/groq_whisper with a configured key. "
+                f"Provider message: {provider_message}"
+            )
+
+        code_text = f" ({provider_code})" if provider_code else ""
+        raise RuntimeError(f"Sarvam transcription failed ({response.status_code}{code_text}): {provider_message}")
 
     payload = response.json()
     return {
@@ -317,6 +335,12 @@ def transcribe_audio(audio_path: str, language_mode: str = "english") -> dict:
     validate_transcription_config(normalized_mode)
 
     provider = _resolve_provider(normalized_mode)
+    logger.info(
+        "transcription_provider_selected provider=%s language_mode=%s audio_path=%s",
+        provider,
+        normalized_mode,
+        os.path.basename(audio_path),
+    )
     if provider == "sarvam":
         return _call_sarvam(audio_path, normalized_mode)
     if provider == "openai_whisper":

@@ -1,66 +1,143 @@
-/* WaveformTrack — audio waveform visualization placeholder */
+/* WaveformTrack - clip waveform visualization */
 
 "use client";
 
 import React, { useEffect, useRef } from "react";
+import { MediaFile } from "@/lib/types";
 import { useEditorStore } from "@/store/editorStore";
-import { useTimelineStore } from "@/store/timelineStore";
 
 interface Props {
   height: number;
+  mediaId?: string;
+  duration?: number;
 }
 
-export default function WaveformTrack({ height }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { mediaFiles, activeMediaId } = useEditorStore();
-  const { pixelsPerSecond, scrollLeft } = useTimelineStore();
+const waveformCache = new Map<string, Promise<number[]>>();
 
-  const activeMedia = mediaFiles.find((f) => f.id === activeMediaId);
+function fallbackPeaks(seedText: string, peakCount = 900) {
+  let seed = 0;
+  for (let i = 0; i < seedText.length; i += 1) {
+    seed = (seed * 31 + seedText.charCodeAt(i)) >>> 0;
+  }
+
+  return Array.from({ length: peakCount }, (_, index) => {
+    const t = index / peakCount;
+    const carrier = Math.sin((t * 48 + seed * 0.00001) * Math.PI);
+    const pulse = Math.sin((t * 9 + 0.2) * Math.PI) * Math.cos((t * 17 + 0.35) * Math.PI);
+    return Math.max(0.08, Math.min(0.95, Math.abs(carrier * 0.5 + pulse * 0.35) + 0.12));
+  });
+}
+
+async function decodeWaveform(media: MediaFile) {
+  const cacheKey = `${media.id}:${media.size}:${media.name}`;
+  const cached = waveformCache.get(cacheKey);
+  if (cached) return cached;
+
+  const promise = (async () => {
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+    if (!AudioContextCtor) {
+      return fallbackPeaks(cacheKey);
+    }
+
+    const audioContext = new AudioContextCtor();
+    try {
+      const buffer = await media.file.arrayBuffer();
+      const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
+      const channels = Math.max(1, audioBuffer.numberOfChannels);
+      const sampleCount = audioBuffer.length;
+      const peakCount = 1200;
+      const blockSize = Math.max(1, Math.floor(sampleCount / peakCount));
+      const peaks: number[] = [];
+
+      for (let i = 0; i < peakCount; i += 1) {
+        const start = i * blockSize;
+        const end = Math.min(sampleCount, start + blockSize);
+        let peak = 0;
+
+        for (let channel = 0; channel < channels; channel += 1) {
+          const data = audioBuffer.getChannelData(channel);
+          for (let sample = start; sample < end; sample += 1) {
+            peak = Math.max(peak, Math.abs(data[sample] || 0));
+          }
+        }
+
+        peaks.push(Math.max(0.03, Math.min(1, peak)));
+      }
+
+      return peaks;
+    } catch {
+      return fallbackPeaks(cacheKey);
+    } finally {
+      await audioContext.close().catch(() => undefined);
+    }
+  })();
+
+  waveformCache.set(cacheKey, promise);
+  return promise;
+}
+
+function drawWaveform(canvas: HTMLCanvasElement, peaks: number[], height: number) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const canvasHeight = Math.max(1, height || rect.height);
+
+  canvas.width = width * dpr;
+  canvas.height = canvasHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, canvasHeight);
+
+  const centerY = canvasHeight / 2;
+  const barWidth = width > 420 ? 2 : 1.4;
+  const gap = 1;
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvasHeight);
+  gradient.addColorStop(0, "rgba(117, 188, 255, 0.95)");
+  gradient.addColorStop(0.5, "rgba(77, 159, 255, 0.9)");
+  gradient.addColorStop(1, "rgba(42, 111, 219, 0.85)");
+
+  ctx.fillStyle = gradient;
+  ctx.globalAlpha = 0.88;
+
+  for (let x = 0; x < width; x += barWidth + gap) {
+    const peakIndex = Math.min(peaks.length - 1, Math.floor((x / width) * peaks.length));
+    const amplitude = Math.max(1, peaks[peakIndex] * centerY * 0.92);
+    ctx.fillRect(x, centerY - amplitude, barWidth, amplitude * 2);
+  }
+}
+
+export default function WaveformTrack({ height, mediaId, duration }: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mediaFiles = useEditorStore((s) => s.mediaFiles);
+  const media = mediaFiles.find((file) => file.id === mediaId);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !media) return;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    let cancelled = false;
+    drawWaveform(canvas, fallbackPeaks(`${media.id}:${duration || media.duration}`), height);
 
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    decodeWaveform(media).then((peaks) => {
+      if (!cancelled) drawWaveform(canvas, peaks, height);
+    });
 
-    ctx.clearRect(0, 0, rect.width, rect.height);
-
-    if (!activeMedia || activeMedia.duration === 0) return;
-
-    // Draw a simulated waveform
-    const totalWidth = activeMedia.duration * pixelsPerSecond;
-    const startPx = Math.max(0, scrollLeft);
-    const endPx = Math.min(totalWidth, scrollLeft + rect.width);
-
-    ctx.fillStyle = "#3a7bd5";
-    ctx.globalAlpha = 0.6;
-
-    const centerY = rect.height / 2;
-    const barWidth = 2;
-    const gap = 1;
-
-    for (let x = startPx; x < endPx; x += barWidth + gap) {
-      const screenX = x - scrollLeft;
-      // Pseudo-random waveform based on position
-      const seed = Math.sin(x * 0.05) * Math.cos(x * 0.03) * Math.sin(x * 0.07 + 1);
-      const amplitude = (Math.abs(seed) * 0.7 + 0.1) * centerY;
-
-      ctx.fillRect(screenX, centerY - amplitude, barWidth, amplitude * 2);
-    }
-  }, [activeMedia, pixelsPerSecond, scrollLeft]);
+    return () => {
+      cancelled = true;
+    };
+  }, [duration, height, media]);
 
   return (
     <canvas
       ref={canvasRef}
-      className="w-full"
+      className="pointer-events-none absolute inset-0 h-full w-full"
       style={{ height }}
+      aria-hidden="true"
     />
   );
 }

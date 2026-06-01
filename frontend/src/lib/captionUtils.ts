@@ -1,4 +1,4 @@
-/* Caption utilities for Caption AI */
+/* Caption utilities for Huygen Caps */
 
 import {
   Caption,
@@ -8,25 +8,349 @@ import {
   CaptionStyle,
   CAPTION_THEMES,
   CaptionChunkingConfig,
+  CaptionTimingConfig,
+  CaptionTimingSource,
 } from "./types";
 
 let captionIdCounter = 0;
+const MIN_SYNTHETIC_WORD_DURATION = 0.04;
+const MIN_CAPTION_DURATION = 0.08;
+const CAPTION_OVERLAP_EPSILON = 0.001;
+const MAX_ALLOWED_GAP_INSIDE_CHUNK_SECONDS = 0.35;
 
 export const DEFAULT_CAPTION_CHUNKING_CONFIG: CaptionChunkingConfig = {
+  targetWordsPerCaption: 4,
   maxWordsPerCaption: 5,
   minWordsPerCaption: 2,
-  maxCharsPerCaption: 32,
+  maxCharsPerCaption: 34,
   minCaptionDuration: 0.8,
   maxCaptionDuration: 3.0,
   pauseSplitThreshold: 0.45,
-  mergeSmallGapThreshold: 0.18,
+  mergeSmallGapThreshold: 0.16,
   targetReadingSpeedCps: 17,
+  wordTimingSensitivity: 1,
+  minWordDuration: 0.06,
+  maxHoldAfterWord: 0.12,
+  snapToWaveformPeaks: false,
   avoidSingleWordCaptions: true,
   balanceLineLength: true,
 };
 
+export const DEFAULT_CAPTION_TIMING_CONFIG: CaptionTimingConfig = {
+  globalOffsetSeconds: 0,
+  wordPreRollSeconds: 0,
+  wordPostHoldSeconds: 0,
+  phrasePostHoldSeconds: 0.12,
+  pauseClearThresholdSeconds: 0.45,
+  preventChunkOverlap: true,
+  snapChunkStartToFirstWord: true,
+  snapChunkEndToLastWord: true,
+};
+
 export function generateCaptionId(): string {
   return `c_${Date.now()}_${++captionIdCounter}`;
+}
+
+function roundWordTime(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function tokenizeCaptionText(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean);
+}
+
+function isCaptionTimingSource(value: unknown): value is CaptionTimingSource {
+  return value === "provider" || value === "aligned" || value === "manual" || value === "estimated";
+}
+
+export function inferWordTimingSource(word: AlignedWord): CaptionTimingSource {
+  if (isCaptionTimingSource(word.timingSource)) return word.timingSource;
+  const source = String(word.timing_source || "").toLowerCase();
+  if (source.includes("manual")) return "manual";
+  if (source.includes("interpolated") || source.includes("estimated") || source.includes("synthetic")) return "estimated";
+  if (source.includes("align") || source.includes("whisperx")) return "aligned";
+  if (word.provider || source.includes("provider")) return "provider";
+  return "estimated";
+}
+
+export function getWordDisplayText(word: AlignedWord) {
+  return (word.displayedWord || word.word || word.originalWord || "").trim();
+}
+
+export function normalizeCaptionWord(word: AlignedWord): AlignedWord {
+  const display = getWordDisplayText(word);
+  const original = (word.originalWord || word.word || display).trim();
+  const timingSource = inferWordTimingSource(word);
+  return {
+    ...word,
+    word: display || original,
+    displayedWord: display || original,
+    originalWord: original || display,
+    timingSource,
+    timing_source: word.timing_source || timingSource,
+  };
+}
+
+export function normalizeCaptionWords(caption: Caption): AlignedWord[] {
+  return (caption.words || [])
+    .map(normalizeCaptionWord)
+    .filter((word) => getWordDisplayText(word) && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start);
+}
+
+function synthesizeCaptionWords(caption: Caption): AlignedWord[] {
+  const tokens = tokenizeCaptionText(caption.text || caption.originalText || "");
+  const fallbackTokens = tokens.length
+    ? tokens
+    : normalizeCaptionWords(caption).map(getWordDisplayText).filter(Boolean);
+  const start = roundWordTime(Math.max(0, Number.isFinite(caption.start) ? caption.start : 0));
+  const end = roundWordTime(Math.max(start + MIN_CAPTION_DURATION, Number.isFinite(caption.end) ? caption.end : start + 1));
+  const duration = Math.max(MIN_CAPTION_DURATION, end - start);
+
+  return fallbackTokens.map((token, index) => {
+    const wordStart = roundWordTime(start + (duration * index) / Math.max(1, fallbackTokens.length));
+    const rawEnd = index === fallbackTokens.length - 1
+      ? end
+      : start + (duration * (index + 1)) / Math.max(1, fallbackTokens.length);
+    return {
+      word: token,
+      displayedWord: token,
+      originalWord: token,
+      start: wordStart,
+      end: roundWordTime(Math.max(wordStart + MIN_SYNTHETIC_WORD_DURATION, rawEnd)),
+      score: 0,
+      timing_source: "render_estimated",
+      timingSource: "estimated",
+    };
+  });
+}
+
+export function getRenderableCaptionWords(caption: Caption): AlignedWord[] {
+  const start = roundWordTime(Math.max(0, Number.isFinite(caption.start) ? caption.start : 0));
+  const end = roundWordTime(Math.max(start + MIN_CAPTION_DURATION, Number.isFinite(caption.end) ? caption.end : start + 1));
+  const words = normalizeCaptionWords(caption).sort((a, b) => a.start - b.start);
+
+  if (words.length === 0) return synthesizeCaptionWords(caption);
+
+  const inRange = words.filter((word) => word.end > start + 0.001 && word.start < end - 0.001);
+  if (inRange.length === 0) return synthesizeCaptionWords(caption);
+
+  const clamped = inRange.map((word) => {
+    const wordStart = roundWordTime(Math.max(start, Math.min(word.start, end - MIN_SYNTHETIC_WORD_DURATION)));
+    const wordEnd = roundWordTime(Math.min(end, Math.max(wordStart + MIN_SYNTHETIC_WORD_DURATION, word.end)));
+    return {
+      ...word,
+      start: wordStart,
+      end: wordEnd,
+    };
+  }).filter((word) => word.end > word.start);
+
+  return clamped.length ? clamped : synthesizeCaptionWords(caption);
+}
+
+function expandTimedWord(word: AlignedWord): AlignedWord[] {
+  const cleanText = word.word?.trim();
+  if (!cleanText) return [];
+
+  const tokens = cleanText.split(/\s+/).filter(Boolean);
+  if (tokens.length <= 1 || word.start === undefined || word.end === undefined || word.end <= word.start) {
+    return [normalizeCaptionWord({ ...word, word: cleanText, displayedWord: word.displayedWord || cleanText, originalWord: word.originalWord || cleanText })];
+  }
+
+  const duration = word.end - word.start;
+  return tokens.map((token, index) => {
+    const tokenStart = word.start + (duration * index) / tokens.length;
+    const rawTokenEnd = index === tokens.length - 1 ? word.end : word.start + (duration * (index + 1)) / tokens.length;
+    return {
+      ...word,
+      word: token,
+      displayedWord: token,
+      originalWord: word.originalWord || token,
+      start: roundWordTime(tokenStart),
+      end: roundWordTime(Math.max(tokenStart + MIN_SYNTHETIC_WORD_DURATION, rawTokenEnd)),
+      timing_source: word.timing_source?.includes("interpolated") ? word.timing_source : `${word.timing_source || "segment_word"}_interpolated`,
+      timingSource: "estimated",
+    };
+  });
+}
+
+function synthesizeSegmentWords(seg: AlignedSegment): AlignedWord[] {
+  const segmentText = seg.text?.trim() || "";
+  const segmentTokens = segmentText.split(/\s+/).filter(Boolean);
+  if (segmentTokens.length === 0 || seg.end <= seg.start) {
+    return [];
+  }
+
+  const duration = seg.end - seg.start;
+  return segmentTokens.map((token, index) => {
+    const tokenStart = seg.start + (duration * index) / segmentTokens.length;
+    const rawTokenEnd = index === segmentTokens.length - 1 ? seg.end : seg.start + (duration * (index + 1)) / segmentTokens.length;
+    return {
+      word: token,
+      displayedWord: token,
+      originalWord: token,
+      start: roundWordTime(tokenStart),
+      end: roundWordTime(Math.max(tokenStart + MIN_SYNTHETIC_WORD_DURATION, rawTokenEnd)),
+      score: 1,
+      timing_source: "segment_interpolated",
+      timingSource: "estimated",
+    };
+  });
+}
+
+function getSegmentWords(seg: AlignedSegment): AlignedWord[] {
+  const expandedWords = (seg.words || [])
+    .flatMap(expandTimedWord)
+    .filter((word) => word.word && word.start !== undefined && word.end !== undefined && word.end > word.start);
+
+  const segmentText = seg.text?.trim() || "";
+  const segmentTokens = segmentText.split(/\s+/).filter(Boolean);
+  const hasCollapsedSentenceWord =
+    expandedWords.length === 1 &&
+    segmentTokens.length > 1 &&
+    expandedWords[0].word.trim() === segmentText;
+
+  if (expandedWords.length > 0 && !hasCollapsedSentenceWord) {
+    return expandedWords;
+  }
+
+  if (segmentTokens.length > 1) {
+    return synthesizeSegmentWords(seg);
+  }
+
+  return expandedWords;
+}
+
+function getCaptionPageText(words: AlignedWord[]) {
+  return words.map(getWordDisplayText).join(" ");
+}
+
+function getCaptionPageDuration(words: AlignedWord[]) {
+  if (words.length === 0) return 0;
+  return Math.max(0, words[words.length - 1].end - words[0].start);
+}
+
+function canMergeCaptionPages(left: AlignedWord[], right: AlignedWord[], options: CaptionChunkingConfig) {
+  if (left.length === 0 || right.length === 0) return false;
+
+  const gapSeconds = right[0].start - left[left.length - 1].end;
+  const maxGap = Math.max(0, options.mergeSmallGapThreshold ?? DEFAULT_CAPTION_CHUNKING_CONFIG.mergeSmallGapThreshold);
+  if (gapSeconds > maxGap) return false;
+
+  const merged = [...left, ...right];
+  const mergedText = getCaptionPageText(merged);
+  const minWords = Math.max(1, options.minWordsPerCaption);
+  const maxWords = Math.max(minWords, options.maxWordsPerCaption);
+  const maxDuration = Math.max(MIN_CAPTION_DURATION, options.maxCaptionDuration);
+
+  return (
+    merged.length <= maxWords &&
+    mergedText.length <= options.maxCharsPerCaption &&
+    getCaptionPageDuration(merged) <= maxDuration
+  );
+}
+
+function shouldMergeCaptionPage(words: AlignedWord[], options: CaptionChunkingConfig) {
+  if (words.length === 0) return false;
+
+  const minWords = Math.max(1, options.minWordsPerCaption);
+  const minDuration = Math.max(MIN_CAPTION_DURATION, options.minCaptionDuration);
+
+  return (
+    (options.avoidSingleWordCaptions && words.length === 1) ||
+    words.length < minWords ||
+    getCaptionPageDuration(words) < minDuration
+  );
+}
+
+function finalizeCaptionPages(pages: AlignedWord[][], options: CaptionChunkingConfig) {
+  const merged = pages.map((page) => [...page]);
+
+  for (let index = 0; index < merged.length; index += 1) {
+    const page = merged[index];
+    if (!shouldMergeCaptionPage(page, options)) continue;
+
+    const previous = merged[index - 1];
+    if (previous && canMergeCaptionPages(previous, page, options)) {
+      merged[index - 1] = [...previous, ...page];
+      merged.splice(index, 1);
+      index -= 1;
+      continue;
+    }
+
+    const next = merged[index + 1];
+    if (next && canMergeCaptionPages(page, next, options)) {
+      merged[index + 1] = [...page, ...next];
+      merged.splice(index, 1);
+      index -= 1;
+    }
+  }
+
+  return merged;
+}
+
+function buildCaptionFromWordGroup(
+  group: AlignedWord[],
+  nextWordStart: number | undefined,
+  lang: string,
+  theme: string,
+  options: CaptionChunkingConfig
+): Caption {
+  const normalizedWords = group.map(normalizeCaptionWord).sort((a, b) => a.start - b.start);
+  const start = roundWordTime(Math.max(0, normalizedWords[0]?.start ?? 0));
+  const lastWordEnd = roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, normalizedWords[normalizedWords.length - 1]?.end ?? start));
+  const maxHold = Math.max(0, options.maxHoldAfterWord ?? DEFAULT_CAPTION_CHUNKING_CONFIG.maxHoldAfterWord);
+  const holdWindow = Number.isFinite(nextWordStart)
+    ? Math.max(0, (nextWordStart as number) - CAPTION_OVERLAP_EPSILON - lastWordEnd)
+    : maxHold;
+  const end = roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, lastWordEnd + Math.min(maxHold, holdWindow)));
+
+  return {
+    id: generateCaptionId(),
+    start,
+    end,
+    text: normalizedWords.map(getWordDisplayText).join(" "),
+    originalText: normalizedWords.map((word) => word.originalWord || word.word).join(" "),
+    words: normalizedWords,
+    lang: lang as Caption["lang"],
+    theme: theme as Caption["theme"],
+  };
+}
+
+function normalizeCaptionTimeline(captions: Caption[]) {
+  const ordered = [...captions].sort((a, b) => a.start - b.start);
+
+  return ordered.map((caption, index) => {
+    const next = ordered[index + 1];
+    const words = normalizeCaptionWords(caption)
+      .map((word) => ({ ...word }))
+      .sort((a, b) => a.start - b.start);
+
+    let start = roundWordTime(Math.max(0, caption.start));
+    let end = roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, caption.end));
+    const lastWordEnd = words.length > 0
+      ? roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, words[words.length - 1].end))
+      : end;
+
+    if (words.length > 0) {
+      start = roundWordTime(Math.max(0, words[0].start));
+      end = roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, end));
+    }
+
+    if (next && next.start > lastWordEnd && end > next.start) {
+      end = roundWordTime(Math.max(lastWordEnd, next.start - CAPTION_OVERLAP_EPSILON));
+    }
+
+    return {
+      ...caption,
+      start,
+      end,
+      words: words.length ? words : caption.words,
+      text: words.length ? words.map(getWordDisplayText).join(" ") : caption.text,
+      originalText: words.length
+        ? words.map((word) => word.originalWord || word.word).join(" ")
+        : caption.originalText,
+    };
+  });
 }
 
 /**
@@ -40,6 +364,16 @@ export function buildCaptionPages(
 ): AlignedWord[][] {
   const pages: AlignedWord[][] = [];
   let current: AlignedWord[] = [];
+  const minWords = Math.max(1, options.minWordsPerCaption);
+  const maxWords = Math.max(minWords, options.maxWordsPerCaption);
+  const targetWords = Math.max(minWords, Math.min(maxWords, options.targetWordsPerCaption ?? DEFAULT_CAPTION_CHUNKING_CONFIG.targetWordsPerCaption));
+  const maxChars = Math.max(4, options.maxCharsPerCaption);
+  const maxDuration = Math.max(MIN_CAPTION_DURATION, options.maxCaptionDuration);
+  const pauseSplitThreshold = Math.max(0, options.pauseSplitThreshold);
+  const internalGapThreshold = Math.min(
+    Math.max(0, pauseSplitThreshold || MAX_ALLOWED_GAP_INSIDE_CHUNK_SECONDS),
+    MAX_ALLOWED_GAP_INSIDE_CHUNK_SECONDS
+  );
 
   const flush = () => {
     if (current.length > 0) {
@@ -54,48 +388,49 @@ export function buildCaptionPages(
       continue;
     }
 
-    const candidate = [...current, { ...word, word: cleanWord }];
-    const candidateText = candidate.map((w) => w.word).join(" ");
-    const currentDuration = current.length > 0 ? current[current.length - 1].end - current[0].start : 0;
-    const pauseSeconds = current.length > 0 ? word.start - current[current.length - 1].end : 0;
-    const candidateDuration = candidate.length > 0 ? candidate[candidate.length - 1].end - candidate[0].start : 0;
+    const minWordDuration = options.minWordDuration ?? DEFAULT_CAPTION_CHUNKING_CONFIG.minWordDuration;
+    const normalizedWord = normalizeCaptionWord({
+      ...word,
+      word: cleanWord,
+      displayedWord: word.displayedWord || cleanWord,
+      end: roundWordTime(Math.max(word.end, word.start + minWordDuration)),
+    });
+
+    if (current.length === 0) {
+      current.push(normalizedWord);
+      continue;
+    }
+
+    const lastWord = current[current.length - 1];
+    const candidate = [...current, normalizedWord];
+    const candidateText = getCaptionPageText(candidate);
+    const pauseSeconds = Math.max(0, normalizedWord.start - lastWord.end);
+    const candidateDuration = getCaptionPageDuration(candidate);
     const readingSpeed = candidateDuration > 0 ? candidateText.length / candidateDuration : 0;
-    const minWords = Math.max(1, options.minWordsPerCaption);
-    const maxWords = Math.max(minWords, options.maxWordsPerCaption);
-    const targetWords = Math.min(maxWords, Math.max(minWords, 4));
-    const splitForPause =
-      pauseSeconds >= options.pauseSplitThreshold && pauseSeconds > options.mergeSmallGapThreshold;
-    const tooFast = readingSpeed > options.targetReadingSpeedCps && current.length >= minWords;
-    const shouldSplit =
+    const splitForPause = pauseSeconds >= pauseSplitThreshold || pauseSeconds > internalGapThreshold;
+    const splitForBalance =
+      options.balanceLineLength &&
       current.length >= minWords &&
-      currentDuration >= options.minCaptionDuration &&
-      (current.length >= maxWords ||
-        (options.balanceLineLength && current.length >= targetWords && candidateText.length > options.maxCharsPerCaption * 0.82) ||
-        candidateText.length > options.maxCharsPerCaption ||
-        splitForPause ||
-        tooFast ||
-        currentDuration >= options.maxCaptionDuration);
+      current.length >= targetWords &&
+      candidateText.length > maxChars * 0.92;
+    const splitForReadingSpeed = current.length >= minWords && readingSpeed > options.targetReadingSpeedCps;
+    const shouldSplit =
+      current.length >= maxWords ||
+      candidateText.length > maxChars ||
+      candidateDuration > maxDuration ||
+      splitForPause ||
+      splitForBalance ||
+      splitForReadingSpeed;
 
     if (shouldSplit) {
       flush();
     }
 
-    current.push({ ...word, word: cleanWord });
+    current.push(normalizedWord);
   }
 
   flush();
-  if (!options.avoidSingleWordCaptions) return pages;
-
-  const merged: AlignedWord[][] = [];
-  for (const page of pages) {
-    const last = merged[merged.length - 1];
-    if (page.length === 1 && last && last.length + page.length <= options.maxWordsPerCaption) {
-      last.push(...page);
-    } else {
-      merged.push(page);
-    }
-  }
-  return merged;
+  return finalizeCaptionPages(pages, options);
 }
 
 export function segmentsToCaptions(
@@ -105,43 +440,50 @@ export function segmentsToCaptions(
   options: CaptionChunkingConfig = DEFAULT_CAPTION_CHUNKING_CONFIG
 ): Caption[] {
   const captions: Caption[] = [];
+  let timedWordBuffer: AlignedWord[] = [];
+
+  const flushTimedWordBuffer = () => {
+    if (timedWordBuffer.length === 0) return;
+
+    const groups = buildCaptionPages(
+      [...timedWordBuffer].sort((a, b) => a.start - b.start),
+      options
+    );
+
+    groups.forEach((group, index) => {
+      if (group.length === 0) return;
+      captions.push(buildCaptionFromWordGroup(group, groups[index + 1]?.[0]?.start, lang, theme, options));
+    });
+
+    timedWordBuffer = [];
+  };
 
   for (const seg of segments) {
     if (!seg.text || !seg.text.trim()) continue;
 
-    // If word-level data exists, create small word groups
-    const validWords: AlignedWord[] = (seg.words || []).filter(
-      (w) => w.word && w.start !== undefined && w.end !== undefined
-    );
+    const validWords = getSegmentWords(seg);
 
     if (validWords.length > 0) {
-      for (const group of buildCaptionPages(validWords, options)) {
-        if (group.length === 0) continue;
-
-        captions.push({
-          id: generateCaptionId(),
-          start: group[0].start,
-          end: group[group.length - 1].end,
-          text: group.map((w) => w.word).join(" "),
-          words: group,
-          lang: lang as Caption["lang"],
-          theme: theme as Caption["theme"],
-        });
-      }
-    } else {
-      // Fallback: no word data, use segment as single caption
-      captions.push({
-        id: generateCaptionId(),
-        start: seg.start,
-        end: seg.end,
-        text: seg.text.trim(),
-        lang: lang as Caption["lang"],
-        theme: theme as Caption["theme"],
-      });
+      timedWordBuffer.push(...validWords);
+      continue;
     }
+
+    flushTimedWordBuffer();
+
+    captions.push({
+      id: generateCaptionId(),
+      start: seg.start,
+      end: seg.end,
+      text: seg.text.trim(),
+      originalText: seg.text.trim(),
+      lang: lang as Caption["lang"],
+      theme: theme as Caption["theme"],
+    });
   }
 
-  return captions;
+  flushTimedWordBuffer();
+
+  return normalizeCaptionTimeline(captions);
 }
 
 export const segmentsToCapptions = segmentsToCaptions;
@@ -153,6 +495,129 @@ export function getActiveWordIndex(words: AlignedWord[] | undefined, currentTime
 
 export function wordActivationProgressFrames(word: AlignedWord, currentTime: number, fps: number): number {
   return Math.max(0, (currentTime - word.start) * fps);
+}
+
+export function applyEditedCaptionText(caption: Caption, nextText: string): Partial<Caption> {
+  const text = nextText.trim().replace(/\s+/g, " ");
+  const tokens = tokenizeCaptionText(text);
+  const currentWords = normalizeCaptionWords(caption);
+  const originalText =
+    caption.originalText || currentWords.map((word) => word.originalWord || word.word).join(" ") || caption.text;
+
+  if (tokens.length === 0) {
+    return {
+      text: "",
+      words: [],
+      originalText,
+      manuallyEdited: true,
+      timingNeedsReview: true,
+      timingWarning: "Caption text is empty.",
+    };
+  }
+
+  if (currentWords.length > 0 && currentWords.length === tokens.length) {
+    const words = currentWords.map((word, index) => ({
+      ...word,
+      word: tokens[index],
+      displayedWord: tokens[index],
+      originalWord: word.originalWord || word.word,
+      timingSource: word.timingSource || inferWordTimingSource(word),
+      timing_source: word.timing_source || word.timingSource || inferWordTimingSource(word),
+    }));
+    return {
+      text,
+      words,
+      originalText,
+      manuallyEdited: true,
+      timingNeedsReview: false,
+      timingWarning: validateCaptionTiming({ ...caption, text, words, originalText, manuallyEdited: true, timingNeedsReview: false }),
+    };
+  }
+
+  const duration = Math.max(MIN_CAPTION_DURATION, caption.end - caption.start);
+  const wordDuration = duration / tokens.length;
+  const words = tokens.map((word, index) => {
+    const start = roundWordTime(caption.start + wordDuration * index);
+    const rawEnd = index === tokens.length - 1 ? caption.end : caption.start + wordDuration * (index + 1);
+    return {
+      word,
+      displayedWord: word,
+      originalWord: currentWords[index]?.originalWord || currentWords[index]?.word || word,
+      start,
+      end: roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, rawEnd)),
+      score: currentWords[index]?.score ?? 0,
+      confidence: currentWords[index]?.confidence,
+      provider: currentWords[index]?.provider,
+      languageHint: currentWords[index]?.languageHint,
+      timingSource: "estimated" as CaptionTimingSource,
+      timing_source: "estimated",
+    };
+  });
+
+  return {
+    text,
+    words,
+    originalText,
+    manuallyEdited: true,
+    timingNeedsReview: true,
+    timingWarning: "Word count changed, so word timings were evenly estimated inside this caption.",
+  };
+}
+
+export function applyManualCaptionTiming(caption: Caption, nextStart: number, nextEnd: number): Caption {
+  const start = Math.max(0, Number.isFinite(nextStart) ? nextStart : caption.start);
+  const end = Math.max(start + MIN_CAPTION_DURATION, Number.isFinite(nextEnd) ? nextEnd : caption.end);
+  const oldDuration = Math.max(MIN_CAPTION_DURATION, caption.end - caption.start);
+  const nextDuration = end - start;
+  const words = normalizeCaptionWords(caption).map((word) => {
+    const relativeStart = Math.max(0, Math.min(1, (word.start - caption.start) / oldDuration));
+    const relativeEnd = Math.max(relativeStart, Math.min(1, (word.end - caption.start) / oldDuration));
+    const wordStart = roundWordTime(start + relativeStart * nextDuration);
+    const wordEnd = roundWordTime(Math.max(wordStart + MIN_SYNTHETIC_WORD_DURATION, start + relativeEnd * nextDuration));
+    return {
+      ...word,
+      start: wordStart,
+      end: Math.min(end, wordEnd),
+      timingSource: "manual" as CaptionTimingSource,
+      timing_source: "manual",
+    };
+  });
+
+  const nextCaption = {
+    ...caption,
+    start: roundWordTime(start),
+    end: roundWordTime(end),
+    words,
+    timingNeedsReview: caption.timingNeedsReview,
+  };
+
+  return {
+    ...nextCaption,
+    timingWarning: validateCaptionTiming(nextCaption),
+  };
+}
+
+export function shiftCaptionTiming(caption: Caption, offsetSeconds: number): Caption {
+  const desiredStart = caption.start + offsetSeconds;
+  const actualOffset = Math.max(0, desiredStart) - caption.start;
+  return applyManualCaptionTiming(caption, caption.start + actualOffset, caption.end + actualOffset);
+}
+
+export function validateCaptionTiming(caption: Caption): string | undefined {
+  if (!Number.isFinite(caption.start) || !Number.isFinite(caption.end)) return "Caption timing contains an invalid number.";
+  if (caption.start < 0) return "Caption starts before 0 seconds.";
+  if (caption.end <= caption.start) return "Caption end must be after the start.";
+
+  let previousStart = -Infinity;
+  for (const word of normalizeCaptionWords(caption)) {
+    if (!Number.isFinite(word.start) || !Number.isFinite(word.end)) return "A word has invalid timing.";
+    if (word.start < caption.start - 0.001 || word.end > caption.end + 0.001) return "Word timing is outside the caption range.";
+    if (word.end <= word.start) return "A word end time is before its start time.";
+    if (word.start < previousStart) return "Word start times are not increasing.";
+    previousStart = word.start;
+  }
+
+  return caption.timingNeedsReview ? caption.timingWarning : undefined;
 }
 
 export function formatTimecode(seconds: number): string {
@@ -235,6 +700,9 @@ function rgbaToAss(rgba: string): string {
 // Per-theme highlight color matching CaptionOverlay.tsx
 const THEME_HIGHLIGHT_COLORS: Partial<Record<CaptionTheme, string>> = {
   word_highlight_box: "#FFD43B",
+  mrbeast_style: "#FFFF00",
+  apple_cinematic: "#FFFFFF",
+  modern_minimalist_lockup: "#FFFFFF",
   viral_word_highlight: "#22f4b8",
   viral_shorts: "#FFD700",
   kalakar_fire: "#ff6b35",
@@ -279,7 +747,7 @@ function buildKaraokeText(caption: Caption): string {
 
   return caption.words.map((w) => {
     const durCs = Math.max(1, Math.round((w.end - w.start) * 100));
-    return `{\\kf${durCs}\\1c${highlightAss}}${w.word}`;
+    return `{\\kf${durCs}\\1c${highlightAss}}${getWordDisplayText(w)}`;
   }).join(" ");
 }
 
@@ -290,9 +758,16 @@ function buildKaraokeText(caption: Caption): string {
  * - Custom per-caption overrides → unique style (Custom_0, Custom_1, ...)
  * - Word-level data → \kf karaoke tags with highlight color
  */
-export function generateASS(captions: Caption[], _theme?: CaptionTheme, enableKaraoke: boolean = true): string {
+export function generateASS(
+  captions: Caption[],
+  _theme?: CaptionTheme,
+  enableKaraoke: boolean = true,
+  playRes?: { width: number; height: number }
+): string {
   const styleMap = new Map<string, string>(); // styleName → Style line
   const captionStyleNames: string[] = [];
+  const playResX = Math.max(1, Math.round(playRes?.width || 1080));
+  const playResY = Math.max(1, Math.round(playRes?.height || 1920));
 
   const sorted = [...captions].sort((a, b) => a.start - b.start);
 
@@ -322,10 +797,10 @@ export function generateASS(captions: Caption[], _theme?: CaptionTheme, enableKa
   const styleLines = Array.from(styleMap.values()).join("\n");
 
   const header = `[Script Info]
-Title: Caption AI Pro v5.0
+Title: Huygen Caps
 ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
+  PlayResX: ${playResX}
+  PlayResY: ${playResY}
 WrapStyle: 0
 
 [V4+ Styles]

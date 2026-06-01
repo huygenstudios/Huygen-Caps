@@ -1,14 +1,10 @@
 # === AI Pipeline (v4.3) ===
-whisperx
-faster-whisper
 groq
 openai
 pydub
 requests
 indic-transliteration
-sentence-transformers
 pyspellchecker
-librosa
 soundfile
 numpy
 langdetect

@@ -5,6 +5,7 @@
 import { useEffect, useCallback } from "react";
 import { usePlaybackStore } from "@/store/playbackStore";
 import { useTimelineStore } from "@/store/timelineStore";
+import { TRACK_HEADER_WIDTH } from "@/lib/timelineUtils";
 
 export function useTimelineSync() {
   const { currentTime, duration } = usePlaybackStore();
@@ -26,7 +27,7 @@ export function useTimelineSync() {
   // Handle timeline click to seek
   const handleTimelineSeek = useCallback(
     (clientX: number, containerLeft: number) => {
-      const x = clientX - containerLeft + scrollLeft;
+      const x = clientX - containerLeft - TRACK_HEADER_WIDTH + scrollLeft;
       const time = Math.max(0, Math.min(duration, x / pixelsPerSecond));
       usePlaybackStore.getState().setCurrentTime(time);
     },

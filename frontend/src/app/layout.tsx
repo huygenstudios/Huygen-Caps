@@ -17,8 +17,14 @@ import "@fontsource/anton/400.css";
 import "@fontsource/bebas-neue/400.css";
 
 export const metadata: Metadata = {
-  title: "Caption AI — Video Caption Editor",
-  description: "Open-source AI-powered video captioning with Premiere Pro-inspired editor",
+  title: "Huygen Caps",
+  description: "AI caption editor for creators",
+  icons: {
+    icon: "/favicon.png",
+    shortcut: "/favicon.png",
+    apple: "/brand/huygen-icon-512.png",
+  },
+  manifest: "/manifest.json",
 };
 
 export default function RootLayout({
