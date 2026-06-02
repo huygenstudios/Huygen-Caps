@@ -15,11 +15,9 @@ import aiofiles
 
 from ..database import get_db, DB_PATH
 from ..models import JobResponse, JobDetailResponse
-from ..pipeline_runner import run_pipeline_sync
 from ..progress import manager
 from ..settings import EXPORT_DIR, MAX_UPLOAD_SIZE_MB, UPLOAD_DIR, ensure_runtime_dirs
 from ai_pipeline.language_modes import SUPPORTED_LANGUAGE_MODES, normalize_language_mode
-from ai_pipeline.transcriber import validate_transcription_config
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
@@ -149,6 +147,8 @@ async def create_job(
     )
 
     try:
+        from ai_pipeline.transcriber import validate_transcription_config
+
         validate_transcription_config(normalized_mode)
     except RuntimeError as exc:
         _log_stage(job_id, "request rejected", reason=str(exc), language_mode=normalized_mode)
@@ -192,7 +192,12 @@ async def create_job(
         await db.commit()
 
     # Start background thread for heavy processing
-    t = Thread(target=run_pipeline_sync, args=(job_id, file_path, normalized_mode))
+    def pipeline_thread_target() -> None:
+        from ..pipeline_runner import run_pipeline_sync
+
+        run_pipeline_sync(job_id, file_path, normalized_mode)
+
+    t = Thread(target=pipeline_thread_target)
     t.daemon = True
     t.start()
 

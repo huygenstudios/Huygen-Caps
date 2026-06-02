@@ -84,6 +84,34 @@ Export failed during <stage>: <error>
 
 If it only shows a generic network error, check API URL and backend health.
 
+## Render 502 During Export
+
+Symptom:
+
+```text
+Starting frame capture... 5%
+502
+```
+
+Root cause:
+
+- Long synchronous MP4 exports can outlive Render/proxy request limits or crash the worker under memory pressure.
+
+Production fix in this repo:
+
+- The UI starts a background export with `POST /api/export/jobs`.
+- It polls `GET /api/export/jobs/{jobId}` for `queued`, `running`, `completed`, or `failed`.
+- `MAX_CONCURRENT_EXPORTS=1` prevents multiple Chromium/FFmpeg exports from running at once.
+- `MAX_EXPORT_DURATION_SECONDS=300` rejects unexpectedly huge exports with a clear staged error.
+
+Check Render:
+
+- Open `/health`; the service should remain `ok` after a failed export.
+- Open `/health/export`; confirm `ffmpegAvailable`, `ffprobeAvailable`, `rendererAvailable`, `chromium_launch`, and writable temp/export dirs.
+- Check `activeExports`, `queuedExports`, and `maxConcurrentExports`.
+- Inspect Render logs for `export_job_failed`, `headless_launch`, `render_frames`, `ffmpeg_encode`, or memory/restart messages.
+- If memory is low, reduce resolution/FPS/duration or upgrade the Render plan.
+
 ## FFmpeg Not Found
 
 Local fix:

@@ -41,6 +41,8 @@ FRONTEND_DIST_DIR = _path_env("FRONTEND_DIST_DIR", ROOT_DIR / "frontend" / "out"
 
 MAX_UPLOAD_SIZE_MB = _int_env("MAX_UPLOAD_SIZE_MB", 500)
 RUNTIME_CLEANUP_HOURS = _int_env("RUNTIME_CLEANUP_HOURS", 24)
+MAX_CONCURRENT_EXPORTS = max(1, _int_env("MAX_CONCURRENT_EXPORTS", 1))
+MAX_EXPORT_DURATION_SECONDS = max(1, _int_env("MAX_EXPORT_DURATION_SECONDS", 300))
 
 
 def env_list(name: str, fallback: list[str]) -> list[str]:

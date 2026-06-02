@@ -4,9 +4,9 @@ Huygen Caps supports full-video MP4 export and captions-only MP4 export.
 
 ## Frontend Flow
 
-The Export modal calls `exportHeadless` in `frontend/src/lib/api.ts`.
+The Export modal starts a background MP4 export job through `startHeadlessExportJob` in `frontend/src/lib/api.ts`.
 
-The request sends:
+The start request sends:
 
 - captions JSON,
 - active caption theme,
@@ -17,32 +17,60 @@ The request sends:
 - audio setting,
 - export mode,
 - duration and duration source,
-- captions count and visible track count.
+- captions count and visible track count,
+- source caption job ID.
 
-The backend returns:
+The backend returns quickly:
 
 ```json
 {
   "success": true,
-  "exportJobId": "job-output-id",
-  "downloadUrl": "/exports/file.mp4",
-  "filename": "file.mp4",
-  "duration": 68.37,
-  "width": 1080,
-  "height": 1920,
-  "fps": 30
+  "jobId": "export-job-id",
+  "statusUrl": "/api/export/jobs/export-job-id",
+  "message": "Export started"
 }
 ```
 
-The frontend resolves `downloadUrl` against the backend base URL and shows a Download MP4 button.
+The frontend polls `statusUrl` every 1-2 seconds. When the job completes it resolves `downloadUrl` against the backend base URL and shows a Download MP4 button.
 
 ## Backend Route
 
 ```text
-POST /api/jobs/{job_id}/export
+POST /api/export/jobs
+GET /api/export/jobs/{export_job_id}
 ```
 
-The backend route is in `server/api/jobs.py`. Headless rendering is in `server/headless_export.py`.
+The background job routes are in `server/api/export_jobs.py`. Headless rendering is in `server/headless_export.py`.
+
+The older `POST /api/jobs/{job_id}/export` route remains as a compatibility path, but production UI uses job polling so Render does not have to keep a long POST request open.
+
+Status response:
+
+```json
+{
+  "jobId": "export-job-id",
+  "status": "queued",
+  "stage": "frame_capture",
+  "progress": 5,
+  "message": "Starting frame capture...",
+  "downloadUrl": null,
+  "error": null
+}
+```
+
+Completion response:
+
+```json
+{
+  "jobId": "export-job-id",
+  "status": "completed",
+  "stage": "completed",
+  "progress": 100,
+  "downloadUrl": "/exports/file.mp4",
+  "filename": "file.mp4",
+  "bytes": 123456
+}
+```
 
 ## Stages
 

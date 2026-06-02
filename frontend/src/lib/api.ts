@@ -49,6 +49,50 @@ export interface ExportMp4Response {
   bytes?: number;
 }
 
+export interface StartExportJobResponse {
+  success: true;
+  jobId: string;
+  statusUrl: string;
+  message: string;
+}
+
+export interface ExportJobStatusResponse {
+  jobId: string;
+  sourceJobId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  stage: string;
+  progress: number;
+  message?: string;
+  error?: string | null;
+  downloadUrl?: string | null;
+  filename?: string | null;
+  bytes?: number | null;
+  duration?: number | null;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface HeadlessExportOptions {
+  width?: number;
+  height?: number;
+  fps?: number;
+  includeAudio?: boolean;
+  quality?: string;
+  bitrate?: string;
+  customBitrateMbps?: number;
+  exportMode?: "full_video" | "captions_only";
+  backgroundColor?: string;
+  duration?: number;
+  durationSource?: string;
+  visibleTracksCount?: number;
+  sourceMediaCount?: number;
+  captionChunksCount?: number;
+  hardwareAcceleration?: boolean;
+}
+
 const configuredApiBase = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
 
 function isLocalHost(hostname: string) {
@@ -117,6 +161,12 @@ async function readError(res: Response) {
     return {
       message: `Export failed during ${payload.stage}: ${payload.error}`,
       details: payload,
+    };
+  }
+  if (payload?.detail?.success === false && payload.detail.stage && payload.detail.error) {
+    return {
+      message: `Export failed during ${payload.detail.stage}: ${payload.detail.error}`,
+      details: payload.detail,
     };
   }
   const detail = payload?.detail || payload?.message || payload?.error || payload;
@@ -263,30 +313,34 @@ export async function exportHeadless(
   theme: string,
   resolution: string = "1080p",
   styleConfigJson?: string,
-  options?: {
-    width?: number;
-    height?: number;
-    fps?: number;
-    includeAudio?: boolean;
-    quality?: string;
-    bitrate?: string;
-    customBitrateMbps?: number;
-    exportMode?: "full_video" | "captions_only";
-    backgroundColor?: string;
-    duration?: number;
-    durationSource?: string;
-    visibleTracksCount?: number;
-    sourceMediaCount?: number;
-    captionChunksCount?: number;
-    hardwareAcceleration?: boolean;
-  }
+  options?: HeadlessExportOptions
 ): Promise<ExportMp4Response> {
+  const formData = buildHeadlessExportFormData(captionsJson, theme, resolution, styleConfigJson, options);
+  formData.append("response_format", "json");
+
+  return apiFetch<ExportMp4Response>(
+    `/api/jobs/${jobId}/export`,
+    {
+      method: "POST",
+      body: formData,
+    },
+    30 * 60 * 1000,
+    "json"
+  );
+}
+
+function buildHeadlessExportFormData(
+  captionsJson: string,
+  theme: string,
+  resolution: string,
+  styleConfigJson?: string,
+  options?: HeadlessExportOptions
+) {
   const formData = new FormData();
   formData.append("captions_json", captionsJson);
   formData.append("theme", theme);
   formData.append("resolution", resolution);
   formData.append("render_mode", "headless");
-  formData.append("response_format", "json");
   if (options?.width) formData.append("export_width", String(options.width));
   if (options?.height) formData.append("export_height", String(options.height));
   if (options?.fps) formData.append("export_fps", String(options.fps));
@@ -305,14 +359,34 @@ export async function exportHeadless(
   if (styleConfigJson) {
     formData.append("style_config_json", styleConfigJson);
   }
+  return formData;
+}
 
-  return apiFetch<ExportMp4Response>(
-    `/api/jobs/${jobId}/export`,
+export async function startHeadlessExportJob(
+  sourceJobId: string,
+  captionsJson: string,
+  theme: string,
+  resolution: string = "1080p",
+  styleConfigJson?: string,
+  options?: HeadlessExportOptions
+): Promise<StartExportJobResponse> {
+  const formData = buildHeadlessExportFormData(captionsJson, theme, resolution, styleConfigJson, options);
+  formData.append("source_job_id", sourceJobId);
+
+  return apiFetch<StartExportJobResponse>(
+    "/api/export/jobs",
     {
       method: "POST",
       body: formData,
     },
-    30 * 60 * 1000,
+    45 * 1000,
     "json"
   );
+}
+
+export async function getExportJobStatus(exportJobIdOrStatusUrl: string): Promise<ExportJobStatusResponse> {
+  const path = exportJobIdOrStatusUrl.startsWith("/api/")
+    ? exportJobIdOrStatusUrl
+    : `/api/export/jobs/${exportJobIdOrStatusUrl}`;
+  return apiFetch<ExportJobStatusResponse>(path, {}, 15 * 1000, "json");
 }

@@ -15,6 +15,8 @@ Do not commit real `.env` files or API keys.
 | `OPENAI_API_KEY` | One provider key required | backend | blank | secret | OpenAI Whisper key. |
 | `GROQ_API_KEY` | One provider key required | backend | blank | secret | Groq Whisper key. |
 | `MAX_UPLOAD_SIZE_MB` | No | backend | `500` | `500` | Upload size limit. |
+| `MAX_CONCURRENT_EXPORTS` | No | backend | `1` | `1` | Maximum background MP4 exports running at the same time. Keep `1` on small Render instances. |
+| `MAX_EXPORT_DURATION_SECONDS` | No | backend | `300` | `300` | Rejects unexpectedly long exports before Chromium/FFmpeg work starts. |
 | `TEMP_DIR` | No | backend | `/tmp/huygen-caps` on Linux, system temp on Windows | `/tmp/huygen-caps` | Runtime temp root. |
 | `UPLOAD_DIR` | No | backend | `${TEMP_DIR}/uploads` | `/tmp/huygen-caps/uploads` | Uploaded media storage. |
 | `EXPORT_DIR` | No | backend | `${TEMP_DIR}/exports` | `/tmp/huygen-caps/exports` | Exported MP4 storage served at `/exports`. |
@@ -30,7 +32,7 @@ For the default Docker/Render deployment, leave `NEXT_PUBLIC_API_URL` blank. The
 ```text
 /api/jobs
 /api/health
-/api/jobs/{job_id}/export
+/api/export/jobs
 ```
 
 If you split frontend and backend, set `NEXT_PUBLIC_API_URL` to the backend Render HTTPS URL and add the frontend URL to backend CORS.

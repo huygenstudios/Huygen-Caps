@@ -4,7 +4,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileText, Film, Loader2, Save, X } from "lucide-react";
-import { exportHeadless, createProgressWebSocket, resolveBackendUrl } from "@/lib/api";
+import { getExportJobStatus, resolveBackendUrl, startHeadlessExportJob } from "@/lib/api";
 import { captionBelongsOnTrack, determineExportDuration, resolveExportDimensions, resolveExportFps } from "@/lib/editorModel";
 import { downloadFile } from "@/lib/captionUtils";
 import { ExportFormat, ProjectData } from "@/lib/types";
@@ -67,7 +67,10 @@ function qualityLabel(value: string) {
 }
 
 function formatExportError(err: unknown) {
-  const raw = err instanceof Error ? err.message : "Export failed";
+  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "Export failed";
+  if (/\b502\b|bad gateway|backend is unreachable/i.test(raw)) {
+    return "Backend export service became unreachable. Check Render logs, /health, and /health/export.";
+  }
   const message = raw
     .replace(/^Headless export failed:\s*/i, "")
     .replace(/^Export failed during unexpected_error:\s*$/i, "Export failed during failed: backend returned an empty error. Check /api/health/export and the backend logs.")
@@ -76,6 +79,10 @@ function formatExportError(err: unknown) {
     return "Export API returned an HTML page instead of JSON. Check that the editor is calling FastAPI, not the Next.js dev server.";
   }
   return message.length > 4500 ? `${message.slice(0, 4500)}...` : message;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 export default function ExportModal() {
@@ -102,7 +109,7 @@ export default function ExportModal() {
   const [exportError, setExportError] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadName, setDownloadName] = useState("");
-  const wsRef = useRef<WebSocket | null>(null);
+  const pollCancelledRef = useRef(false);
 
   const visibleCaptionTracks = useMemo(
     () => tracks.filter((track) => (track.type === "caption" || track.type === "overlay") && track.visible),
@@ -117,6 +124,7 @@ export default function ExportModal() {
 
   useEffect(() => {
     if (!showExportModal) {
+      pollCancelledRef.current = true;
       if (downloadUrl.startsWith("blob:")) URL.revokeObjectURL(downloadUrl);
       setDownloadUrl("");
       setDownloadName("");
@@ -249,19 +257,7 @@ export default function ExportModal() {
     try {
       setExportSettings({ format: "mp4" });
       setExportStatus("Preparing Huygen render...");
-
-      wsRef.current = createProgressWebSocket(
-        jobId,
-        (data) => {
-          if (data.status.startsWith("export")) {
-            setExportPercent(Math.max(0, data.percent));
-            setExportStatus(data.details || data.status);
-          }
-        },
-        () => {
-          wsRef.current = null;
-        }
-      );
+      pollCancelledRef.current = false;
 
       const payloadCaptions = exportSettings.burnCaptions ? captionsForExport : [];
       console.info("huygen_export_request", {
@@ -276,7 +272,7 @@ export default function ExportModal() {
         visibleTracks: visibleCaptionTracks.length,
         sourceMedia: mediaFiles.length,
       });
-      const result = await exportHeadless(
+      const started = await startHeadlessExportJob(
         jobId,
         JSON.stringify(payloadCaptions),
         theme,
@@ -300,18 +296,48 @@ export default function ExportModal() {
           hardwareAcceleration: exportSettings.hardwareAcceleration,
         }
       );
+      setExportStatus(started.message || "Export started...");
 
-      wsRef.current?.close();
-      wsRef.current = null;
+      let missedPolls = 0;
+      while (!pollCancelledRef.current) {
+        await wait(1500);
+        try {
+          const status = await getExportJobStatus(started.statusUrl || started.jobId);
+          missedPolls = 0;
+          const nextPercent = Math.max(0, Math.min(100, status.progress || 0));
+          setExportPercent(nextPercent);
+          setExportStatus(status.message || status.stage || status.status);
 
-      setDownloadUrl(resolveBackendUrl(result.downloadUrl));
-      setDownloadName(result.filename || `huygen_caps_${exportSettings.mode}_${exportDimensions.width}x${exportDimensions.height}_${exportFps}fps.mp4`);
-      setExportStatus("Export complete. MP4 is ready to download.");
-      setExportPercent(100);
-      setExporting(false);
+          if (status.status === "completed") {
+            if (!status.downloadUrl) {
+              throw new Error("Export completed but did not return a download URL.");
+            }
+            setDownloadUrl(resolveBackendUrl(status.downloadUrl));
+            setDownloadName(status.filename || `huygen_caps_${exportSettings.mode}_${exportDimensions.width}x${exportDimensions.height}_${exportFps}fps.mp4`);
+            setExportStatus("Export complete. MP4 is ready to download.");
+            setExportPercent(100);
+            setExporting(false);
+            return;
+          }
+
+          if (status.status === "failed") {
+            pollCancelledRef.current = true;
+            setExportError(formatExportError(`Export failed during ${status.stage}: ${status.error || status.message || "backend export failed"}`));
+            setExportStatus("Export failed");
+            setExportPercent(-1);
+            setExporting(false);
+            return;
+          }
+        } catch (pollError) {
+          missedPolls += 1;
+          if (missedPolls >= 5) {
+            throw pollError;
+          }
+          setExportStatus("Waiting for backend export status...");
+        }
+      }
     } catch (err: unknown) {
-      wsRef.current?.close();
-      wsRef.current = null;
+      pollCancelledRef.current = true;
       setExportError(formatExportError(err));
       setExportStatus("Export failed");
       setExportPercent(-1);

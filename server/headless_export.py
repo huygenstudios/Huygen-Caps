@@ -115,16 +115,22 @@ async def check_export_runtime_async() -> dict[str, object]:
     chromium_launch = False
     chromium_launch_error = None
 
-    try:
+    async def probe_chromium() -> None:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
+                args=["--disable-gpu", "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             )
-            chromium_launch = True
             await browser.close()
+
+    try:
+        timeout_seconds = float(os.getenv("EXPORT_HEALTH_CHROMIUM_TIMEOUT_SECONDS", "8"))
+        await asyncio.wait_for(probe_chromium(), timeout=max(1.0, timeout_seconds))
+        chromium_launch = True
+    except asyncio.TimeoutError:
+        chromium_launch_error = "Chromium launch probe timed out."
     except Exception as exc:
         chromium_launch_error = f"{type(exc).__name__}: {exc}"
 

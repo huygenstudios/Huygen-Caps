@@ -33,9 +33,8 @@ import shutil
 
 # These imports will trigger ai_pipeline logic
 from .database import init_db
-from .api import health, jobs
+from .api import health, jobs, export_jobs
 from .settings import cleanup_old_runtime_files, ensure_runtime_dirs, env_list, frontend_dist_available, FRONTEND_DIST_DIR, EXPORT_DIR
-from ai_pipeline.transcriber import get_stt_provider
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +48,7 @@ async def lifespan(app: FastAPI):
         logger.info("runtime_cleanup removed_files=%s", removed)
     
     # Check for crucial runtime dependencies and API keys.
-    try:
-        stt_provider = get_stt_provider()
-    except RuntimeError as exc:
-        stt_provider = ""
-        print(f"WARNING: {exc}")
+    stt_provider = os.getenv("STT_PROVIDER", "auto").strip() or "auto"
     groq_key = os.getenv("GROQ_API_KEY", "")
     openai_key = os.getenv("OPENAI_API_KEY", "")
     sarvam_key = os.getenv("SARVAM_API_KEY", "")
@@ -109,6 +104,7 @@ app.add_middleware(
 # Add API routers
 app.include_router(health.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(export_jobs.router, prefix="/api")
 
 
 @app.get("/health", response_model=health.HealthResponse)

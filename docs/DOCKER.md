@@ -77,3 +77,5 @@ If MP4 export is slow:
 - The default CPU encoder is `libx264`.
 - Render free/starter instances may be slow for long videos.
 - Keep test exports short while validating deployment.
+- Keep `MAX_CONCURRENT_EXPORTS=1` on small containers so Chromium and FFmpeg do not run multiple exports at once.
+- If Render returns `502` during export, verify the frontend is polling `/api/export/jobs/{jobId}` and check `/health/export` for active/queued exports.

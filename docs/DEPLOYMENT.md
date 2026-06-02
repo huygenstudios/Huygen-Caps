@@ -29,6 +29,8 @@ Set these in the Render dashboard:
 NODE_ENV=production
 STT_PROVIDER=auto
 MAX_UPLOAD_SIZE_MB=500
+MAX_CONCURRENT_EXPORTS=1
+MAX_EXPORT_DURATION_SECONDS=300
 TEMP_DIR=/tmp/huygen-caps
 UPLOAD_DIR=/tmp/huygen-caps/uploads
 EXPORT_DIR=/tmp/huygen-caps/exports
@@ -91,6 +93,9 @@ Export fails on Render:
 - Confirm FFmpeg/FFprobe are installed in the Docker image.
 - Confirm Chromium launches.
 - Confirm `/tmp/huygen-caps/exports` is writable.
+- Confirm the UI is using `/api/export/jobs`, not holding a long `/api/jobs/{id}/export` POST open.
+- Check `activeExports` and `queuedExports`; keep `MAX_CONCURRENT_EXPORTS=1` on small instances.
+- If export reaches frame capture and then Render shows `502`, inspect logs for service restart or memory pressure and reduce duration/resolution/FPS or upgrade the plan.
 
 Ephemeral files disappear:
 

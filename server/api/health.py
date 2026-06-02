@@ -2,10 +2,11 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 import os
+from pathlib import Path
 
-from ai_pipeline.transcriber import get_stt_provider
 from ..settings import EXPORT_DIR, MAX_UPLOAD_SIZE_MB, TEMP_DIR, default_render_page_url, dependency_status
 from ..headless_export import check_export_runtime, check_export_runtime_async
+from .export_jobs import export_job_metrics
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -29,11 +30,7 @@ def _has_key(name: str) -> bool:
 def health_payload() -> HealthResponse:
     deps = dependency_status()
     warnings: list[str] = []
-    try:
-        provider = get_stt_provider()
-    except RuntimeError as exc:
-        provider = None
-        warnings.append(str(exc))
+    provider = os.getenv("STT_PROVIDER", "auto").strip() or "auto"
     if not deps.get("ffmpeg"):
         warnings.append("FFmpeg is not available; MP4 export will fail.")
     if not deps.get("ffprobe"):
@@ -88,6 +85,7 @@ def export_health_payload() -> dict[str, object]:
         "rendererAvailable": renderer_available,
         "tempDir": str(TEMP_DIR),
         "exportDir": str(EXPORT_DIR),
+        **export_job_metrics(),
     })
     if not (payload["ffmpegAvailable"] and payload["ffprobeAvailable"] and temp_writable and export_writable and renderer_available):
         payload["status"] = "degraded"
@@ -110,6 +108,7 @@ async def export_health_payload_async() -> dict[str, object]:
         "rendererAvailable": renderer_available,
         "tempDir": str(TEMP_DIR),
         "exportDir": str(EXPORT_DIR),
+        **export_job_metrics(),
     })
     if not (payload["ffmpegAvailable"] and payload["ffprobeAvailable"] and temp_writable and export_writable and renderer_available):
         payload["status"] = "degraded"
