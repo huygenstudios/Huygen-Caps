@@ -9,6 +9,7 @@ import os
 import json
 import asyncio
 import logging
+import math
 import struct
 import shutil
 import time
@@ -355,7 +356,7 @@ async def export_headless(
             "Please check media metadata, timeline clips, captions, or export duration settings."
         )
 
-    total_frames = max(1, int(duration * export_fps))
+    total_frames = max(1, math.ceil(duration * export_fps))
     logger.info(
         "Headless export: %s frames @ %sfps, duration=%.2fs source=%s mode=%s",
         total_frames,

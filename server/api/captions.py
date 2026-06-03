@@ -66,6 +66,7 @@ async def timing_debug(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
     timing_meta = metadata.get("timing") if isinstance(metadata.get("timing"), dict) else {}
     vad = timing_meta.get("vad") if isinstance(timing_meta.get("vad"), dict) else {}
     silence_gaps = vad.get("silenceGaps") if isinstance(vad.get("silenceGaps"), list) else []
+    chunk_audit = timing_meta.get("chunkAudit") if isinstance(timing_meta.get("chunkAudit"), list) else []
     report = timing_meta.get("report") if isinstance(timing_meta.get("report"), dict) else build_timing_report(segments, silence_gaps)
 
     return {
@@ -75,6 +76,8 @@ async def timing_debug(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
         "chunkCount": len(segments),
         "timingSourceCounts": dict(source_counts) or report.get("timingSourceCounts", {}),
         "silenceGaps": silence_gaps,
+        "speechSegments": vad.get("speechSegments", [])[:80] if isinstance(vad.get("speechSegments"), list) else [],
+        "chunkAudit": chunk_audit[:80],
         "suspiciousTimingWarnings": report.get("warnings", []),
         "chunks": _caption_chunks_from_segments(segments)[:200],
         "first20Words": words[:20],

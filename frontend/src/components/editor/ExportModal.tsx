@@ -296,6 +296,7 @@ export default function ExportModal() {
         duration: exportDuration,
         durationSource: durationInfo.source,
         captions: payloadCaptions.length,
+        exportGlobalOffsetSeconds: captionTimingConfig.globalOffsetSeconds,
         visibleTracks: visibleCaptionTracks.length,
         sourceMedia: mediaFiles.length,
       });

@@ -17,6 +17,7 @@ const MIN_SYNTHETIC_WORD_DURATION = 0.04;
 const MIN_CAPTION_DURATION = 0.08;
 const CAPTION_OVERLAP_EPSILON = 0.001;
 const MAX_ALLOWED_GAP_INSIDE_CHUNK_SECONDS = 0.45;
+const SYNTHETIC_WORD_TIMING_WARNING = "Estimated word timing was synthesized because this caption has no valid provider word timestamps.";
 
 export const DEFAULT_CAPTION_CHUNKING_CONFIG: CaptionChunkingConfig = {
   targetWordsPerCaption: 4,
@@ -110,6 +111,7 @@ export function normalizeCaptionWord(word: AlignedWord): AlignedWord {
     originalWord: original || display,
     timingSource,
     timing_source: word.timing_source || timingSource,
+    timingWarning: word.timingWarning || word.timing_warning,
   };
 }
 
@@ -142,7 +144,20 @@ function synthesizeCaptionWords(caption: Caption): AlignedWord[] {
       score: 0,
       timing_source: "render_estimated",
       timingSource: "estimated",
+      timing_warning: SYNTHETIC_WORD_TIMING_WARNING,
+      timingWarning: SYNTHETIC_WORD_TIMING_WARNING,
     };
+  });
+}
+
+function warnSyntheticRenderableTiming(caption: Caption, reason: string) {
+  if (process.env.NODE_ENV === "production") return;
+  console.warn("[captions] rendering estimated word timing", {
+    captionId: caption.id,
+    start: caption.start,
+    end: caption.end,
+    text: caption.text,
+    reason,
   });
 }
 
@@ -151,10 +166,16 @@ export function getRenderableCaptionWords(caption: Caption): AlignedWord[] {
   const end = roundWordTime(Math.max(start + MIN_CAPTION_DURATION, Number.isFinite(caption.end) ? caption.end : start + 1));
   const words = normalizeCaptionWords(caption).sort((a, b) => a.start - b.start);
 
-  if (words.length === 0) return synthesizeCaptionWords(caption);
+  if (words.length === 0) {
+    warnSyntheticRenderableTiming(caption, "caption has no valid words");
+    return synthesizeCaptionWords(caption);
+  }
 
   const inRange = words.filter((word) => word.end > start + 0.001 && word.start < end - 0.001);
-  if (inRange.length === 0) return synthesizeCaptionWords(caption);
+  if (inRange.length === 0) {
+    warnSyntheticRenderableTiming(caption, "caption words are outside caption range");
+    return synthesizeCaptionWords(caption);
+  }
 
   return inRange.length ? inRange : synthesizeCaptionWords(caption);
 }
@@ -316,6 +337,7 @@ function buildCaptionFromWordGroup(
   options: CaptionChunkingConfig
 ): Caption {
   const normalizedWords = group.map(normalizeCaptionWord).sort((a, b) => a.start - b.start);
+  const usesEstimatedTiming = normalizedWords.some((word) => inferWordTimingSource(word) === "estimated");
   const start = roundWordTime(Math.max(0, normalizedWords[0]?.start ?? 0));
   const lastWordEnd = roundWordTime(Math.max(start + MIN_SYNTHETIC_WORD_DURATION, normalizedWords[normalizedWords.length - 1]?.end ?? start));
   const maxHold = Math.max(0, options.maxHoldAfterWord ?? DEFAULT_CAPTION_CHUNKING_CONFIG.maxHoldAfterWord);
@@ -333,6 +355,8 @@ function buildCaptionFromWordGroup(
     words: normalizedWords,
     lang: lang as Caption["lang"],
     theme: theme as Caption["theme"],
+    timingNeedsReview: usesEstimatedTiming || undefined,
+    timingWarning: usesEstimatedTiming ? SYNTHETIC_WORD_TIMING_WARNING : undefined,
   };
 }
 
@@ -663,9 +687,9 @@ export function shiftCaptionTiming(caption: Caption, offsetSeconds: number): Cap
 }
 
 export function applyCaptionTimingOffset(captions: Caption[], offsetSeconds: number): Caption[] {
-  if (!Number.isFinite(offsetSeconds) || Math.abs(offsetSeconds) < 0.0001) return captions;
+  const safeOffset = Number.isFinite(offsetSeconds) ? offsetSeconds : 0;
   return captions.map((caption) => {
-    const start = roundWordTime(Math.max(0, caption.start + offsetSeconds));
+    const start = roundWordTime(Math.max(0, caption.start + safeOffset));
     const actualOffset = start - caption.start;
     const end = roundWordTime(Math.max(start + MIN_CAPTION_DURATION, caption.end + actualOffset));
     return {

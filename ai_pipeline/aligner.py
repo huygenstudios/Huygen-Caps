@@ -19,7 +19,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PAUSE_SPLIT_THRESHOLD = 0.35
+DEFAULT_PAUSE_SPLIT_THRESHOLD = 0.45
 MIN_WORD_DURATION_SECONDS = 0.02
 MIN_CADENCE_STEP_SECONDS = 0.075
 MAX_CADENCE_STEP_SECONDS = 0.35
@@ -420,6 +420,30 @@ class TranscriptAligner:
                 _safe_float(segment.get("end")),
             )
 
+        for index in range(len(optimized_segments) - 1):
+            segment_words = optimized_segments[index].get("words") or []
+            next_words = optimized_segments[index + 1].get("words") or []
+            if not segment_words or not next_words:
+                continue
+            next_start = _safe_float(next_words[0].get("start"))
+            if next_start is None:
+                continue
+            trimmed_words: list[dict[str, Any]] = []
+            for word in segment_words:
+                start = _safe_float(word.get("start"))
+                end = _safe_float(word.get("end"))
+                if start is None or end is None:
+                    continue
+                if start >= next_start - 0.001:
+                    continue
+                if end > next_start:
+                    word = dict(word)
+                    word["end"] = _round_time(max(start + MIN_WORD_DURATION_SECONDS, next_start - 0.001))
+                    _set_timing_source(word, "overlap_tail_trimmed")
+                trimmed_words.append(word)
+            if trimmed_words:
+                optimized_segments[index]["words"] = trimmed_words
+
         flat_words = []
         word_locations = []
         for segment_index, segment in enumerate(optimized_segments):
@@ -444,7 +468,18 @@ class TranscriptAligner:
         return optimized_segments
 
     def _has_compressed_starts(self, words: list[dict[str, Any]]) -> bool:
+        if any(
+            "estimated phrase retimed to vad speech" in str(word.get("timing_repair") or "").lower()
+            for word in words
+        ):
+            return False
+
         starts = [_safe_float(word.get("start")) for word in words]
+        durations = [
+            (_safe_float(word.get("end")) or 0.0) - (_safe_float(word.get("start")) or 0.0)
+            for word in words
+            if _safe_float(word.get("start")) is not None and _safe_float(word.get("end")) is not None
+        ]
         starts = [start for start in starts if start is not None]
         if len(starts) <= 1:
             return False
@@ -457,7 +492,13 @@ class TranscriptAligner:
             ((_safe_float(word.get("end")) or 0.0) - (_safe_float(word.get("start")) or 0.0)) > 1.4
             for word in words
         ) and compressed_span
-        return repeated_start or backwards_start or compressed_span or long_flat_word
+        interpolated_provider_words = any(
+            "interpolated" in str(word.get("timingSource") or word.get("timing_source") or "").lower()
+            for word in words
+        )
+        average_duration = sum(max(0.0, duration) for duration in durations) / len(durations) if durations else 0.0
+        stretched_interpolated_cadence = interpolated_provider_words and average_duration > MAX_CADENCE_STEP_SECONDS * 1.5
+        return repeated_start or backwards_start or compressed_span or long_flat_word or stretched_interpolated_cadence
 
     def _pick_torch_device(self, torch_module: Any) -> str:
         requested = (os.getenv("SILERO_VAD_DEVICE") or "auto").strip().lower()

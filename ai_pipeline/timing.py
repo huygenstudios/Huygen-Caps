@@ -11,7 +11,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PAUSE_SPLIT_THRESHOLD = float(os.getenv("PAUSE_SPLIT_THRESHOLD", "0.35") or 0.35)
+DEFAULT_PAUSE_SPLIT_THRESHOLD = float(os.getenv("PAUSE_SPLIT_THRESHOLD", "0.45") or 0.45)
 
 
 def _round_time(value: float) -> float:

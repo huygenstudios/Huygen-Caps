@@ -192,11 +192,13 @@ def run_pipeline(
         _stage_log("transcription completed", chunk_count=len(processed_chunks))
         emit_progress("romanizing", 70, "Romanizing and validating transcript text.")
 
+        chunk_audit: list[dict[str, Any]] = []
         if language_mode in CODE_MIXED_LANGUAGE_MODES:
             clamped_segments = build_word_timed_transcript_from_chunks(
                 processed_chunks,
                 language_mode,
                 speech_segments=vad_report.get("speechSegments") or [],
+                chunk_audit=chunk_audit,
             )
         else:
             merged_text, merged_segments = merge_chunks(processed_chunks)
@@ -299,6 +301,7 @@ def run_pipeline(
                 "alignment": timing_provider_status,
                 "vad": vad_report,
                 "report": timing_report,
+                "chunkAudit": chunk_audit[:80],
             },
         }
         _stage_log(

@@ -4,11 +4,14 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { usePlaybackStore } from "@/store/playbackStore";
+import { useEditorStore } from "@/store/editorStore";
 
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const animFrameRef = useRef<number>(0);
   const videoFrameRef = useRef<number>(0);
+  const sequenceFps = useEditorStore((s) => s.sequenceSettings.fps);
+  const driftToleranceSeconds = Math.max(1 / Math.max(1, sequenceFps), 2 / Math.max(1, sequenceFps));
 
   const {
     isPlaying,
@@ -58,7 +61,7 @@ export function useVideoPlayer() {
     if (!el) return;
 
     if (isPlaying) {
-      if (Math.abs(el.currentTime - currentTime) > 0.08) {
+      if (Math.abs(el.currentTime - currentTime) > driftToleranceSeconds) {
         el.currentTime = currentTime;
       }
       el.play().catch((error) => {
@@ -95,15 +98,15 @@ export function useVideoPlayer() {
       };
       frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
     };
-  }, [currentTime, isPlaying, pause, setCurrentTime]);
+  }, [currentTime, driftToleranceSeconds, isPlaying, pause, setCurrentTime]);
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (Math.abs(el.currentTime - currentTime) > 0.08) {
+    if (Math.abs(el.currentTime - currentTime) > driftToleranceSeconds) {
       el.currentTime = currentTime;
     }
-  }, [currentTime]);
+  }, [currentTime, driftToleranceSeconds]);
 
   // Volume sync
   useEffect(() => {

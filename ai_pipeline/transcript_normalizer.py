@@ -18,6 +18,11 @@ MIN_WORD_DURATION = 0.04
 MIN_SPEECH_RETIME_WORDS = 6
 MIN_SPEECH_RETIME_TRAILING_GAP = 1.0
 MIN_SPEECH_RETIME_COMPRESSION_RATIO = 0.78
+MIN_PHRASE_SPEECH_RETIME_WORDS = 4
+CHUNK_ABSOLUTE_TIME_TOLERANCE = 0.75
+CHUNK_END_TOLERANCE = 0.75
+BAD_CHUNK_OVERLAP_TOLERANCE = 0.5
+CHUNK_AUDIT_SAMPLE_SIZE = 5
 
 
 class TranscriptValidationError(ValueError):
@@ -43,6 +48,86 @@ def _env_bool(name: str, default: bool = True) -> bool:
     if value in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
+
+
+def _sample_words(words: list[dict[str, Any]], limit: int = CHUNK_AUDIT_SAMPLE_SIZE) -> list[dict[str, Any]]:
+    sample: list[dict[str, Any]] = []
+    for word in words[:limit]:
+        sample.append(
+            {
+                "word": str(word.get("word") or word.get("text") or "").strip(),
+                "start": _as_float(word.get("start")),
+                "end": _as_float(word.get("end")),
+            }
+        )
+    return sample
+
+
+def _chunk_duration(chunk: Chunk) -> float:
+    return max(0.0, float(chunk.end_time) - float(chunk.start_time))
+
+
+def _detect_provider_timestamp_basis(raw_words: list[dict[str, Any]], chunk: Chunk) -> str:
+    if int(chunk.index) <= 0:
+        return "chunk_local"
+
+    starts = [_as_float(word.get("start")) for word in raw_words]
+    ends = [_as_float(word.get("end")) for word in raw_words]
+    starts = [value for value in starts if value is not None]
+    ends = [value for value in ends if value is not None]
+    if not starts or not ends:
+        return "chunk_local"
+
+    first_start = min(starts)
+    last_end = max(ends)
+    chunk_start = float(chunk.start_time)
+    chunk_end = float(chunk.end_time)
+    duration = _chunk_duration(chunk)
+
+    looks_absolute = (
+        first_start >= chunk_start - CHUNK_ABSOLUTE_TIME_TOLERANCE
+        and last_end <= chunk_end + CHUNK_END_TOLERANCE
+    )
+    looks_chunk_local = first_start <= duration + CHUNK_END_TOLERANCE and last_end <= duration + CHUNK_END_TOLERANCE
+    if looks_absolute and not looks_chunk_local:
+        return "absolute"
+    if looks_absolute and first_start >= chunk_start * 0.7:
+        return "absolute"
+    return "chunk_local"
+
+
+def _provider_time_warnings(raw_words: list[dict[str, Any]], chunk: Chunk, basis: str) -> list[str]:
+    warnings: list[str] = []
+    duration = _chunk_duration(chunk)
+    previous_start: float | None = None
+    previous_end: float | None = None
+    chunk_start = float(chunk.start_time)
+    chunk_end = float(chunk.end_time)
+
+    for index, raw_word in enumerate(raw_words):
+        start = _as_float(raw_word.get("start"))
+        end = _as_float(raw_word.get("end"))
+        text = str(raw_word.get("word") or raw_word.get("text") or "").strip()
+        if start is None or end is None:
+            continue
+        if basis == "chunk_local":
+            if start < -0.05:
+                warnings.append(f"provider word {index} '{text}' starts before 0 ({start:.3f}s)")
+            if end > duration + CHUNK_END_TOLERANCE:
+                warnings.append(f"provider word {index} '{text}' ends after chunk duration ({end:.3f}s > {duration:.3f}s)")
+        else:
+            if start < chunk_start - CHUNK_ABSOLUTE_TIME_TOLERANCE:
+                warnings.append(f"absolute word {index} '{text}' starts before chunk start ({start:.3f}s < {chunk_start:.3f}s)")
+            if end > chunk_end + CHUNK_END_TOLERANCE:
+                warnings.append(f"absolute word {index} '{text}' ends after chunk end ({end:.3f}s > {chunk_end:.3f}s)")
+        if previous_start is not None and start < previous_start - 0.001:
+            warnings.append(f"provider word {index} '{text}' is non-monotonic by start")
+        if previous_end is not None and end < previous_end - 0.001:
+            warnings.append(f"provider word {index} '{text}' is non-monotonic by end")
+        previous_start = start
+        previous_end = end
+
+    return warnings[:20]
 
 
 def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, Any] | None:
@@ -234,7 +319,126 @@ def _retime_compressed_words_to_speech(
     return repaired
 
 
-def repair_word_timestamps(segments: list[dict[str, Any]]) -> int:
+def _retime_estimated_phrase_words_to_speech(
+    words: list[dict[str, Any]],
+    chunk_start: float,
+    chunk_end: float,
+    speech_segments: list[dict[str, Any]] | None,
+) -> int:
+    """
+    When a provider returns an entire chunk as one timestamped phrase, expanded
+    words are estimated rather than real word timings. Place those words across
+    detected speech islands instead of the raw 20-second chunk, so caption rows
+    follow the speaker regions more closely.
+    """
+    if len(words) < MIN_PHRASE_SPEECH_RETIME_WORDS:
+        return 0
+
+    intervals = _clip_speech_segments_to_chunk(speech_segments, chunk_start, chunk_end)
+    if not intervals:
+        return 0
+
+    total_speech_duration = sum(max(0.0, end - start) for start, end in intervals)
+    if total_speech_duration < MIN_WORD_DURATION * len(words):
+        return 0
+
+    remaining_words = len(words)
+    remaining_duration = total_speech_duration
+    allocations: list[tuple[float, float, int]] = []
+    for index, (interval_start, interval_end) in enumerate(intervals):
+        interval_duration = max(0.0, interval_end - interval_start)
+        if interval_duration <= 0:
+            continue
+        if index == len(intervals) - 1:
+            count = remaining_words
+        else:
+            proportional = interval_duration / max(MIN_WORD_DURATION, remaining_duration)
+            count = max(0, min(remaining_words, int(round(proportional * remaining_words))))
+        if count:
+            allocations.append((interval_start, interval_end, count))
+            remaining_words -= count
+        remaining_duration = max(0.0, remaining_duration - interval_duration)
+
+    if remaining_words > 0:
+        if allocations:
+            start, end, count = allocations[-1]
+            allocations[-1] = (start, end, count + remaining_words)
+        else:
+            start, end = intervals[-1]
+            allocations.append((start, end, remaining_words))
+
+    repaired = 0
+    word_index = 0
+    for interval_start, interval_end, count in allocations:
+        if count <= 0:
+            continue
+        step = max(MIN_WORD_DURATION, (interval_end - interval_start) / count)
+        previous_end = interval_start
+        for local_index in range(count):
+            if word_index >= len(words):
+                break
+            word = words[word_index]
+            original_start = _as_float(word.get("start"))
+            original_end = _as_float(word.get("end"))
+            new_start = max(previous_end, interval_start + local_index * step)
+            new_end = interval_end if local_index == count - 1 else interval_start + (local_index + 1) * step
+            new_end = min(interval_end, max(new_start + MIN_WORD_DURATION, new_end))
+            word["start"] = round(max(0.0, new_start), 3)
+            word["end"] = round(max(word["start"] + MIN_WORD_DURATION, new_end), 3)
+            _mark_timing_repaired(
+                word,
+                f"estimated phrase retimed to VAD speech from {original_start:.3f}-{original_end:.3f}",
+            )
+            previous_end = word["end"]
+            repaired += 1
+            word_index += 1
+
+    if repaired:
+        logger.info(
+            "retimed estimated phrase words to speech intervals",
+            extra={
+                "word_count": repaired,
+                "chunk_start": round(chunk_start, 3),
+                "chunk_end": round(chunk_end, 3),
+                "speech_intervals": len(intervals),
+            },
+        )
+    return repaired
+
+
+def _snap_single_long_word_to_first_speech(
+    words: list[dict[str, Any]],
+    chunk_start: float,
+    chunk_end: float,
+    speech_segments: list[dict[str, Any]] | None,
+) -> int:
+    if len(words) != 1:
+        return 0
+
+    word = words[0]
+    start = _as_float(word.get("start"))
+    end = _as_float(word.get("end"))
+    if start is None or end is None or end - start < 1.2:
+        return 0
+
+    intervals = _clip_speech_segments_to_chunk(speech_segments, chunk_start, chunk_end)
+    if not intervals:
+        return 0
+
+    speech_start, speech_end = intervals[0]
+    original_start = start
+    original_end = end
+    word_duration = min(0.5, max(0.18, speech_end - speech_start))
+    word["start"] = round(max(0.0, speech_start), 3)
+    word["end"] = round(max(word["start"] + MIN_WORD_DURATION, word["start"] + word_duration), 3)
+    _mark_timing_repaired(
+        word,
+        f"single long word snapped to speech from {original_start:.3f}-{original_end:.3f}",
+    )
+    return 1
+
+
+def repair_word_timestamps(segments: list[dict[str, Any]], *, repair_across_segments: bool = True) -> int:
     """
     Keep word order intact while repairing provider/alignment overlaps.
 
@@ -247,6 +451,8 @@ def repair_word_timestamps(segments: list[dict[str, Any]]) -> int:
     repaired_count = 0
 
     for seg in segments:
+        if not repair_across_segments:
+            previous_end = None
         words = seg.get("words") or []
         if not words:
             continue
@@ -337,11 +543,13 @@ def normalize_aligned_segments(segments: list[dict[str, Any]], language_mode: st
     return normalized_segments
 
 
-def validate_word_timestamps(segments: list[dict[str, Any]]) -> None:
+def validate_word_timestamps(segments: list[dict[str, Any]], *, allow_intersegment_overlap: bool = False) -> None:
     previous_end = -0.001
     visible_word_count = 0
 
     for seg_index, seg in enumerate(segments):
+        if allow_intersegment_overlap:
+            previous_end = -0.001
         words = seg.get("words") or []
         if not words:
             raise TranscriptValidationError(
@@ -375,22 +583,48 @@ def build_word_timed_transcript_from_chunks(
     chunks: list[Chunk],
     language_mode: str,
     speech_segments: list[dict[str, Any]] | None = None,
+    chunk_audit: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     mode = normalize_language_mode(language_mode)
     emitted_until = -0.001
     recent_words: list[str] = []
+    recent_emitted: list[tuple[str, float, float]] = []
+    previous_chunk_absolute_end: float | None = None
 
     for chunk in sorted(chunks, key=lambda c: c.index):
         metadata = getattr(chunk, "asr_metadata", None) or {}
         raw_words = metadata.get("words") or []
         provider = metadata.get("provider") or "unknown"
+        audit_entry: dict[str, Any] = {
+            "chunkIndex": int(chunk.index),
+            "chunkStart": round(float(chunk.start_time), 3),
+            "chunkEnd": round(float(chunk.end_time), 3),
+            "chunkDuration": round(_chunk_duration(chunk), 3),
+            "provider": provider,
+            "providerWordCount": len(raw_words),
+            "rawFirstWords": _sample_words(raw_words),
+            "rawLastWords": _sample_words(list(raw_words)[-CHUNK_AUDIT_SAMPLE_SIZE:]),
+            "absoluteFirstWords": [],
+            "absoluteLastWords": [],
+            "timestampBasis": "chunk_local",
+            "warnings": [],
+            "droppedDuplicateWords": 0,
+            "speechSpanRetimedWords": 0,
+        }
         if not raw_words:
+            audit_entry["warnings"].append("provider returned no word-level timestamps")
+            if chunk_audit is not None:
+                chunk_audit.append(audit_entry)
             raise TranscriptValidationError(
                 "Transcription provider did not return word-level timestamps. "
                 "Configure SARVAM_API_KEY with STT_PROVIDER=sarvam or use a "
                 "Whisper provider that returns word timestamps."
             )
+
+        timestamp_basis = _detect_provider_timestamp_basis(raw_words, chunk)
+        audit_entry["timestampBasis"] = timestamp_basis
+        audit_entry["warnings"].extend(_provider_time_warnings(raw_words, chunk, timestamp_basis))
 
         absolute_words: list[dict[str, Any]] = []
         for raw in raw_words:
@@ -399,24 +633,60 @@ def build_word_timed_transcript_from_chunks(
             if start is None or end is None:
                 continue
 
+            if timestamp_basis == "absolute":
+                absolute_start = start
+                absolute_end = end
+                timing_source = "provider_word_absolute_detected"
+            else:
+                absolute_start = float(chunk.start_time) + start
+                absolute_end = float(chunk.start_time) + end
+                timing_source = "provider_word_chunk_local"
+
             absolute_word = {
                 **raw,
-                "start": round(chunk.start_time + start, 3),
-                "end": round(chunk.start_time + end, 3),
+                "start": absolute_start,
+                "end": absolute_end,
                 "provider": provider,
-                "timing_source": raw.get("timing_source") or "provider_word",
+                "timing_source": raw.get("timing_source") or timing_source,
+                "timingSource": raw.get("timingSource") or raw.get("timing_source") or timing_source,
+                "chunkIndex": int(chunk.index),
+                "chunkStart": round(float(chunk.start_time), 3),
+                "timestampBasis": timestamp_basis,
             }
             absolute_words.extend(_expand_compound_raw_word(absolute_word))
+
+        audit_entry["absoluteFirstWords"] = _sample_words(absolute_words)
+        audit_entry["absoluteLastWords"] = _sample_words(absolute_words[-CHUNK_AUDIT_SAMPLE_SIZE:])
+        if previous_chunk_absolute_end is not None and absolute_words:
+            first_absolute_start = _as_float(absolute_words[0].get("start"))
+            if first_absolute_start is not None and first_absolute_start < previous_chunk_absolute_end - BAD_CHUNK_OVERLAP_TOLERANCE:
+                audit_entry["warnings"].append(
+                    f"absolute words overlap previous chunk badly ({first_absolute_start:.3f}s < {previous_chunk_absolute_end:.3f}s)"
+                )
+        if absolute_words:
+            last_absolute_end = _as_float(absolute_words[-1].get("end"))
+            if last_absolute_end is not None:
+                previous_chunk_absolute_end = max(previous_chunk_absolute_end or -0.001, last_absolute_end)
 
         normalized_words = [
             w for w in (_normalize_word(w, mode) for w in absolute_words) if w
         ]
         if not normalized_words:
+            audit_entry["warnings"].append("no usable word timestamps after normalization")
+            if chunk_audit is not None:
+                chunk_audit.append(audit_entry)
             raise TranscriptValidationError(
                 f"Chunk {chunk.index + 1} has no usable word timestamps after normalization."
             )
 
         deduped_words: list[dict[str, Any]] = []
+        dropped_duplicate_words = 0
+        # Sarvam can return a whole 20-second chunk as one timestamped phrase.
+        # After token expansion every word is estimated, so individual-word
+        # overlap dedupe can delete legitimate repeated/common words and create
+        # visible caption gaps. Keep those words; the final temporal sweep will
+        # handle any real overlaps.
+        allow_overlap_dedupe = not (len(raw_words) == 1 and len(normalized_words) > 1)
         for word in normalized_words:
             text = str(word.get("word") or "").lower()
             start = _as_float(word.get("start")) or 0.0
@@ -429,22 +699,59 @@ def build_word_timed_transcript_from_chunks(
             #      that just happened to end within 20ms of a previous one),
             #   2. AND its text matches a recent emitted word.
             # Anything else is kept, even if the gap is tiny.
-            if end < emitted_until and text in recent_words[-12:]:
+            nearby_duplicate = any(
+                prev_text == text
+                and min(abs(start - prev_start), abs(end - prev_end)) <= 0.9
+                for prev_text, prev_start, prev_end in recent_emitted[-40:]
+            )
+            if allow_overlap_dedupe and end < emitted_until and nearby_duplicate:
+                dropped_duplicate_words += 1
                 continue
             deduped_words.append(word)
             emitted_until = max(emitted_until, end)
             recent_words.append(text)
+            recent_emitted.append((text, start, end))
 
         normalized_words = deduped_words
+        audit_entry["droppedDuplicateWords"] = dropped_duplicate_words
+        if dropped_duplicate_words:
+            audit_entry["warnings"].append(f"dropped {dropped_duplicate_words} duplicate overlap word(s)")
         if not normalized_words:
+            audit_entry["warnings"].append("all words dropped after duplicate cleanup")
+            if chunk_audit is not None:
+                chunk_audit.append(audit_entry)
             continue
 
-        _retime_compressed_words_to_speech(
+        single_phrase_chunk = len(raw_words) == 1 and len(normalized_words) > 1
+        phrase_retimed = 0
+        if single_phrase_chunk:
+            phrase_retimed = _retime_estimated_phrase_words_to_speech(
+                normalized_words,
+                float(chunk.start_time),
+                float(chunk.end_time),
+                speech_segments,
+            )
+        single_word_snaps = _snap_single_long_word_to_first_speech(
             normalized_words,
             float(chunk.start_time),
             float(chunk.end_time),
             speech_segments,
         )
+        audit_entry["speechSpanRetimedWords"] = phrase_retimed or _retime_compressed_words_to_speech(
+            normalized_words,
+            float(chunk.start_time),
+            float(chunk.end_time),
+            speech_segments,
+        )
+        if single_word_snaps:
+            audit_entry["speechSpanRetimedWords"] += single_word_snaps
+            audit_entry["warnings"].append(f"single long word snapped to speech ({single_word_snaps})")
+        if phrase_retimed:
+            audit_entry["warnings"].append(f"estimated phrase retimed to VAD speech ({phrase_retimed})")
+        audit_entry["normalizedFirstWords"] = _sample_words(normalized_words)
+        audit_entry["normalizedLastWords"] = _sample_words(normalized_words[-CHUNK_AUDIT_SAMPLE_SIZE:])
+        if audit_entry["speechSpanRetimedWords"]:
+            audit_entry["warnings"].append(f"speech-span retimed {audit_entry['speechSpanRetimedWords']} word(s)")
 
         segment_text = normalize_caption_text(
             chunk.final_text or text_from_words(w["word"] for w in normalized_words),
@@ -455,6 +762,9 @@ def build_word_timed_transcript_from_chunks(
         try:
             validate_roman_output(segment_text, mode)
         except ValueError as exc:
+            audit_entry["warnings"].append(str(exc))
+            if chunk_audit is not None:
+                chunk_audit.append(audit_entry)
             raise TranscriptValidationError(str(exc)) from exc
 
         segments.append(
@@ -466,9 +776,16 @@ def build_word_timed_transcript_from_chunks(
                 "words": normalized_words,
             }
         )
+        if chunk_audit is not None:
+            audit_entry["warnings"] = audit_entry["warnings"][:24]
+            chunk_audit.append(audit_entry)
 
-    repair_word_timestamps(segments)
-    validate_word_timestamps(segments)
+    # Code-mixed chunk transcription often has intentional overlap between
+    # adjacent audio chunks. Do not push the later chunk to the previous
+    # chunk's estimated end here; the global TranscriptAligner pass handles
+    # final monotonic boundaries after cadence/speech-span repair.
+    repair_word_timestamps(segments, repair_across_segments=False)
+    validate_word_timestamps(segments, allow_intersegment_overlap=True)
     logger.info("word timestamps normalized", extra={"segment_count": len(segments)})
     return segments
 

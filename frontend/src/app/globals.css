@@ -473,6 +473,13 @@ textarea {
   font-weight: 800;
 }
 
+.editor-notice.compact {
+  padding: 4px 8px;
+  font-size: 10px;
+  line-height: 1.25;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
 .editor-notice.error {
   background: var(--error-bg);
   color: var(--error-text);

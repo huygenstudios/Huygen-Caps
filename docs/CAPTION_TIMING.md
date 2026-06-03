@@ -63,6 +63,32 @@ GET /api/health/timing
 
 The timing debug endpoint returns word counts, chunk counts, timing source counts, detected silence gaps, suspicious timing warnings, first words with timestamps, and the pause threshold used.
 
+`/api/captions/jobs/{jobId}/timing-debug` also includes `chunkAudit` for recent jobs:
+
+- `timestampBasis: "chunk_local"` means provider word times were treated as relative to the audio chunk and `chunk.start_time` was added once.
+- `timestampBasis: "absolute"` means the provider already returned timeline-absolute times, so the chunk start was not added again.
+- `rawFirstWords` / `rawLastWords` show provider chunk-local samples before conversion.
+- `absoluteFirstWords` / `absoluteLastWords` show samples after timeline conversion.
+- `normalizedFirstWords` / `normalizedLastWords` show samples after romanization, dedupe, retiming, and validation.
+- `warnings` reports out-of-range provider words, non-monotonic times, bad overlaps with the previous chunk, dropped duplicate overlap words, and speech-span retiming.
+
+Timing source values:
+
+- `provider` means real provider timing or provider timing converted from chunk-local to timeline time.
+- `estimated` means fallback/interpolated timing. Treat these captions as timing review required.
+- `vad_adjusted`, `stable_ts`, and `whisperx` mean an optimization/alignment layer changed timing.
+- `manual` means a user edited/nudged timing.
+
+When checking a fix, generate a new job. Existing browser captions and old job IDs keep their old timestamps and will still show old gaps.
+
+Quick sync check:
+
+1. Upload a clear 10-second clip with speech starting after a visible silence.
+2. Generate captions in the target language mode.
+3. Open `/api/captions/jobs/{jobId}/timing-debug`.
+4. Confirm `first20Words` starts near the first audible word and `chunkAudit` has no double-offset warnings.
+5. Set Global offset to `+0.80s`, preview the first word, export MP4, and confirm the burned caption shifts by the same amount.
+
 ## Render Notes
 
 Render should keep heavy providers optional unless the plan has enough CPU/disk:

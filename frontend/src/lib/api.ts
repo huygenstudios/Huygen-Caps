@@ -140,7 +140,7 @@ function summarizeHtmlError(text: string, res: Response) {
     return (
       `Backend API route ${url.pathname} returned a Next.js 404 page. ` +
       "The editor is calling the frontend server instead of FastAPI. " +
-      "Start the backend on http://127.0.0.1:8000, refresh the editor, or set NEXT_PUBLIC_API_URL to the backend URL."
+      `Start the backend on ${apiLabel()}, refresh the editor, or set NEXT_PUBLIC_API_URL to the backend URL.`
     );
   }
   if (title) return `${res.status} ${res.statusText}: ${title}`;
@@ -209,7 +209,7 @@ async function apiFetch<T>(
     throw new ApiError(
       `Backend is unreachable. Check API URL and /health. Tried ${apiLabel()}. ` +
         (process.env.NODE_ENV === "development"
-          ? "Start the FastAPI server on port 8000, allow this frontend origin in CORS, or set NEXT_PUBLIC_API_URL."
+          ? `Start the FastAPI server at ${apiLabel()}, allow this frontend origin in CORS, or set NEXT_PUBLIC_API_URL.`
           : "Check /api/health, CORS origins, and confirm NEXT_PUBLIC_API_URL is only used for a separate backend.")
     );
   } finally {

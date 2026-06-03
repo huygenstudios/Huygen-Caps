@@ -879,8 +879,9 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
           </div>
         )}
         {coverageNotice && (
-          <div className="editor-notice">
-            {coverageNotice}
+          <div className="editor-notice compact flex items-center gap-1.5" title={coverageNotice}>
+            <AlertTriangle size={12} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{coverageNotice}</span>
           </div>
         )}
       </div>

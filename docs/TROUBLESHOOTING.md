@@ -81,6 +81,18 @@ Rows and timeline chunks share the same caption id. If they appear out of sync:
 
 Timeline trimming writes through `updateCaption`, so row start/end fields refresh after the trim completes.
 
+## Caption Gap Still Shows After A Timing Fix
+
+Backend timing fixes do not rewrite captions already loaded in the browser or stored under an old job id.
+
+Fix:
+
+- Restart the backend after code changes.
+- Refresh the frontend.
+- Upload the source video again or generate a new caption job.
+- Open `/api/captions/jobs/{jobId}/timing-debug` for the new job id.
+- Check `chunkAudit`; old jobs will not contain the latest audit fields.
+
 ## Background Or Outline Controls Do Not Show In Export
 
 Preview and export read `captionStyleConfig`.

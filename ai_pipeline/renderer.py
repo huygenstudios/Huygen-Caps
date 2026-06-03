@@ -256,6 +256,10 @@ def chunk_words_into_captions(
     while len(captions) >= 2 and len(captions[-1]["words"]) < cfg["min_words"]:
         last = captions.pop()
         prev = captions[-1]
+        gap = last["start"] - prev["end"]
+        if gap >= cfg["pause_split_threshold"]:
+            captions.append(last)
+            break
         prev["end"] = last["end"]
         prev["text"] = (prev["text"] + " " + last["text"]).strip()
         prev["words"].extend(last["words"])

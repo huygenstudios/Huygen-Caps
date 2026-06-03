@@ -307,6 +307,8 @@ export interface AlignedWord {
   displayedWord?: string;
   languageHint?: "english" | "hindi" | "telugu" | "unknown";
   timing_repair?: string;
+  timingWarning?: string;
+  timing_warning?: string;
 }
 
 export interface CaptionChunkingConfig {
