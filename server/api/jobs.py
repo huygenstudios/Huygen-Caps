@@ -99,6 +99,13 @@ def _export_download_url(filename: str) -> str:
     return f"/api/export/jobs/download/{filename}"
 
 
+def _dimensions_from_export_filename(filename: str, fallback_width: int, fallback_height: int) -> tuple[int, int]:
+    match = re.search(r"_(\d+)x(\d+)\.mp4$", filename)
+    if not match:
+        return fallback_width, fallback_height
+    return int(match.group(1)), int(match.group(2))
+
+
 def _export_failure(stage: str, error: str, response_format: str, status_code: int = 500):
     public_stage = _public_export_stage(stage)
     payload = {
@@ -418,7 +425,8 @@ async def export_video(
                 return _export_failure("write_output", "Export finished but the MP4 file is empty.", response_format)
             download_url = _export_download_url(output_filename)
             if response_format == "json":
-                width, height = _resolve_export_dimensions(resolution, export_width, export_height)
+                fallback_width, fallback_height = _resolve_export_dimensions(resolution, export_width, export_height)
+                width, height = _dimensions_from_export_filename(output_filename, fallback_width, fallback_height)
                 await manager.broadcast(job_id, {
                     "status": "export_complete", "percent": 100, "details": "MP4 export is ready to download."
                 })

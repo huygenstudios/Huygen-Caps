@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -124,6 +125,13 @@ def _resolve_export_file(filename: str) -> Path:
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Export file was not found or has expired.")
     return file_path
+
+
+def _dimensions_from_export_filename(filename: str, fallback_width: int, fallback_height: int) -> tuple[int, int]:
+    match = re.search(r"_(\d+)x(\d+)\.mp4$", filename)
+    if not match:
+        return fallback_width, fallback_height
+    return int(match.group(1)), int(match.group(2))
 
 
 def _memory_mb() -> float | None:
@@ -304,7 +312,12 @@ async def _run_export_job(export_job_id: str, request: ExportRequest) -> None:
             if output_bytes <= 0:
                 raise ExportStageError("output_write", f"FFmpeg finished but output file is missing or empty: {output_path}")
 
-            width, height = _resolve_export_dimensions(request.resolution, request.export_width, request.export_height)
+            fallback_width, fallback_height = _resolve_export_dimensions(
+                request.resolution,
+                request.export_width,
+                request.export_height,
+            )
+            width, height = _dimensions_from_export_filename(output.name, fallback_width, fallback_height)
             download_url = _export_download_url(output.name)
             completed = await _set_job(
                 export_job_id,

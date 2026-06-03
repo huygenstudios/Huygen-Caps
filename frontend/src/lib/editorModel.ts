@@ -55,7 +55,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   height: 1920,
   aspectRatio: "sequence",
   fps: "sequence",
-  quality: "best",
+  quality: "balanced",
   bitrate: "auto",
   customBitrateMbps: 18,
   includeAudio: true,

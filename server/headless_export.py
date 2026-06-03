@@ -50,6 +50,33 @@ BITRATE_PRESETS = {
 EXPORT_FPS = 30
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _render_safe_default() -> bool:
+    return bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
+
+
+def _constrain_export_dimensions(width: int, height: int, max_long_edge: int) -> tuple[int, int]:
+    if max_long_edge <= 0 or max(width, height) <= max_long_edge:
+        return width, height
+    return scale_dimensions_to_longest_edge(width, height, max_long_edge)
+
+
 class ExportStageError(RuntimeError):
     """Raised when a known export stage fails with a user-actionable message."""
 
@@ -105,6 +132,10 @@ def check_export_runtime() -> dict[str, object]:
         "exports_writable": export_writable,
         "exports_write_error": export_write_error,
         "render_page_url": default_render_page_url(),
+        "render_safe_mode": _bool_env("EXPORT_RENDER_SAFE_MODE", _render_safe_default()),
+        "export_max_long_edge": _int_env("EXPORT_MAX_LONG_EDGE", 1280 if _render_safe_default() else 0),
+        "export_max_fps": _int_env("EXPORT_MAX_FPS", 24 if _render_safe_default() else 120),
+        "export_ffmpeg_threads": _int_env("EXPORT_FFMPEG_THREADS", 1 if _render_safe_default() else 0),
     }
 
 
@@ -270,7 +301,8 @@ async def export_headless(
         ) from exc
 
     export_fps = max(1, min(120, int(export_fps or EXPORT_FPS)))
-    crf = QUALITY_CRF.get(quality, QUALITY_CRF["standard"])
+    requested_quality = quality
+    requested_fps = export_fps
     video_bitrate = None
     if bitrate == "custom" and custom_bitrate_mbps and custom_bitrate_mbps > 0:
         video_bitrate = f"{custom_bitrate_mbps}M"
@@ -316,6 +348,20 @@ async def export_headless(
         else:
             width, height = (1080, 1920)
 
+    requested_width, requested_height = width, height
+    render_safe_mode = _bool_env("EXPORT_RENDER_SAFE_MODE", _render_safe_default())
+    max_long_edge = max(0, _int_env("EXPORT_MAX_LONG_EDGE", 1280 if render_safe_mode else 0))
+    max_export_fps = max(1, _int_env("EXPORT_MAX_FPS", 24 if render_safe_mode else 120))
+    ffmpeg_threads = max(0, _int_env("EXPORT_FFMPEG_THREADS", 1 if render_safe_mode else 0))
+    safe_quality = os.getenv("EXPORT_SAFE_QUALITY", "standard").strip() or "standard"
+
+    width, height = _constrain_export_dimensions(width, height, max_long_edge)
+    if export_fps > max_export_fps:
+        export_fps = max_export_fps
+    if render_safe_mode and quality in {"best", "high"} and bitrate != "custom":
+        quality = safe_quality
+    crf = QUALITY_CRF.get(quality, QUALITY_CRF["standard"])
+
     output_path = os.path.join(output_dir, f"{job_id}_{output_suffix}_{width}x{height}.mp4")
 
     _log_export_event(
@@ -328,12 +374,32 @@ async def export_headless(
         captions=len(parsed_captions),
         width=width,
         height=height,
+        requestedWidth=requested_width,
+        requestedHeight=requested_height,
         fps=export_fps,
+        requestedFps=requested_fps,
         includeAudio=include_audio,
         quality=quality,
+        requestedQuality=requested_quality,
         bitrate=bitrate,
+        renderSafeMode=render_safe_mode,
+        maxLongEdge=max_long_edge,
+        ffmpegThreads=ffmpeg_threads,
         outputPath=output_path,
     )
+    if (width, height) != (requested_width, requested_height) or export_fps != requested_fps or quality != requested_quality:
+        logger.warning(
+            "export_request_constrained requested=%sx%s@%sfps/%s actual=%sx%s@%sfps/%s render_safe_mode=%s",
+            requested_width,
+            requested_height,
+            requested_fps,
+            requested_quality,
+            width,
+            height,
+            export_fps,
+            quality,
+            render_safe_mode,
+        )
 
     await progress_callback("export_started", 0, "Launching headless browser...")
 
@@ -500,6 +566,8 @@ async def export_headless(
             if include_audio:
                 ffmpeg_cmd.extend(["-i", video_path])
             ffmpeg_cmd.extend(["-map", "0:v", "-c:v", encoder, "-preset", "ultrafast"])
+            if ffmpeg_threads:
+                ffmpeg_cmd.extend(["-threads", str(ffmpeg_threads)])
             if video_bitrate:
                 ffmpeg_cmd.extend(["-b:v", video_bitrate])
             else:
@@ -521,6 +589,8 @@ async def export_headless(
                 "-map", "[out]",
                 "-c:v", encoder, "-preset", "ultrafast",
             ])
+            if ffmpeg_threads:
+                ffmpeg_cmd.extend(["-threads", str(ffmpeg_threads)])
             if video_bitrate:
                 ffmpeg_cmd.extend(["-b:v", video_bitrate])
             else:
