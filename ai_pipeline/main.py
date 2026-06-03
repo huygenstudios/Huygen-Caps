@@ -193,7 +193,11 @@ def run_pipeline(
         emit_progress("romanizing", 70, "Romanizing and validating transcript text.")
 
         if language_mode in CODE_MIXED_LANGUAGE_MODES:
-            clamped_segments = build_word_timed_transcript_from_chunks(processed_chunks, language_mode)
+            clamped_segments = build_word_timed_transcript_from_chunks(
+                processed_chunks,
+                language_mode,
+                speech_segments=vad_report.get("speechSegments") or [],
+            )
         else:
             merged_text, merged_segments = merge_chunks(processed_chunks)
             _stage_log(
@@ -269,8 +273,12 @@ def run_pipeline(
         emit_progress("chunking", 92, "Preparing readable caption chunks.")
 
         emit_progress("rendering", 95, "Generating SRT and VTT exports.")
-        srt_content = generate_srt(clamped_segments)
-        vtt_content = generate_vtt(clamped_segments)
+        # Pass audio_path so the renderer can snap the first caption to the
+        # detected speech onset and drop words the provider hallucinated
+        # inside pre-speech silence.  The audio file is still on disk at this
+        # point; it is removed in the `finally` block below.
+        srt_content = generate_srt(clamped_segments, audio_path=audio_path)
+        vtt_content = generate_vtt(clamped_segments, audio_path=audio_path)
         _stage_log("render completed", segment_count=len(clamped_segments))
 
         emit_progress("completed", 100, "Captioning finished successfully.")

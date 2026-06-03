@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any
 
 from .audio import Chunk
@@ -14,6 +15,9 @@ from .language_modes import (
 logger = logging.getLogger(__name__)
 
 MIN_WORD_DURATION = 0.04
+MIN_SPEECH_RETIME_WORDS = 6
+MIN_SPEECH_RETIME_TRAILING_GAP = 1.0
+MIN_SPEECH_RETIME_COMPRESSION_RATIO = 0.78
 
 
 class TranscriptValidationError(ValueError):
@@ -27,6 +31,18 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
 
 
 def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, Any] | None:
@@ -101,6 +117,121 @@ def _mark_timing_repaired(word: dict[str, Any], reason: str) -> None:
         source = f"{source}_repaired"
     word["timing_source"] = source
     word["timing_repair"] = reason
+
+
+def _clip_speech_segments_to_chunk(
+    speech_segments: list[dict[str, Any]] | None,
+    chunk_start: float,
+    chunk_end: float,
+) -> list[tuple[float, float]]:
+    intervals: list[tuple[float, float]] = []
+    for segment in speech_segments or []:
+        start = _as_float(segment.get("start"))
+        end = _as_float(segment.get("end"))
+        if start is None or end is None:
+            continue
+        clipped_start = max(chunk_start, start)
+        clipped_end = min(chunk_end, end)
+        if clipped_end - clipped_start >= MIN_WORD_DURATION:
+            intervals.append((round(clipped_start, 3), round(clipped_end, 3)))
+
+    intervals.sort(key=lambda item: item[0])
+    merged: list[tuple[float, float]] = []
+    for start, end in intervals:
+        if merged and start - merged[-1][1] <= 0.08:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _project_speech_offset_to_time(offset: float, intervals: list[tuple[float, float]]) -> float:
+    if not intervals:
+        return max(0.0, offset)
+
+    remaining = max(0.0, offset)
+    for start, end in intervals:
+        duration = max(0.0, end - start)
+        if remaining <= duration:
+            return start + remaining
+        remaining -= duration
+    return intervals[-1][1]
+
+
+def _retime_compressed_words_to_speech(
+    words: list[dict[str, Any]],
+    chunk_start: float,
+    chunk_end: float,
+    speech_segments: list[dict[str, Any]] | None,
+) -> int:
+    if not _env_bool("ENABLE_SPEECH_SPAN_RETIMER", True):
+        return 0
+    if len(words) < MIN_SPEECH_RETIME_WORDS:
+        return 0
+
+    intervals = _clip_speech_segments_to_chunk(speech_segments, chunk_start, chunk_end)
+    if not intervals:
+        return 0
+
+    first_start = _as_float(words[0].get("start"))
+    last_end = _as_float(words[-1].get("end"))
+    if first_start is None or last_end is None or last_end <= first_start:
+        return 0
+
+    target_start = min(first_start, intervals[0][0])
+    if target_start < intervals[0][0] - 0.2:
+        intervals = [(target_start, intervals[0][0]), *intervals]
+    target_end = intervals[-1][1]
+    source_span = max(MIN_WORD_DURATION, last_end - first_start)
+    target_speech_duration = sum(max(0.0, end - start) for start, end in intervals)
+    target_span = max(MIN_WORD_DURATION, target_end - target_start)
+    trailing_gap = target_end - last_end
+
+    if trailing_gap < MIN_SPEECH_RETIME_TRAILING_GAP:
+        return 0
+    if source_span >= target_speech_duration * MIN_SPEECH_RETIME_COMPRESSION_RATIO:
+        return 0
+    if target_span <= source_span + MIN_SPEECH_RETIME_TRAILING_GAP:
+        return 0
+
+    repaired = 0
+    previous_end = target_start
+    for word in words:
+        original_start = _as_float(word.get("start"))
+        original_end = _as_float(word.get("end"))
+        if original_start is None or original_end is None or original_end <= original_start:
+            continue
+
+        start_offset = ((original_start - first_start) / source_span) * target_speech_duration
+        end_offset = ((original_end - first_start) / source_span) * target_speech_duration
+        new_start = max(previous_end, _project_speech_offset_to_time(start_offset, intervals))
+        new_end = max(new_start + MIN_WORD_DURATION, _project_speech_offset_to_time(end_offset, intervals))
+        new_end = min(target_end, new_end)
+        if new_end <= new_start:
+            new_end = min(target_end, new_start + MIN_WORD_DURATION)
+
+        word["start"] = round(max(0.0, new_start), 3)
+        word["end"] = round(max(word["start"] + MIN_WORD_DURATION, new_end), 3)
+        _mark_timing_repaired(
+            word,
+            f"speech span retimed from {original_start:.3f}-{original_end:.3f}",
+        )
+        previous_end = word["end"]
+        repaired += 1
+
+    if repaired:
+        logger.info(
+            "retimed compressed provider word span to speech intervals",
+            extra={
+                "word_count": repaired,
+                "chunk_start": round(chunk_start, 3),
+                "chunk_end": round(chunk_end, 3),
+                "source_span": round(source_span, 3),
+                "target_speech_duration": round(target_speech_duration, 3),
+                "target_end": round(target_end, 3),
+            },
+        )
+    return repaired
 
 
 def repair_word_timestamps(segments: list[dict[str, Any]]) -> int:
@@ -243,6 +374,7 @@ def validate_word_timestamps(segments: list[dict[str, Any]]) -> None:
 def build_word_timed_transcript_from_chunks(
     chunks: list[Chunk],
     language_mode: str,
+    speech_segments: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     mode = normalize_language_mode(language_mode)
@@ -289,9 +421,15 @@ def build_word_timed_transcript_from_chunks(
             text = str(word.get("word") or "").lower()
             start = _as_float(word.get("start")) or 0.0
             end = _as_float(word.get("end")) or 0.0
-            if end <= emitted_until + 0.02:
-                continue
-            if start < emitted_until - 0.1 and text in recent_words[-12:]:
+            # Drop only words that are clearly duplicates of an already-emitted
+            # word inside the chunk overlap region.  A word is considered a
+            # duplicate when:
+            #   1. it ends BEFORE the last emitted word (no +slack tolerance —
+            #      the previous 0.02s slop was dropping legitimate last words
+            #      that just happened to end within 20ms of a previous one),
+            #   2. AND its text matches a recent emitted word.
+            # Anything else is kept, even if the gap is tiny.
+            if end < emitted_until and text in recent_words[-12:]:
                 continue
             deduped_words.append(word)
             emitted_until = max(emitted_until, end)
@@ -300,6 +438,13 @@ def build_word_timed_transcript_from_chunks(
         normalized_words = deduped_words
         if not normalized_words:
             continue
+
+        _retime_compressed_words_to_speech(
+            normalized_words,
+            float(chunk.start_time),
+            float(chunk.end_time),
+            speech_segments,
+        )
 
         segment_text = normalize_caption_text(
             chunk.final_text or text_from_words(w["word"] for w in normalized_words),

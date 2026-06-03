@@ -8,8 +8,9 @@ Huygen Caps builds captions from word timestamps, not from already-rendered capt
 4. WhisperX can be enabled as an optional forced-alignment provider.
 5. stable-ts and Silero VAD are optional fallback/diagnostic providers.
 6. Every word is validated and marked with a timing source.
-7. Caption chunks are rebuilt from aligned words with pause-aware rules.
-8. Preview and export use the same React renderer.
+7. Code-mixed provider timelines that are visibly compressed are projected back over detected speech spans.
+8. Caption chunks are rebuilt from aligned words with pause-aware rules.
+9. Preview and export use the same React renderer.
 
 ## Timing Sources
 
@@ -73,9 +74,12 @@ ENABLE_STABLE_TS=false
 ENABLE_SILERO_VAD=false
 PAUSE_SPLIT_THRESHOLD=0.45
 DEFAULT_GLOBAL_CAPTION_OFFSET=0
+ENABLE_SPEECH_SPAN_RETIMER=true
 ```
 
 FFmpeg/FFprobe are required. WhisperX, stable-ts, and Silero are not installed by the production Dockerfile by default; install `requirements-optional-ai.txt` only for a worker or machine that can afford the heavier dependencies.
+
+`ENABLE_SPEECH_SPAN_RETIMER` is lightweight and uses FFmpeg speech/silence spans. It fixes providers that return useful code-mixed text but compress word timestamps into the early part of a chunk, causing fake caption gaps during audible speech.
 
 ## Known Limitations
 
