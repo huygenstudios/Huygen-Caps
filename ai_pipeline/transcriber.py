@@ -117,6 +117,45 @@ def validate_transcription_config(language_mode: str) -> None:
         raise RuntimeError("STT_PROVIDER=groq_whisper requires GROQ_API_KEY.")
 
 
+def _as_timing_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_provider_result(result: dict, provider: str) -> dict:
+    normalized_words: list[dict[str, Any]] = []
+    for raw_word in result.get("words") or []:
+        if not isinstance(raw_word, dict):
+            continue
+        text = str(raw_word.get("word") or raw_word.get("text") or "").strip()
+        start = _as_timing_float(raw_word.get("start"))
+        end = _as_timing_float(raw_word.get("end"))
+        if not text or start is None or end is None:
+            continue
+        if end <= start:
+            end = start + 0.02
+
+        timing_source = str(raw_word.get("timingSource") or raw_word.get("timing_source") or "provider_word")
+        normalized_word = {
+            **raw_word,
+            "word": text,
+            "start": round(max(0.0, start), 3),
+            "end": round(max(start + 0.02, end), 3),
+            "provider": raw_word.get("provider") or provider,
+            "timing_source": timing_source,
+            "timingSource": timing_source,
+        }
+        normalized_words.append(normalized_word)
+
+    result["words"] = normalized_words
+    result["provider"] = result.get("provider") or provider
+    return result
+
+
 def _call_groq(client, audio_path: str, prompt: str, language_hint: str | None,
                temperature: float = 0.0) -> dict:
     """Single Groq Whisper call returning normalized dict."""
@@ -342,8 +381,8 @@ def transcribe_audio(audio_path: str, language_mode: str = "english") -> dict:
         os.path.basename(audio_path),
     )
     if provider == "sarvam":
-        return _call_sarvam(audio_path, normalized_mode)
+        return _normalize_provider_result(_call_sarvam(audio_path, normalized_mode), provider)
     if provider == "openai_whisper":
-        return _call_openai_whisper(audio_path, normalized_mode)
+        return _normalize_provider_result(_call_openai_whisper(audio_path, normalized_mode), provider)
 
-    return transcribe_chunk_with_retry(audio_path, language=normalized_mode)
+    return _normalize_provider_result(transcribe_chunk_with_retry(audio_path, language=normalized_mode), provider)

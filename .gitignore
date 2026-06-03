@@ -19,6 +19,7 @@ env/
 # Node / frontend
 node_modules/
 .next/
+.next-dev/
 out/
 .turbo/
 *.tsbuildinfo

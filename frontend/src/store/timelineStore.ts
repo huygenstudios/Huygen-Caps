@@ -91,27 +91,35 @@ export const useTimelineStore = create<TimelineState>((set) => ({
   addTrackByType: (type) =>
     set((s) => {
       recordProjectHistory("Add track");
-      const prefix = type === "audio" ? "A" : type === "caption" ? "C" : "V";
-      const matching = prefix === "V"
-        ? s.tracks.filter((track) => track.type === "video" || track.type === "image" || track.type === "overlay")
-        : s.tracks.filter((track) => track.type === type);
+      const prefix = type === "audio" ? "A" : type === "caption" ? "C" : type === "overlay" ? "O" : "V";
+      const matching = s.tracks.filter((track) =>
+        type === "video" ? track.type === "video" || track.type === "image" : track.type === type
+      );
       const label = `${prefix}${matching.length + 1}`;
+      const newTrack: TimelineTrack = {
+        id: `${type}_${Date.now()}`,
+        type,
+        label,
+        name: label,
+        locked: false,
+        visible: true,
+        muted: type === "audio" ? false : undefined,
+        height: type === "caption" ? 36 : 48,
+        zIndex: type === "caption" ? 35 + matching.length : type === "overlay" ? 25 + matching.length : type === "video" ? 10 + matching.length : 0,
+        clips: [],
+      };
+      const tracks =
+        type === "audio"
+          ? [...s.tracks, newTrack]
+          : type === "caption"
+          ? [newTrack, ...s.tracks]
+          : [
+              ...s.tracks.filter((track) => track.type === "caption"),
+              newTrack,
+              ...s.tracks.filter((track) => track.type !== "caption"),
+            ];
       return {
-        tracks: [
-          ...s.tracks,
-          {
-            id: `${type}_${Date.now()}`,
-            type,
-            label,
-            name: label,
-            locked: false,
-            visible: true,
-            muted: type === "audio" ? false : undefined,
-            height: type === "caption" ? 36 : 48,
-            zIndex: s.tracks.length + 1,
-            clips: [],
-          },
-        ],
+        tracks,
       };
     }),
 
@@ -319,9 +327,7 @@ export const useTimelineStore = create<TimelineState>((set) => ({
     set({
       tracks: [
         { id: "c1", type: "caption", label: "C1", name: "Captions", locked: false, visible: true, height: 36, zIndex: 30, clips: [] },
-        { id: "v3", type: "video", label: "V3", name: "Video 3", locked: false, visible: true, height: 48, zIndex: 25, clips: [] },
-        { id: "v2", type: "video", label: "V2", name: "Video 2", locked: false, visible: true, height: 48, zIndex: 20, clips: [] },
-        { id: "v1", type: "video", label: "V1", name: "Video 1", locked: false, visible: true, height: 48, zIndex: 10, clips: [] },
+        { id: "v1", type: "video", label: "V1", name: "Video", locked: false, visible: true, height: 58, zIndex: 10, clips: [] },
         { id: "a1", type: "audio", label: "A1", name: "Audio", locked: false, visible: true, muted: false, height: 48, zIndex: 0, clips: [] },
       ],
     }),

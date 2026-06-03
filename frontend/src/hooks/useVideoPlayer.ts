@@ -36,8 +36,20 @@ export function useVideoPlayer() {
       el.onended = () => {
         pause();
       };
+
+      el.onplay = () => {
+        if (!usePlaybackStore.getState().isPlaying) usePlaybackStore.getState().play();
+      };
+
+      el.onpause = () => {
+        if (usePlaybackStore.getState().isPlaying) pause();
+      };
+
+      el.ontimeupdate = () => {
+        setCurrentTime(el.currentTime);
+      };
     },
-    [volume, playbackRate, setDuration, pause]
+    [volume, playbackRate, setDuration, pause, setCurrentTime]
   );
 
   // Play/pause sync
@@ -46,7 +58,13 @@ export function useVideoPlayer() {
     if (!el) return;
 
     if (isPlaying) {
-      el.play().catch(() => pause());
+      if (Math.abs(el.currentTime - currentTime) > 0.08) {
+        el.currentTime = currentTime;
+      }
+      el.play().catch((error) => {
+        console.warn("Video playback failed", error);
+        pause();
+      });
 
       const tick = () => {
         setCurrentTime(el.currentTime);
@@ -77,7 +95,7 @@ export function useVideoPlayer() {
       };
       frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
     };
-  }, [isPlaying, pause, setCurrentTime]);
+  }, [currentTime, isPlaying, pause, setCurrentTime]);
 
   useEffect(() => {
     const el = videoRef.current;

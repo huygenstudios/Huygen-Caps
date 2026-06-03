@@ -209,8 +209,8 @@ async function apiFetch<T>(
     throw new ApiError(
       `Backend is unreachable. Check API URL and /health. Tried ${apiLabel()}. ` +
         (process.env.NODE_ENV === "development"
-          ? "Start the FastAPI server on port 8000 or set NEXT_PUBLIC_API_URL."
-          : "Check the Render service health at /api/health and confirm NEXT_PUBLIC_API_URL is only used for a separate backend.")
+          ? "Start the FastAPI server on port 8000, allow this frontend origin in CORS, or set NEXT_PUBLIC_API_URL."
+          : "Check /api/health, CORS origins, and confirm NEXT_PUBLIC_API_URL is only used for a separate backend.")
     );
   } finally {
     window.clearTimeout(timeout);

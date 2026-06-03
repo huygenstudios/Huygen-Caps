@@ -24,6 +24,10 @@ export function useKeyboardShortcuts() {
       switch (e.key) {
         case " ":
           e.preventDefault();
+          if (!useTimelineStore.getState().tracks.some((track) => (track.clips || []).some((clip) => clip.type === "video"))) {
+            useTimelineStore.getState().setNotice("Import a video before playback.");
+            break;
+          }
           usePlaybackStore.getState().togglePlayPause();
           break;
 

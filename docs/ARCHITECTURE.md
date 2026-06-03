@@ -16,10 +16,15 @@ Local development defaults to `http://127.0.0.1:8000` when `NEXT_PUBLIC_API_URL`
 Key frontend areas:
 
 - `frontend/src/app/page.tsx`: editor shell.
+- `frontend/src/components/editor/CaptionFirstLeftPanel.tsx`: caption-first left sidebar and active tool panel.
+- `frontend/src/components/editor/CaptionEditorPanel.tsx`: Auto Subtitle setup, subtitle row editor, and chars-per-subtitle rebuild flow.
+- `frontend/src/components/editor/CaptionStylePanel.tsx`: simplified live caption styling panel.
 - `frontend/src/app/render/page.tsx`: headless export render frame.
 - `frontend/src/components/editor/ExportModal.tsx`: export action and download UI.
 - `frontend/src/components/captions/`: caption renderers shared by preview and export.
 - `frontend/src/lib/editorModel.ts`: sequence, export settings, duration, and timeline helpers.
+
+The default product shell is caption-first. The app still keeps the timeline, caption renderers, media import, export modal, and advanced editor modules, but the beginner view hides the old multi-tab Premiere-style panels.
 
 ## Backend
 
@@ -45,6 +50,8 @@ Supported language modes are:
 - `telgish`
 
 Transcripts are normalized into shared segment and word timing shapes before the frontend chunks them into editable captions.
+
+Generated captions are stored in `useCaptionStore`. Original aligned transcript segments are stored in `useEditorStore.transcriptSegments`; Rebuild Subtitles uses those segments so changing Chars per subtitle does not re-run STT.
 
 ## Export Pipeline
 

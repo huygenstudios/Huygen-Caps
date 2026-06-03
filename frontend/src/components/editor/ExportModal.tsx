@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileText, Film, Loader2, Save, X } from "lucide-react";
 import { getExportJobStatus, resolveBackendUrl, startHeadlessExportJob } from "@/lib/api";
 import { captionBelongsOnTrack, determineExportDuration, resolveExportDimensions, resolveExportFps } from "@/lib/editorModel";
-import { downloadFile } from "@/lib/captionUtils";
+import { applyCaptionTimingOffset, downloadFile } from "@/lib/captionUtils";
 import { ExportFormat, ProjectData } from "@/lib/types";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
 import { useCaptionStore } from "@/store/captionStore";
@@ -95,12 +95,14 @@ export default function ExportModal() {
     jobId,
     captionStyleConfig,
     captionChunkingConfig,
+    captionTimingConfig,
     captionLayerTransform,
     sequenceSettings,
     exportSettings,
     setExportSettings,
   } = useEditorStore();
   const allCaptions = useCaptionStore((s) => s.captions);
+  const captionDocument = useCaptionStore((s) => s.captionDocument);
   const tracks = useTimelineStore((s) => s.tracks);
   const { exportSRT, exportASS } = useCaptionExport();
   const [exporting, setExporting] = useState(false);
@@ -121,6 +123,37 @@ export default function ExportModal() {
       visibleCaptionTracks.some((track) => captionBelongsOnTrack(caption, track, tracks))
     );
   }, [allCaptions, exportSettings.visibleTracksOnly, tracks, visibleCaptionTracks]);
+  const canonicalCaptionDocument = useMemo(
+    () => ({
+      id: captionDocument?.id || "captions_1",
+      name: captionDocument?.name || "Generated captions",
+      sourceMediaId: captionDocument?.sourceMediaId || captionsForExport.find((caption) => caption.sourceMediaId)?.sourceMediaId,
+      languageMode: captionDocument?.languageMode || language,
+      transcript: captionDocument?.transcript || {
+        segments: captionsForExport.map((caption) => ({
+          id: caption.id,
+          start: caption.start,
+          end: caption.end,
+          text: caption.text,
+          words: caption.words,
+        })),
+      },
+      originalAlignedWords: captionDocument?.originalAlignedWords || captionsForExport.flatMap((caption) => caption.words || []),
+      chunks: captionsForExport,
+      style: captionStyleConfig,
+      chunkingConfig: captionChunkingConfig,
+      timingConfig: captionTimingConfig,
+      coverageReport: captionDocument?.coverageReport,
+    }),
+    [
+      captionChunkingConfig,
+      captionDocument,
+      captionStyleConfig,
+      captionTimingConfig,
+      captionsForExport,
+      language,
+    ]
+  );
 
   useEffect(() => {
     if (!showExportModal) {
@@ -154,7 +187,6 @@ export default function ExportModal() {
     exportSettings.includeAudio &&
     tracks.some((track) => track.type === "audio" && track.visible && !track.muted);
   const exportDuration = durationInfo.duration;
-
   const handleExport = async (format: ExportFormat) => {
     setExportError("");
     setExportStatus("");
@@ -182,8 +214,10 @@ export default function ExportModal() {
               product: "Huygen Caps",
               languageMode: language,
               segments: captionsForExport,
+              captionDocument: canonicalCaptionDocument,
               styleConfig: captionStyleConfig,
               chunkingConfig: captionChunkingConfig,
+              timingConfig: captionTimingConfig,
               layerTransform: captionLayerTransform,
               sequenceSettings,
               exportSettings,
@@ -206,23 +240,14 @@ export default function ExportModal() {
             clips: timelineClips,
           },
           captions: captionsForExport,
-          captionDocuments: [
-            {
-              id: "captions_1",
-              name: "Generated captions",
-              sourceMediaId: captionsForExport.find((caption) => caption.sourceMediaId)?.sourceMediaId,
-              languageMode: language,
-              transcript: { segments: captionsForExport },
-              chunks: captionsForExport,
-              style: captionStyleConfig,
-            },
-          ],
+          captionDocuments: [canonicalCaptionDocument],
           settings: {
             language,
             theme,
             captionStyleConfig,
-            captionChunkingConfig,
-            captionLayerTransform,
+              captionChunkingConfig,
+              captionTimingConfig,
+              captionLayerTransform,
             sequenceSettings,
             exportSettings,
           },
@@ -259,7 +284,9 @@ export default function ExportModal() {
       setExportStatus("Preparing Huygen render...");
       pollCancelledRef.current = false;
 
-      const payloadCaptions = exportSettings.burnCaptions ? captionsForExport : [];
+      const payloadCaptions = exportSettings.burnCaptions
+        ? applyCaptionTimingOffset(captionsForExport, captionTimingConfig.globalOffsetSeconds)
+        : [];
       console.info("huygen_export_request", {
         jobId,
         mode: exportSettings.mode,

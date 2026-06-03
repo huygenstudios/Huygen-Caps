@@ -16,17 +16,17 @@ let captionIdCounter = 0;
 const MIN_SYNTHETIC_WORD_DURATION = 0.04;
 const MIN_CAPTION_DURATION = 0.08;
 const CAPTION_OVERLAP_EPSILON = 0.001;
-const MAX_ALLOWED_GAP_INSIDE_CHUNK_SECONDS = 0.35;
+const MAX_ALLOWED_GAP_INSIDE_CHUNK_SECONDS = 0.45;
 
 export const DEFAULT_CAPTION_CHUNKING_CONFIG: CaptionChunkingConfig = {
   targetWordsPerCaption: 4,
   maxWordsPerCaption: 5,
   minWordsPerCaption: 2,
-  maxCharsPerCaption: 34,
+  maxCharsPerCaption: 36,
   minCaptionDuration: 0.8,
   maxCaptionDuration: 3.0,
   pauseSplitThreshold: 0.45,
-  mergeSmallGapThreshold: 0.16,
+  mergeSmallGapThreshold: 0.12,
   targetReadingSpeedCps: 17,
   wordTimingSensitivity: 1,
   minWordDuration: 0.06,
@@ -60,21 +60,43 @@ function tokenizeCaptionText(text: string) {
 }
 
 function isCaptionTimingSource(value: unknown): value is CaptionTimingSource {
-  return value === "provider" || value === "aligned" || value === "manual" || value === "estimated";
+  return (
+    value === "provider" ||
+    value === "whisperx" ||
+    value === "stable_ts" ||
+    value === "vad_adjusted" ||
+    value === "manual" ||
+    value === "estimated"
+  );
 }
 
 export function inferWordTimingSource(word: AlignedWord): CaptionTimingSource {
   if (isCaptionTimingSource(word.timingSource)) return word.timingSource;
-  const source = String(word.timing_source || "").toLowerCase();
+  const source = String(word.timing_source || word.timingSource || "").toLowerCase();
   if (source.includes("manual")) return "manual";
   if (source.includes("interpolated") || source.includes("estimated") || source.includes("synthetic")) return "estimated";
-  if (source.includes("align") || source.includes("whisperx")) return "aligned";
+  if (source.includes("whisperx") || source.includes("forced_align") || source === "aligned") return "whisperx";
+  if (source.includes("stable")) return "stable_ts";
+  if (source.includes("vad")) return "vad_adjusted";
   if (word.provider || source.includes("provider")) return "provider";
   return "estimated";
 }
 
 export function getWordDisplayText(word: AlignedWord) {
-  return (word.displayedWord || word.word || word.originalWord || "").trim();
+  return normalizeDisplayedCaptionText((word.displayedWord || word.word || word.originalWord || "").trim());
+}
+
+export function normalizeDisplayedCaptionText(text: string, languageMode?: string) {
+  void languageMode;
+  return (text || "")
+    .replace(/([A-Za-z0-9\u0C00-\u0C7F])[-‐‑‒–—](?=[A-Za-z0-9\u0C00-\u0C7F])/g, "$1 ")
+    .replace(/\s+([,.!?;:])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function getCaptionDisplayText(caption: Caption) {
+  return caption.manuallyEdited ? caption.text : normalizeDisplayedCaptionText(caption.text, caption.lang);
 }
 
 export function normalizeCaptionWord(word: AlignedWord): AlignedWord {
@@ -83,8 +105,8 @@ export function normalizeCaptionWord(word: AlignedWord): AlignedWord {
   const timingSource = inferWordTimingSource(word);
   return {
     ...word,
-    word: display || original,
-    displayedWord: display || original,
+    word: normalizeDisplayedCaptionText(display || original),
+    displayedWord: normalizeDisplayedCaptionText(display || original),
     originalWord: original || display,
     timingSource,
     timing_source: word.timing_source || timingSource,
@@ -134,17 +156,7 @@ export function getRenderableCaptionWords(caption: Caption): AlignedWord[] {
   const inRange = words.filter((word) => word.end > start + 0.001 && word.start < end - 0.001);
   if (inRange.length === 0) return synthesizeCaptionWords(caption);
 
-  const clamped = inRange.map((word) => {
-    const wordStart = roundWordTime(Math.max(start, Math.min(word.start, end - MIN_SYNTHETIC_WORD_DURATION)));
-    const wordEnd = roundWordTime(Math.min(end, Math.max(wordStart + MIN_SYNTHETIC_WORD_DURATION, word.end)));
-    return {
-      ...word,
-      start: wordStart,
-      end: wordEnd,
-    };
-  }).filter((word) => word.end > word.start);
-
-  return clamped.length ? clamped : synthesizeCaptionWords(caption);
+  return inRange.length ? inRange : synthesizeCaptionWords(caption);
 }
 
 function expandTimedWord(word: AlignedWord): AlignedWord[] {
@@ -218,6 +230,14 @@ function getSegmentWords(seg: AlignedSegment): AlignedWord[] {
   }
 
   return expandedWords;
+}
+
+export function getAlignedWordsFromSegments(segments: AlignedSegment[]): AlignedWord[] {
+  return segments
+    .flatMap(getSegmentWords)
+    .map(normalizeCaptionWord)
+    .filter((word) => getWordDisplayText(word) && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function getCaptionPageText(words: AlignedWord[]) {
@@ -308,7 +328,7 @@ function buildCaptionFromWordGroup(
     id: generateCaptionId(),
     start,
     end,
-    text: normalizedWords.map(getWordDisplayText).join(" "),
+      text: normalizeDisplayedCaptionText(normalizedWords.map(getWordDisplayText).join(" "), lang),
     originalText: normalizedWords.map((word) => word.originalWord || word.word).join(" "),
     words: normalizedWords,
     lang: lang as Caption["lang"],
@@ -345,12 +365,29 @@ function normalizeCaptionTimeline(captions: Caption[]) {
       start,
       end,
       words: words.length ? words : caption.words,
-      text: words.length ? words.map(getWordDisplayText).join(" ") : caption.text,
+      text: words.length ? normalizeDisplayedCaptionText(words.map(getWordDisplayText).join(" "), caption.lang) : normalizeDisplayedCaptionText(caption.text, caption.lang),
       originalText: words.length
         ? words.map((word) => word.originalWord || word.word).join(" ")
         : caption.originalText,
     };
   });
+}
+
+export function captionsToTranscriptSegments(captions: Caption[]): AlignedSegment[] {
+  return [...captions]
+    .sort((a, b) => a.start - b.start)
+    .map((caption) => {
+      const words = normalizeCaptionWords(caption);
+      const fallbackWords = words.length ? words : synthesizeCaptionWords(caption);
+      return {
+        id: caption.id,
+        start: caption.start,
+        end: caption.end,
+        text: getCaptionDisplayText(caption),
+        words: fallbackWords,
+      };
+    })
+    .filter((segment) => segment.text.trim() && segment.end > segment.start);
 }
 
 /**
@@ -413,7 +450,10 @@ export function buildCaptionPages(
       current.length >= minWords &&
       current.length >= targetWords &&
       candidateText.length > maxChars * 0.92;
-    const splitForReadingSpeed = current.length >= minWords && readingSpeed > options.targetReadingSpeedCps;
+    const splitForReadingSpeed =
+      current.length >= targetWords &&
+      candidateText.length > maxChars &&
+      readingSpeed > options.targetReadingSpeedCps * 1.35;
     const shouldSplit =
       current.length >= maxWords ||
       candidateText.length > maxChars ||
@@ -474,7 +514,7 @@ export function segmentsToCaptions(
       id: generateCaptionId(),
       start: seg.start,
       end: seg.end,
-      text: seg.text.trim(),
+      text: normalizeDisplayedCaptionText(seg.text.trim(), lang),
       originalText: seg.text.trim(),
       lang: lang as Caption["lang"],
       theme: theme as Caption["theme"],
@@ -487,6 +527,25 @@ export function segmentsToCaptions(
 }
 
 export const segmentsToCapptions = segmentsToCaptions;
+
+export function alignedWordsToCaptions(
+  words: AlignedWord[],
+  lang: string = "english",
+  theme: string = "word_highlight_box",
+  options: CaptionChunkingConfig = DEFAULT_CAPTION_CHUNKING_CONFIG
+): Caption[] {
+  const sortedWords = words
+    .map(normalizeCaptionWord)
+    .filter((word) => getWordDisplayText(word) && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+
+  const groups = buildCaptionPages(sortedWords, options);
+  return normalizeCaptionTimeline(
+    groups
+      .filter((group) => group.length > 0)
+      .map((group, index) => buildCaptionFromWordGroup(group, groups[index + 1]?.[0]?.start, lang, theme, options))
+  );
+}
 
 export function getActiveWordIndex(words: AlignedWord[] | undefined, currentTime: number): number {
   if (!words || words.length === 0) return -1;
@@ -603,6 +662,28 @@ export function shiftCaptionTiming(caption: Caption, offsetSeconds: number): Cap
   return applyManualCaptionTiming(caption, caption.start + actualOffset, caption.end + actualOffset);
 }
 
+export function applyCaptionTimingOffset(captions: Caption[], offsetSeconds: number): Caption[] {
+  if (!Number.isFinite(offsetSeconds) || Math.abs(offsetSeconds) < 0.0001) return captions;
+  return captions.map((caption) => {
+    const start = roundWordTime(Math.max(0, caption.start + offsetSeconds));
+    const actualOffset = start - caption.start;
+    const end = roundWordTime(Math.max(start + MIN_CAPTION_DURATION, caption.end + actualOffset));
+    return {
+      ...caption,
+      start,
+      end,
+      words: normalizeCaptionWords(caption).map((word) => {
+        const wordStart = roundWordTime(Math.max(0, word.start + actualOffset));
+        return {
+          ...word,
+          start: wordStart,
+          end: roundWordTime(Math.max(wordStart + MIN_SYNTHETIC_WORD_DURATION, word.end + actualOffset)),
+        };
+      }),
+    };
+  });
+}
+
 export function validateCaptionTiming(caption: Caption): string | undefined {
   if (!Number.isFinite(caption.start) || !Number.isFinite(caption.end)) return "Caption timing contains an invalid number.";
   if (caption.start < 0) return "Caption starts before 0 seconds.";
@@ -635,15 +716,14 @@ export function formatTime(seconds: number): string {
   return `${pad(m)}:${pad(s)}.${pad(ms)}`;
 }
 
-/** Parse "MM:SS.cs" or raw seconds back to a number */
+/** Parse "MM:SS.cs", "MM:SS.mmm", or raw seconds back to a number */
 export function parseTime(input: string): number | null {
-  // Try "MM:SS.cs" format
-  const match = input.match(/^(\d+):(\d{1,2})\.(\d{1,2})$/);
+  const match = input.trim().match(/^(\d+):(\d{1,2})\.(\d{1,3})$/);
   if (match) {
     const mins = parseInt(match[1], 10);
     const secs = parseInt(match[2], 10);
-    const cs = parseInt(match[3].padEnd(2, "0"), 10);
-    return mins * 60 + secs + cs / 100;
+    const fraction = parseInt(match[3].padEnd(3, "0"), 10);
+    return mins * 60 + secs + fraction / 1000;
   }
   // Try raw seconds
   const num = parseFloat(input);
@@ -661,7 +741,7 @@ export function generateSRT(captions: Caption[]): string {
     .map((c, i) => {
       const startTC = srtTimecode(c.start);
       const endTC = srtTimecode(c.end);
-      return `${i + 1}\n${startTC} --> ${endTC}\n${c.text}\n`;
+      return `${i + 1}\n${startTC} --> ${endTC}\n${getCaptionDisplayText(c)}\n`;
     })
     .join("\n");
 }
@@ -740,7 +820,7 @@ function buildAssStyle(styleName: string, theme: CaptionTheme, styleOverride?: C
  * The active word shows in the theme's highlight color via \1c override.
  */
 function buildKaraokeText(caption: Caption): string {
-  if (!caption.words || caption.words.length === 0) return caption.text;
+  if (!caption.words || caption.words.length === 0) return getCaptionDisplayText(caption);
 
   const highlightHex = THEME_HIGHLIGHT_COLORS[caption.theme] || "#FFD700";
   const highlightAss = hexToAss(highlightHex);
@@ -816,7 +896,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       const start = assTimecode(c.start);
       const end = assTimecode(c.end);
       const sName = captionStyleNames[idx];
-      const text = (enableKaraoke && c.words && c.words.length > 0) ? buildKaraokeText(c) : c.text;
+      const text = (enableKaraoke && c.words && c.words.length > 0) ? buildKaraokeText(c) : getCaptionDisplayText(c);
       return `Dialogue: 0,${start},${end},${sName},,0,0,0,,${text}`;
     })
     .join("\n");

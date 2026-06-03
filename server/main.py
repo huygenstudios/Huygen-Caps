@@ -33,7 +33,7 @@ import shutil
 
 # These imports will trigger ai_pipeline logic
 from .database import init_db
-from .api import health, jobs, export_jobs
+from .api import captions, health, jobs, export_jobs
 from .settings import cleanup_old_runtime_files, ensure_runtime_dirs, env_list, frontend_dist_available, FRONTEND_DIST_DIR, EXPORT_DIR
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ default_origins = [
     "http://127.0.0.1:5173",
 ]
 configured_origins = env_list("FRONTEND_URL", []) + env_list("CORS_ORIGINS", [])
-allow_origins = configured_origins or default_origins
+allow_origins = list(dict.fromkeys(default_origins + configured_origins))
 allow_all_origins = "*" in allow_origins
 
 app.add_middleware(
@@ -105,6 +105,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(export_jobs.router, prefix="/api")
+app.include_router(captions.router, prefix="/api")
 
 
 @app.get("/health", response_model=health.HealthResponse)
@@ -117,11 +118,22 @@ async def root_export_health_check():
     return await health.export_health_payload_async()
 
 
+@app.get("/health/timing")
+async def root_timing_health_check():
+    return health.timing_health_payload()
+
+
 ensure_runtime_dirs()
 app.mount("/exports", StaticFiles(directory=str(EXPORT_DIR)), name="exports")
 
 
 if frontend_dist_available():
+    next_static_dir = FRONTEND_DIST_DIR / "_next" / "static"
+    brand_static_dir = FRONTEND_DIST_DIR / "brand"
+    if next_static_dir.exists():
+        app.mount("/_next/static", StaticFiles(directory=str(next_static_dir), html=False), name="next-static")
+    if brand_static_dir.exists():
+        app.mount("/brand", StaticFiles(directory=str(brand_static_dir), html=False), name="brand-static")
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True), name="frontend")
 
 # Local dev can still run the Next.js app separately on port 3000.

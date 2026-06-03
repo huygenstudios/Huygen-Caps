@@ -2,11 +2,12 @@
 
 "use client";
 
-import React, { useRef, useCallback, useEffect } from "react";
-import { Plus, Magnet, ZoomIn, ZoomOut, Trash2 } from "lucide-react";
+import React, { useRef, useCallback, useEffect, useState } from "react";
+import { Magnet, Plus, ZoomIn, ZoomOut, Trash2 } from "lucide-react";
 import { useTimelineStore } from "@/store/timelineStore";
 import { useCaptionStore } from "@/store/captionStore";
 import { usePlaybackStore } from "@/store/playbackStore";
+import { useEditorStore } from "@/store/editorStore";
 import { useTimelineSync } from "@/hooks/useTimelineSync";
 import { TRACK_HEADER_WIDTH } from "@/lib/timelineUtils";
 import TimelineRuler from "./TimelineRuler";
@@ -24,13 +25,15 @@ export default function Timeline() {
     toggleSnap,
     zoomIn,
     zoomOut,
-    addTrack,
+    addTrackByType,
     notice,
     clearNotice,
   } = useTimelineStore();
 
   const clearAll = useCaptionStore((s) => s.clearAll);
   const duration = usePlaybackStore((s) => s.duration);
+  const mediaFiles = useEditorStore((s) => s.mediaFiles);
+  const [layerMenuOpen, setLayerMenuOpen] = useState(false);
 
   const { handleTimelineSeek } = useTimelineSync();
 
@@ -66,29 +69,6 @@ export default function Timeline() {
     [handleTimelineSeek]
   );
 
-  const handleAddTrack = useCallback(
-    (type: "video" | "audio" | "caption" | "image" | "overlay") => {
-      const prefix = type === "audio" ? "A" : type === "caption" ? "C" : "V";
-      const matching = prefix === "V"
-        ? tracks.filter((t) => t.type === "video" || t.type === "image" || t.type === "overlay")
-        : tracks.filter((t) => t.type === type);
-      const label = `${prefix}${matching.length + 1}`;
-      addTrack({
-        id: `${type}_${Date.now()}`,
-        type,
-        label,
-        name: label,
-        locked: false,
-        visible: true,
-        muted: type === "audio" ? false : undefined,
-        height: type === "caption" ? 36 : 48,
-        zIndex: tracks.length + 1,
-        clips: [],
-      });
-    },
-    [tracks, addTrack]
-  );
-
   const containerWidth = containerRef.current?.clientWidth || 800;
   const projectDuration = Math.max(
     30,
@@ -99,6 +79,8 @@ export default function Timeline() {
     0,
     projectDuration * pixelsPerSecond - (containerWidth - TRACK_HEADER_WIDTH)
   );
+  const hasTimelineClips = tracks.some((track) => (track.clips || []).length > 0);
+  const hasImportedMedia = mediaFiles.length > 0;
 
   return (
     <div className="panel flex flex-col h-full">
@@ -129,17 +111,37 @@ export default function Timeline() {
           >
             <Trash2 size={12} style={{ color: "var(--text-muted)" }} />
           </button>
-          {(["video", "audio", "caption", "overlay"] as const).map((type) => (
+          <div className="relative">
             <button
-              key={type}
-              className="p-1 rounded hover:bg-white/10 flex items-center gap-0.5 text-[10px]"
-              style={{ color: "var(--text-muted)" }}
-              onClick={() => handleAddTrack(type)}
-              title={`Add ${type} track`}
+              className="btn-ghost flex items-center gap-1 px-2 py-1 text-[10px]"
+              onClick={() => setLayerMenuOpen((open) => !open)}
+              title="Add timeline layer"
             >
-              <Plus size={12} /> {type}
+              <Plus size={12} />
+              Layer
             </button>
-          ))}
+            {layerMenuOpen && (
+              <div className="menu-popover absolute right-0 top-7 z-[90] w-40 p-1">
+                {[
+                  ["video", "Add Video Layer"],
+                  ["audio", "Add Audio Layer"],
+                  ["caption", "Add Subtitle Layer"],
+                  ["overlay", "Add Overlay Layer"],
+                ].map(([type, label]) => (
+                  <button
+                    key={type}
+                    className="menu-item text-[11px]"
+                    onClick={() => {
+                      addTrackByType(type as "video" | "audio" | "caption" | "overlay");
+                      setLayerMenuOpen(false);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -188,10 +190,10 @@ export default function Timeline() {
           <Playhead />
 
           {/* Empty state */}
-          {tracks.length === 0 && (
-            <div className="flex items-center justify-center py-8">
+          {!hasTimelineClips && !hasImportedMedia && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center py-8">
               <p className="brutal-empty px-4 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
-                Drag media into the timeline.
+                Your video and captions will appear here.
               </p>
             </div>
           )}

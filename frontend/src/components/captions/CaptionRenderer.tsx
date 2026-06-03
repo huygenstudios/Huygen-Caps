@@ -10,13 +10,15 @@ import {
   resolveSafeCaptionLayout,
 } from "@/lib/captionLayoutSafety";
 import {
+  BUILD_BIG_FONT_SIZE_PX,
+  BUILD_SMALL_FONT_SIZE_PX,
   backgroundRgba,
   directionalShadow,
   normalizeCaptionStyleConfig,
   normalizeModernMinimalistStyleConfig,
   resolveFontFamily,
 } from "@/lib/captionStyleConfig";
-import { getRenderableCaptionWords, getWordDisplayText } from "@/lib/captionUtils";
+import { getCaptionDisplayText, getRenderableCaptionWords, getWordDisplayText } from "@/lib/captionUtils";
 import ViralWordHighlightCaption from "./ViralWordHighlightCaption";
 import WordHighlightBoxCaption from "./WordHighlightBoxCaption";
 
@@ -85,19 +87,15 @@ function buildTextShadow(themeStyle: CaptionStyle): string | undefined {
 }
 
 function buildConfigTextShadow(config: CaptionStyleConfig) {
-  const shadows = [
-    config.textShadowEnabled
-      ? directionalShadow(
-          config.textShadowColor,
-          config.textShadowOpacity,
-          config.textShadowDistance,
-          config.textShadowBlur,
-          config.textShadowAngle
-        )
-      : "",
-    config.textStrokeEnabled ? `0 3px 0 ${config.textStrokeColor}` : "",
-  ].filter(Boolean);
-  return shadows.length ? shadows.join(", ") : undefined;
+  if (!config.textShadowEnabled) return undefined;
+  const shadow = directionalShadow(
+    config.textShadowColor,
+    config.textShadowOpacity,
+    config.textShadowDistance,
+    config.textShadowBlur,
+    config.textShadowAngle
+  );
+  return shadow || undefined;
 }
 
 function justifyFromAlignment(alignment: CaptionStyleConfig["alignment"]) {
@@ -111,6 +109,7 @@ function buildConfigPositionStyle(config: CaptionStyleConfig, layout?: SafeCapti
 function buildCaptionSurfaceStyle(config: CaptionStyleConfig, scale: number): React.CSSProperties {
   return {
     maxWidth: "100%",
+    width: config.backgroundFit === "fill" ? "100%" : undefined,
     padding: config.backgroundEnabled
       ? `${Math.max(0, config.paddingY * scale)}px ${Math.max(0, config.paddingX * scale)}px`
       : 0,
@@ -133,6 +132,10 @@ function buildCaptionSurfaceStyle(config: CaptionStyleConfig, scale: number): Re
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function roundTime(value: number) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function interpolate(input: number, inMin: number, inMax: number, outMin: number, outMax: number) {
@@ -275,10 +278,7 @@ function renderMrBeastStyle(
   const fontSize = layout.fontSize;
   const positionStyle = buildConfigPositionStyle(config, layout);
   const strokeWidth = Math.max(1, config.textStrokeWidth * scale);
-  const shadow = [
-    `0 ${Math.round(7 * scale)}px 0 ${config.textStrokeColor}`,
-    `0 ${Math.round(13 * scale)}px ${Math.round(18 * scale)}px rgba(0,0,0,0.72)`,
-  ].join(", ");
+  const shadow = buildConfigTextShadow(config);
 
   return (
     <div style={positionStyle} data-caption-theme="mrbeast_style">
@@ -405,36 +405,72 @@ function normalizeLockupWords(words: TimedCaptionWord[]) {
   return normalized;
 }
 
-function lineLength(words: TimedCaptionWord[]) {
-  return words.map((word) => word.word).join(" ").length;
-}
+type ResolvedBuildLayoutMode = "left_anchor" | "center_anchor" | "right_anchor";
 
-function balanceModernMinimalistLines(words: TimedCaptionWord[]) {
-  if (words.length <= 1) return words.length ? [words] : [];
+type LayoutBounds = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
 
-  const totalLength = lineLength(words);
-  const longestWord = Math.max(...words.map((word) => word.word.length));
-  if (words.length <= 3 && totalLength <= 14 && longestWord <= 8) {
-    return [words];
-  }
+type BuildWordRole = "anchor" | "supporting";
 
-  let bestSplit = 1;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (let split = 1; split < words.length; split += 1) {
-    const first = words.slice(0, split);
-    const second = words.slice(split);
-    const firstLength = lineLength(first);
-    const secondLength = lineLength(second);
-    const singleTinyLastWordPenalty = second.length === 1 && secondLength <= 4 ? 4 : 0;
-    const score = Math.abs(firstLength - secondLength) + singleTinyLastWordPenalty;
-    if (score < bestScore) {
-      bestScore = score;
-      bestSplit = split;
-    }
-  }
+type EditorialWordPlacement = {
+  id: string;
+  index: number;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  scale: number;
+  role: BuildWordRole;
+  isAnchor: boolean;
+};
 
-  return [words.slice(0, bestSplit), words.slice(bestSplit)];
-}
+type EditorialLockupLayout = {
+  width: number;
+  height: number;
+  bounds: LayoutBounds;
+  collisionPadding: number;
+  fallback: boolean;
+  placements: EditorialWordPlacement[];
+};
+
+type BuildWordGroup = {
+  words: TimedCaptionWord[];
+  groupIndex: number;
+  start: number;
+  end: number;
+};
+
+const BUILD_REVEAL_MIN_STEP_SECONDS = 0.11;
+const BUILD_REVEAL_MAX_STEP_SECONDS = 0.38;
+const BUILD_REVEAL_FLAT_START_EPSILON = 0.035;
+const BUILD_SUPPORT_MIN_RATIO = 0.42;
+
+const BUILD_CONNECTOR_WORDS = new Set([
+  "a",
+  "an",
+  "the",
+  "to",
+  "of",
+  "in",
+  "and",
+  "i",
+  "lo",
+  "ki",
+  "ga",
+  "tho",
+  "ka",
+  "ko",
+  "ni",
+  "me",
+  "ne",
+  "ye",
+]);
 
 function modernCanvasSize(canvasSize?: CaptionCanvasSize) {
   return {
@@ -443,27 +479,505 @@ function modernCanvasSize(canvasSize?: CaptionCanvasSize) {
   };
 }
 
-function resolveModernMinimalistFontSize(
-  config: CaptionStyleConfig,
-  lines: TimedCaptionWord[][],
-  canvasSize: CaptionCanvasSize | undefined,
-  layout: SafeCaptionLayout,
-  scale: number
-) {
-  const canvas = modernCanvasSize(canvasSize);
-  const responsiveScale = canvas.height >= canvas.width ? canvas.height / 1920 : canvas.width / 1080;
-  const baseFont = (config.fontSize || 112) * responsiveScale * scale;
-  const maxLineLength = Math.max(1, ...lines.map(lineLength));
-  const lineHeight = clamp(Number(config.lineHeight) || 0.95, 0.9, 1.05);
-  const availableWidth = canvas.width * scale * (layout.widthPercent / 100) * 0.98;
-  const availableHeight = canvas.height * scale * (layout.maxHeightPercent / 100) * 0.92;
-  const weightFactor = Number(config.fontWeight) >= 800 ? 0.58 : 0.54;
-  const widthFit = availableWidth / (maxLineLength * weightFactor);
-  const heightFit = availableHeight / (Math.max(1, lines.length) * lineHeight);
-  const maxFont = 132 * scale * responsiveScale;
-  const minFont = 18 * scale;
+function normalizeBuildLayoutMode(mode: CaptionStyleConfig["layoutMode"]): "auto" | ResolvedBuildLayoutMode {
+  if (mode === "a") return "center_anchor";
+  if (mode === "b") return "left_anchor";
+  if (mode === "c") return "right_anchor";
+  if (mode === "top_heavy" || mode === "bottom_stack") return "center_anchor";
+  if (mode === "split_lockup") return "right_anchor";
+  if (mode === "left_anchor" || mode === "center_anchor" || mode === "right_anchor" || mode === "auto") {
+    return mode;
+  }
+  return "auto";
+}
 
-  return Math.max(minFont, Math.min(baseFont, widthFit, heightFit, maxFont));
+function autoBuildLayoutMode(captionId: string, groupIndex: number): ResolvedBuildLayoutMode {
+  const options: ResolvedBuildLayoutMode[] = ["left_anchor", "center_anchor", "right_anchor"];
+  return options[stableHash(`${captionId}-${groupIndex}`) % options.length];
+}
+
+function cleanedToken(word: string) {
+  return word.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function chooseAnchorIndex(words: TimedCaptionWord[]) {
+  if (words.length === 0) return 0;
+
+  let bestIndex = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  words.forEach((word, index) => {
+    const clean = cleanedToken(word.word);
+    const connectorPenalty = BUILD_CONNECTOR_WORDS.has(clean) ? -3.5 : 0;
+    const lengthScore = Math.min(12, clean.length) * 1.1;
+    const numberBoost = /\d/.test(clean) ? 2.8 : 0;
+    const emphasisBoost = /[!?]/.test(word.word) ? 1.4 : 0;
+    const firstWordBoost = index === 0 ? 0.45 : 0;
+    const score = lengthScore + numberBoost + emphasisBoost + firstWordBoost + connectorPenalty;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function buildEditorialWordGroups(words: TimedCaptionWord[], captionEnd: number): BuildWordGroup[] {
+  const groups: BuildWordGroup[] = [];
+  let index = 0;
+
+  while (index < words.length) {
+    const remaining = words.length - index;
+    const size = remaining <= 4 ? remaining : remaining === 5 ? 3 : 3;
+    const groupWords = words.slice(index, index + size);
+    if (!groupWords.length) break;
+    const groupStart = groupWords[0].start;
+    const naturalGroupEnd = words[index + size]?.start ?? captionEnd;
+    const lastWordEnd = Math.max(...groupWords.map((word) => word.end));
+    const minimumReadableEnd = groupStart + BUILD_REVEAL_MIN_STEP_SECONDS * Math.max(1, groupWords.length);
+    groups.push({
+      words: groupWords,
+      groupIndex: groups.length,
+      start: groupStart,
+      end: Math.max(groupStart + 0.08, Math.min(captionEnd, Math.max(naturalGroupEnd, lastWordEnd, minimumReadableEnd))),
+    });
+    index += size;
+  }
+
+  return groups;
+}
+
+function selectEditorialWordGroup(words: TimedCaptionWord[], activeCaption: Caption, currentTime: number) {
+  const groups = buildEditorialWordGroups(words, activeCaption.end);
+  if (!groups.length) return null;
+
+  const activeGroup = groups.find((group) => currentTime >= group.start && currentTime < group.end);
+  if (activeGroup) return activeGroup;
+
+  const latestStarted = [...groups].reverse().find((group) => currentTime >= group.start);
+  return latestStarted || groups[0];
+}
+
+function hasFlatEditorialTiming(words: TimedCaptionWord[]) {
+  if (words.length <= 1) return false;
+  const starts = words.map((word) => word.start);
+  const firstStart = starts[0];
+  const lastStart = starts[starts.length - 1];
+  const compressedSpan = lastStart - firstStart < BUILD_REVEAL_MIN_STEP_SECONDS * Math.min(2, words.length - 1);
+  const repeatedStart = starts.some((start, index) => index > 0 && Math.abs(start - starts[index - 1]) <= BUILD_REVEAL_FLAT_START_EPSILON);
+  return compressedSpan || repeatedStart;
+}
+
+function buildEditorialRevealWords(words: TimedCaptionWord[], captionStart: number, captionEnd: number) {
+  if (words.length <= 1) return words;
+
+  const flatTiming = hasFlatEditorialTiming(words);
+  const safeCaptionStart = Math.max(0, captionStart);
+  const safeCaptionEnd = Math.max(safeCaptionStart + 0.08, captionEnd);
+  const availableDuration = Math.max(0.08, safeCaptionEnd - safeCaptionStart);
+  const step = clamp(
+    availableDuration / Math.max(1, words.length + 0.5),
+    BUILD_REVEAL_MIN_STEP_SECONDS,
+    BUILD_REVEAL_MAX_STEP_SECONDS
+  );
+
+  let cursor = Math.max(safeCaptionStart, Math.min(words[0].start, safeCaptionEnd - 0.04));
+  return words.map((word, index) => {
+    const desiredStart = flatTiming
+      ? safeCaptionStart + step * index
+      : Math.max(word.start, index === 0 ? safeCaptionStart : cursor);
+    const start = Math.min(Math.max(safeCaptionStart, desiredStart), safeCaptionEnd - 0.02);
+    const nextNaturalStart = words[index + 1]?.start;
+    const nextScheduledStart = index + 1 < words.length
+      ? Math.min(safeCaptionEnd, Math.max(start + BUILD_REVEAL_MIN_STEP_SECONDS, flatTiming ? safeCaptionStart + step * (index + 1) : nextNaturalStart ?? start + step))
+      : safeCaptionEnd;
+    const end = Math.min(
+      safeCaptionEnd,
+      Math.max(start + 0.06, Math.min(word.end, nextScheduledStart))
+    );
+    cursor = nextScheduledStart;
+    return {
+      ...word,
+      start: roundTime(start),
+      end: roundTime(Math.max(start + 0.04, end)),
+    };
+  });
+}
+
+function estimateWordBox(word: string, fontSize: number, config: CaptionStyleConfig, wordScale = 1) {
+  const token = word.trim();
+  const charCount = Math.max(1, token.length);
+  const factor = Number(config.fontWeight) >= 800 ? 0.64 : 0.58;
+  const effectiveFontSize = fontSize * wordScale;
+  const width = Math.max(
+    effectiveFontSize * 0.78,
+    charCount * effectiveFontSize * factor + Math.max(0, charCount - 1) * config.letterSpacing
+  );
+  const height = Math.max(effectiveFontSize * 0.9, effectiveFontSize * clamp(config.lineHeight, 0.9, 1.25));
+  return { width, height };
+}
+
+function clampCenter(x: number, y: number, width: number, height: number, bounds: LayoutBounds) {
+  if (width > bounds.right - bounds.left || height > bounds.bottom - bounds.top) {
+    return {
+      x: (bounds.left + bounds.right) / 2,
+      y: (bounds.top + bounds.bottom) / 2,
+    };
+  }
+  return {
+    x: clamp(x, bounds.left + width / 2, bounds.right - width / 2),
+    y: clamp(y, bounds.top + height / 2, bounds.bottom - height / 2),
+  };
+}
+
+function placementRect(placement: EditorialWordPlacement) {
+  return {
+    left: placement.x - placement.width / 2,
+    top: placement.y - placement.height / 2,
+    right: placement.x + placement.width / 2,
+    bottom: placement.y + placement.height / 2,
+  };
+}
+
+function rectsOverlap(a: EditorialWordPlacement, b: EditorialWordPlacement, padding: number) {
+  const aRect = placementRect(a);
+  const bRect = placementRect(b);
+  return (
+    aRect.left < bRect.right + padding &&
+    aRect.right > bRect.left - padding &&
+    aRect.top < bRect.bottom + padding &&
+    aRect.bottom > bRect.top - padding
+  );
+}
+
+function isInsideSafeArea(placement: EditorialWordPlacement, bounds: LayoutBounds) {
+  const rect = placementRect(placement);
+  return rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+}
+
+function hasCollision(placement: EditorialWordPlacement, existing: EditorialWordPlacement[], padding: number) {
+  return existing.some((candidate) => rectsOverlap(placement, candidate, padding));
+}
+
+function makeWordPlacement(
+  word: TimedCaptionWord,
+  index: number,
+  fontSize: number,
+  x: number,
+  y: number,
+  role: BuildWordRole,
+  config: CaptionStyleConfig,
+  wordScale = 1
+): EditorialWordPlacement {
+  const size = estimateWordBox(word.word, fontSize, config, wordScale);
+  return {
+    id: `${index}:${word.start}:${word.word}`,
+    index,
+    text: word.word,
+    x,
+    y,
+    width: size.width,
+    height: size.height,
+    fontSize,
+    scale: wordScale,
+    role,
+    isAnchor: role === "anchor",
+  };
+}
+
+function isValidBuildPlacement(
+  placement: EditorialWordPlacement,
+  existing: EditorialWordPlacement[],
+  bounds: LayoutBounds,
+  padding: number
+) {
+  return isInsideSafeArea(placement, bounds) && !hasCollision(placement, existing, padding);
+}
+
+function supportSlotCenters(
+  mode: ResolvedBuildLayoutMode,
+  anchor: EditorialWordPlacement,
+  bounds: LayoutBounds,
+  wordWidth: number,
+  wordHeight: number,
+  padding: number,
+  tightness: number,
+  _asymmetry: number,
+  _seed: number,
+  supportOrder: number
+) {
+  const anchorRect = placementRect(anchor);
+  const safeWidth = bounds.right - bounds.left;
+  const safeHeight = bounds.bottom - bounds.top;
+  const gap = Math.max(padding, interpolate(tightness, 0, 1, 14, 6));
+  const nudgeX = Math.min(safeWidth * 0.035, gap * 1.8);
+  const nudgeY = Math.min(safeHeight * 0.045, gap * 1.6);
+  const centerX = (bounds.left + bounds.right) / 2;
+  const above = anchorRect.top - gap - wordHeight / 2;
+  const below = anchorRect.bottom + gap + wordHeight / 2;
+  const leftNear = anchorRect.left + wordWidth * 0.55;
+  const rightNear = anchorRect.right - wordWidth * 0.55;
+  const leftTuck = anchorRect.left + Math.min(anchor.width * 0.25, wordWidth * 1.1);
+  const rightTuck = anchorRect.right - Math.min(anchor.width * 0.25, wordWidth * 1.1);
+
+  const templates: Record<ResolvedBuildLayoutMode, Array<{ x: number; y: number }>> = {
+    left_anchor: [
+      { x: rightTuck, y: above },
+      { x: leftNear, y: below },
+      { x: rightNear, y: below },
+    ],
+    center_anchor: [
+      { x: rightTuck, y: above },
+      { x: leftNear, y: below },
+      { x: rightNear, y: below },
+    ],
+    right_anchor: [
+      { x: leftTuck, y: above },
+      { x: leftNear, y: below },
+      { x: rightNear, y: below },
+    ],
+  };
+
+  const primary = templates[mode][supportOrder % 3];
+  const secondary = [
+    primary,
+    { x: primary.x - nudgeX, y: primary.y },
+    { x: primary.x + nudgeX, y: primary.y },
+    { x: primary.x, y: primary.y - nudgeY },
+    { x: primary.x, y: primary.y + nudgeY },
+    { x: anchor.x, y: above },
+    { x: anchor.x, y: below },
+    { x: centerX, y: supportOrder === 0 ? above : below },
+  ];
+
+  return secondary;
+}
+
+function buildFallbackStackLayout(
+  words: TimedCaptionWord[],
+  anchorIndex: number,
+  config: CaptionStyleConfig,
+  bounds: LayoutBounds,
+  bigFontSize: number,
+  smallFontSize: number,
+  collisionPadding: number
+) {
+  const centerX = (bounds.left + bounds.right) / 2;
+  const centerY = (bounds.top + bounds.bottom) / 2;
+  const availableWidth = Math.max(1, bounds.right - bounds.left);
+  const availableHeight = Math.max(1, bounds.bottom - bounds.top);
+  const rowGap = Math.max(collisionPadding, smallFontSize * 0.12);
+  const supportIndexes = words.map((_, index) => index).filter((index) => index !== anchorIndex);
+  const split = Math.ceil(supportIndexes.length / 2);
+  const rows = [
+    supportIndexes.slice(0, split),
+    [anchorIndex],
+    supportIndexes.slice(split),
+  ].filter((row) => row.length > 0);
+  const lockupScaleAttempts = [1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36, 0.3, 0.24, 0.2, 0.16, 0.12, 0.08];
+
+  const buildRows = (globalScale: number) => rows.map((row) => {
+    const items = row.map((index) => {
+      const isAnchor = index === anchorIndex;
+      const fontSize = (isAnchor ? bigFontSize : smallFontSize) * globalScale;
+      const size = estimateWordBox(words[index].word, fontSize, config);
+      return { index, isAnchor, fontSize, ...size };
+    });
+    return {
+      items,
+      width: items.reduce((total, item) => total + item.width, 0) + Math.max(0, items.length - 1) * collisionPadding,
+      height: Math.max(1, ...items.map((item) => item.height)),
+    };
+  });
+
+  let resolvedRows = buildRows(lockupScaleAttempts[lockupScaleAttempts.length - 1]);
+  for (const lockupScale of lockupScaleAttempts) {
+    const candidateRows = buildRows(lockupScale);
+    const candidateHeight = candidateRows.reduce((total, row) => total + row.height, 0) + Math.max(0, candidateRows.length - 1) * rowGap;
+    const candidateWidth = Math.max(1, ...candidateRows.map((row) => row.width));
+    resolvedRows = candidateRows;
+    if (candidateWidth <= availableWidth && candidateHeight <= availableHeight) {
+      break;
+    }
+  }
+
+  const totalHeight = resolvedRows.reduce((total, row) => total + row.height, 0) + Math.max(0, resolvedRows.length - 1) * rowGap;
+  let y = centerY - totalHeight / 2;
+  const placements: EditorialWordPlacement[] = [];
+
+  resolvedRows.forEach((row) => {
+    const rowY = y + row.height / 2;
+    let x = centerX - row.width / 2;
+    row.items.forEach((item) => {
+      const center = {
+        x: x + item.width / 2,
+        y: rowY,
+      };
+      placements.push(makeWordPlacement(
+        words[item.index],
+        item.index,
+        item.fontSize,
+        center.x,
+        center.y,
+        item.isAnchor ? "anchor" : "supporting",
+        config
+      ));
+      x += item.width + collisionPadding;
+    });
+    y += row.height + rowGap;
+  });
+
+  return placements;
+}
+
+function buildEditorialLockupLayout(
+  words: TimedCaptionWord[],
+  activeCaption: Caption,
+  config: CaptionStyleConfig,
+  layout: SafeCaptionLayout,
+  canvasSize: CaptionCanvasSize | undefined,
+  scale: number,
+  groupIndex = 0
+): EditorialLockupLayout {
+  const canvas = modernCanvasSize(canvasSize);
+  const width = Math.max(1, canvas.width * scale * (layout.widthPercent / 100));
+  const height = Math.max(1, canvas.height * scale * (layout.maxHeightPercent / 100));
+  const safeMarginPercent = config.safeAreaEnabled ? clamp(config.layoutSafeMarginPercent ?? 8, 0, 20) : 0;
+  const bounds: LayoutBounds = {
+    left: (width * safeMarginPercent) / 100,
+    top: (height * safeMarginPercent) / 100,
+    right: width - (width * safeMarginPercent) / 100,
+    bottom: height - (height * safeMarginPercent) / 100,
+  };
+
+  const collisionPadding = Math.max(1, (config.collisionPadding ?? 8) * scale);
+  const safeWidth = Math.max(1, bounds.right - bounds.left);
+  const safeHeight = Math.max(1, bounds.bottom - bounds.top);
+  const configuredBigFontSize = clamp(config.bigFontSizePx ?? BUILD_BIG_FONT_SIZE_PX, 80, 400) * scale;
+  const configuredSmallFontSize = Math.min(
+    configuredBigFontSize * 0.78,
+    Math.max(
+      configuredBigFontSize * BUILD_SUPPORT_MIN_RATIO,
+      clamp(config.smallFontSizePx ?? BUILD_SMALL_FONT_SIZE_PX, 20, 160) * scale
+    )
+  );
+  const tightness = clamp(config.tightness ?? 0.75, 0, 1);
+  const modeInput = normalizeBuildLayoutMode(config.layoutMode);
+  const mode = modeInput === "auto" ? autoBuildLayoutMode(activeCaption.id, groupIndex) : modeInput;
+  const anchorIndex = chooseAnchorIndex(words);
+  const anchorWord = words[anchorIndex];
+  const lockupScaleAttempts = [1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36, 0.3, 0.24, 0.2, 0.16, 0.12, 0.08];
+
+  const modeAnchorCenter = (currentMode: ResolvedBuildLayoutMode) => {
+    const midX = (bounds.left + bounds.right) / 2;
+    const midY = (bounds.top + bounds.bottom) / 2;
+    if (currentMode === "left_anchor") {
+      return { x: bounds.left + safeWidth * 0.43, y: midY + safeHeight * 0.02 };
+    }
+    if (currentMode === "right_anchor") {
+      return { x: bounds.left + safeWidth * 0.57, y: midY - safeHeight * 0.01 };
+    }
+    return { x: midX, y: midY };
+  };
+
+  const isNearAnchor = (placement: EditorialWordPlacement, anchor: EditorialWordPlacement) => {
+    const placementBounds = placementRect(placement);
+    const anchorBounds = placementRect(anchor);
+    const xGap = Math.max(anchorBounds.left - placementBounds.right, placementBounds.left - anchorBounds.right, 0);
+    const yGap = Math.max(anchorBounds.top - placementBounds.bottom, placementBounds.top - anchorBounds.bottom, 0);
+    return Math.hypot(xGap, yGap) <= Math.max(safeHeight * 0.2, collisionPadding * 2);
+  };
+
+  const placeSupportWord = (
+    index: number,
+    supportOrder: number,
+    mode: ResolvedBuildLayoutMode,
+    anchor: EditorialWordPlacement,
+    placements: EditorialWordPlacement[],
+    fontSize: number
+  ) => {
+    const probe = makeWordPlacement(words[index], index, fontSize, 0, 0, "supporting", config);
+    const slots = supportSlotCenters(
+      mode,
+      anchor,
+      bounds,
+      probe.width,
+      probe.height,
+      collisionPadding,
+      tightness,
+      0,
+      0,
+      supportOrder
+    );
+
+    for (const slot of slots) {
+      const center = clampCenter(slot.x, slot.y, probe.width, probe.height, bounds);
+      const candidate = makeWordPlacement(words[index], index, fontSize, center.x, center.y, "supporting", config);
+      if (isValidBuildPlacement(candidate, placements, bounds, collisionPadding) && isNearAnchor(candidate, anchor)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  };
+
+  for (const lockupScale of lockupScaleAttempts) {
+    const anchorFont = configuredBigFontSize * lockupScale;
+    const supportFont = configuredSmallFontSize * lockupScale;
+    const baseAnchor = modeAnchorCenter(mode);
+    const anchorProbe = makeWordPlacement(anchorWord, anchorIndex, anchorFont, 0, 0, "anchor", config);
+    const anchorCenter = clampCenter(baseAnchor.x, baseAnchor.y, anchorProbe.width, anchorProbe.height, bounds);
+    const anchor = makeWordPlacement(anchorWord, anchorIndex, anchorFont, anchorCenter.x, anchorCenter.y, "anchor", config);
+    if (!isInsideSafeArea(anchor, bounds)) continue;
+
+    const placements: EditorialWordPlacement[] = [anchor];
+    const supportIndexes = words.map((_, index) => index).filter((index) => index !== anchorIndex);
+    let failed = false;
+
+    for (let supportOrder = 0; supportOrder < supportIndexes.length; supportOrder += 1) {
+      const index = supportIndexes[supportOrder];
+      const placement = placeSupportWord(index, supportOrder, mode, anchor, placements, supportFont);
+      if (!placement) {
+        failed = true;
+        break;
+      }
+      placements.push(placement);
+    }
+
+    if (!failed) {
+      return { width, height, bounds, collisionPadding, fallback: false, placements };
+    }
+  }
+
+  const fallbackPlacements = buildFallbackStackLayout(
+    words,
+    anchorIndex,
+    config,
+    bounds,
+    configuredBigFontSize,
+    configuredSmallFontSize,
+    collisionPadding
+  );
+
+  return {
+    width,
+    height,
+    bounds,
+    collisionPadding,
+    fallback: true,
+    placements: fallbackPlacements,
+  };
+}
+
+function findBuildCollision(placements: EditorialWordPlacement[], padding: number) {
+  for (let leftIndex = 0; leftIndex < placements.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < placements.length; rightIndex += 1) {
+      if (rectsOverlap(placements[leftIndex], placements[rightIndex], padding)) {
+        return [placements[leftIndex], placements[rightIndex]] as const;
+      }
+    }
+  }
+  return null;
 }
 
 function renderModernMinimalistLockup(
@@ -477,15 +991,23 @@ function renderModernMinimalistLockup(
   if (currentTime < activeCaption.start || currentTime >= activeCaption.end) return null;
 
   const config = normalizeModernMinimalistStyleConfig(styleConfig);
-  const words = normalizeLockupWords(buildTimedWords(activeCaption));
-  const revealed = words.filter((word) => currentTime >= word.start && currentTime < activeCaption.end);
-  if (revealed.length === 0) return null;
-  const lines = balanceModernMinimalistLines(revealed);
+  const allWords = buildEditorialRevealWords(
+    normalizeLockupWords(buildTimedWords(activeCaption)),
+    activeCaption.start,
+    activeCaption.end
+  );
+  const wordGroup = selectEditorialWordGroup(allWords, activeCaption, currentTime);
+  if (!wordGroup) return null;
+
+  const words = wordGroup.words;
+  const anyRevealed = words.some((word) => currentTime >= word.start && currentTime < wordGroup.end);
+  if (!anyRevealed) return null;
+
   const layoutSafety = resolveSafeCaptionLayout(config, {
     canvas: canvasSize,
     previewScale: scale,
     words,
-    text: activeCaption.text,
+    text: words.map((word) => word.word).join(" "),
     safety: {
       maxWidthPercent: 86,
       maxHeightPercent: 45,
@@ -500,79 +1022,122 @@ function renderModernMinimalistLockup(
       wrapMode: "balanced",
     },
   });
+
+  const lockup = buildEditorialLockupLayout(words, activeCaption, config, layoutSafety, canvasSize, scale, wordGroup.groupIndex);
   const positionStyle = buildConfigPositionStyle(config, layoutSafety);
-  const fontSize = resolveModernMinimalistFontSize(config, lines, canvasSize, layoutSafety, scale);
-  const textShadow = buildConfigTextShadow(config);
   const stroke = config.textStrokeEnabled ? `${Math.max(0.5, config.textStrokeWidth * scale)}px ${config.textStrokeColor}` : undefined;
-  const lineHeight = clamp(Number(config.lineHeight) || 0.95, 0.9, 1.05);
+  const lineHeight = clamp(Number(config.lineHeight) || 0.95, 0.85, 1.2);
+  const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime < word.end);
+  const showBuildBounds = process.env.NODE_ENV !== "production" && Boolean(config.showBuildWordBounds);
+  const debugCollision = showBuildBounds ? findBuildCollision(lockup.placements, lockup.collisionPadding) : null;
+  if (debugCollision) {
+    console.warn("[captions] Editorial Lockup collision", {
+      captionId: activeCaption.id,
+      words: debugCollision.map((placement) => placement.text),
+      padding: lockup.collisionPadding,
+    });
+  }
 
   return (
-    <div style={positionStyle} data-caption-theme="modern_minimalist_lockup">
+    <div
+      style={{
+        ...positionStyle,
+        height: `${layoutSafety.maxHeightPercent}%`,
+      }}
+      data-caption-theme="modern_minimalist_lockup"
+    >
       <div
         style={{
           ...buildCaptionSurfaceStyle(config, scale),
-          display: "flex",
+          position: "relative",
           width: "100%",
+          height: "100%",
           maxWidth: "100%",
-          flexDirection: "column",
-          alignItems: config.alignment === "left" ? "flex-start" : config.alignment === "right" ? "flex-end" : "center",
-          justifyContent: "center",
-          gap: 0,
-          textAlign: config.alignment,
-          lineHeight,
+          maxHeight: "100%",
           overflow: "hidden",
           ...SAFE_CAPTION_TEXT_STYLE,
         }}
       >
-        {lines.map((line, lineIndex) => (
+        {showBuildBounds && (
           <div
-            key={`${activeCaption.id}-modern-line-${lineIndex}`}
+            aria-hidden
             style={{
-              display: "block",
-              width: "100%",
-              maxWidth: "100%",
-              minWidth: 0,
-              lineHeight,
-              textAlign: config.alignment,
-              ...SAFE_CAPTION_TEXT_STYLE,
+              position: "absolute",
+              left: `${(lockup.bounds.left / lockup.width) * 100}%`,
+              top: `${(lockup.bounds.top / lockup.height) * 100}%`,
+              width: `${((lockup.bounds.right - lockup.bounds.left) / lockup.width) * 100}%`,
+              height: `${((lockup.bounds.bottom - lockup.bounds.top) / lockup.height) * 100}%`,
+              border: "1px dashed rgba(34, 244, 184, 0.9)",
+              pointerEvents: "none",
+              zIndex: 1,
             }}
-          >
-            {line.map((word, wordIndex) => {
-              const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
-              const ageFrames = Math.max(0, (currentTime - word.start) * fps);
-              const motion = wordMotionTransform(ageFrames, config);
-              return (
-                <React.Fragment key={`${activeCaption.id}-modern-${lineIndex}-${wordIndex}-${word.start}`}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      maxWidth: "100%",
-                      fontFamily: resolveFontFamily(config.fontFamily),
-                      fontSize,
-                      fontWeight: config.fontWeight,
-                      color: config.textColor,
-                      letterSpacing: `${config.letterSpacing}px`,
-                      lineHeight,
-                      textAlign: config.alignment,
-                      textTransform: config.textTransform,
-                      textShadow,
-                      WebkitTextStroke: stroke,
-                      paintOrder: stroke ? "stroke fill" : undefined,
-                      opacity: entrance.opacity,
-                      transform: combineTransforms(entrance.transform || "", motion),
-                      filter: entrance.filter || "none",
-                      transformOrigin: "50% 70%",
-                      ...SAFE_CAPTION_TEXT_STYLE,
-                    }}
-                  >
-                    {word.word}
-                  </span>
-                  {wordIndex < line.length - 1 ? " " : null}
-                </React.Fragment>
-              );
-            })}
-          </div>
-        ))}
+          />
+        )}
+        {lockup.placements.map((placement) => {
+          const word = words[placement.index];
+          const visible = currentTime >= word.start && currentTime < wordGroup.end;
+          const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
+          const isActive = placement.index === activeIndex;
+          const glow = config.activeWordGlow && isActive ? `0 0 ${Math.round(12 * scale)}px ${config.activeWordColor}` : "";
+          const textShadow = [buildConfigTextShadow(config), glow].filter(Boolean).join(", ") || undefined;
+
+          return (
+            <span
+              key={`${activeCaption.id}-modern-lockup-${placement.index}-${word.start}`}
+              style={{
+                position: "absolute",
+                left: `${(placement.x / lockup.width) * 100}%`,
+                top: `${(placement.y / lockup.height) * 100}%`,
+                display: "inline-block",
+                fontFamily: resolveFontFamily(config.fontFamily),
+                fontSize: placement.fontSize,
+                fontWeight: placement.isAnchor ? 900 : Math.max(800, Number(config.fontWeight) || 900),
+                color: isActive ? config.activeWordColor : config.textColor,
+                letterSpacing: `${config.letterSpacing}px`,
+                lineHeight,
+                textTransform: config.textTransform,
+                textShadow,
+                WebkitTextStroke: stroke,
+                paintOrder: stroke ? "stroke fill" : undefined,
+                opacity: visible ? entrance.opacity ?? 1 : 0,
+                visibility: visible ? "visible" : "hidden",
+                transform: visible
+                  ? combineTransforms("translate(-50%, -50%)", entrance.transform || "")
+                  : "translate(-50%, -50%) scale(1)",
+                filter: entrance.filter || "none",
+                transformOrigin: "50% 50%",
+                whiteSpace: "nowrap",
+                ...SAFE_CAPTION_TEXT_STYLE,
+              }}
+            >
+              {word.word}
+            </span>
+          );
+        })}
+        {showBuildBounds && lockup.placements.map((placement) => {
+          const rect = placementRect(placement);
+          return (
+            <div
+              key={`${activeCaption.id}-bounds-${placement.index}`}
+              aria-hidden
+              style={{
+                position: "absolute",
+                left: `${(rect.left / lockup.width) * 100}%`,
+                top: `${(rect.top / lockup.height) * 100}%`,
+                width: `${(placement.width / lockup.width) * 100}%`,
+                height: `${(placement.height / lockup.height) * 100}%`,
+                border: placement.isAnchor ? "1px solid rgba(255, 212, 59, 0.95)" : "1px solid rgba(255, 90, 95, 0.9)",
+                color: placement.isAnchor ? "#FFD43B" : "#FF5A5F",
+                fontSize: Math.max(8, 10 * scale),
+                lineHeight: 1,
+                pointerEvents: "none",
+                zIndex: 3,
+              }}
+            >
+              {placement.role}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -582,7 +1147,7 @@ function renderKineticWords(
   activeCaption: Caption,
   currentTime: number,
   fps: number,
-  style: CaptionStyle,
+  _style: CaptionStyle,
   scale: number,
   styleConfig?: Partial<CaptionStyleConfig> | null,
   canvasSize?: CaptionCanvasSize
@@ -591,7 +1156,7 @@ function renderKineticWords(
   const tokens = buildTimedWords(activeCaption);
   const layout = resolveSafeCaptionLayout(config, { canvas: canvasSize, previewScale: scale, words: tokens, text: activeCaption.text });
   const fontSize = layout.fontSize;
-  const textShadow = buildConfigTextShadow(config) || buildTextShadow(style);
+  const textShadow = buildConfigTextShadow(config);
   const positionStyle = buildConfigPositionStyle(config, layout);
 
   return (
@@ -611,7 +1176,7 @@ function renderKineticWords(
                 fontSize,
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontWeight: config.fontWeight,
-                color: config.textColor || style.color || "#fff",
+                color: config.textColor || "#fff",
                 textShadow,
                 letterSpacing: `${config.letterSpacing}px`,
                 textTransform: config.textTransform,
@@ -637,7 +1202,7 @@ function renderAttentionPunch(
   activeCaption: Caption,
   currentTime: number,
   fps: number,
-  style: CaptionStyle,
+  _style: CaptionStyle,
   scale: number,
   transition: boolean,
   styleConfig?: Partial<CaptionStyleConfig> | null,
@@ -658,6 +1223,9 @@ function renderAttentionPunch(
           const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
           const ageFrames = Math.max(0, (currentTime - word.start) * fps);
           const motion = wordMotionTransform(ageFrames, config);
+          const baseShadow = buildConfigTextShadow(config);
+          const activeGlow = config.activeWordGlow && active ? `0 0 12px ${config.activeWordColor}` : "";
+          const wordShadow = [baseShadow, activeGlow].filter(Boolean).join(", ") || undefined;
           return (
             <span
               key={`${activeCaption.id}-ap-${index}`}
@@ -670,7 +1238,7 @@ function renderAttentionPunch(
                 letterSpacing: `${config.letterSpacing}px`,
                 textTransform: config.textTransform,
                 WebkitTextStroke: config.textStrokeEnabled ? `${config.textStrokeWidth * scale}px ${config.textStrokeColor}` : undefined,
-                textShadow: active ? `0 0 12px ${config.activeWordColor}, 0 4px 0 #000` : buildConfigTextShadow(config) || "0 4px 0 #000",
+                textShadow: wordShadow,
                 opacity: spoken ? entrance.opacity ?? 1 : 0,
                 transform: combineTransforms(
                   entrance.transform || "",
@@ -699,18 +1267,11 @@ export default function CaptionRenderer({
   styleConfig,
   canvasSize,
 }: Props) {
-  const edgeGraceSeconds = Math.max(1 / Math.max(1, fps), 0.08);
   const exactActiveCaption = [...captions]
     .filter((caption) => currentTime >= caption.start && currentTime < caption.end)
     .sort((a, b) => (b.start - a.start) || (a.end - b.end))[0];
-  const activeCaption = exactActiveCaption || [...captions]
-    .filter((caption) => currentTime >= caption.start - edgeGraceSeconds && currentTime < caption.end + edgeGraceSeconds)
-    .sort((a, b) => {
-      const aDistance = currentTime < a.start ? a.start - currentTime : currentTime - a.end;
-      const bDistance = currentTime < b.start ? b.start - currentTime : currentTime - b.end;
-      return aDistance - bDistance || b.start - a.start;
-    })[0];
-  if (!activeCaption) return null;
+  if (!exactActiveCaption) return null;
+  const activeCaption = exactActiveCaption;
 
   const resolvedConfig = normalizeCaptionStyleConfig(styleConfig);
 
@@ -770,7 +1331,7 @@ export default function CaptionRenderer({
     ? resolveSafeCaptionLayout(resolvedConfig, { canvas: canvasSize, previewScale: scale, words: fallbackWords, text: activeCaption.text })
     : undefined;
   const positionStyle = useConfigSurface ? buildConfigPositionStyle(resolvedConfig, fallbackLayout) : buildPositionStyle(themeStyle);
-  const textShadow = useConfigSurface ? buildConfigTextShadow(resolvedConfig) || buildTextShadow(themeStyle) : buildTextShadow(themeStyle);
+  const textShadow = useConfigSurface ? buildConfigTextShadow(resolvedConfig) : buildTextShadow(themeStyle);
   const fontSize = useConfigSurface
     ? fallbackLayout?.fontSize || Math.max(0, Math.round(resolvedConfig.fontSize * scale))
     : Math.max(0, Math.round((themeStyle.fontSize || 24) * scale));
@@ -796,6 +1357,7 @@ export default function CaptionRenderer({
   const fallbackTextTransform = useConfigSurface ? resolvedConfig.textTransform : themeStyle.textTransform || "none";
   const fallbackLetterSpacing = useConfigSurface ? `${resolvedConfig.letterSpacing}px` : themeStyle.letterSpacing || "normal";
   const fallbackAlignment = useConfigSurface ? resolvedConfig.alignment : "center";
+  const fallbackMaxLines = useConfigSurface && resolvedConfig.maxLines !== "auto" ? resolvedConfig.maxLines : fallbackLayout?.lineClamp;
 
   if (fallbackWords.length > 0) {
     return (
@@ -805,7 +1367,7 @@ export default function CaptionRenderer({
           style={{
             ...fallbackSurfaceStyle,
             justifyContent: justifyFromAlignment(fallbackAlignment),
-            maxHeight: fallbackLayout ? "100%" : undefined,
+            maxHeight: fallbackMaxLines ? `${Math.ceil(fontSize * resolvedConfig.lineHeight * fallbackMaxLines)}px` : fallbackLayout ? "100%" : undefined,
             overflow: "hidden",
             ...SAFE_CAPTION_TEXT_STYLE,
             ...(themeStyle.backdropBlur
@@ -882,6 +1444,7 @@ export default function CaptionRenderer({
           ...(isOutlineBold ? { WebkitTextStroke: "2px #ffffff" } : {}),
           color: normalColor,
           textAlign: fallbackAlignment,
+          maxHeight: fallbackMaxLines ? `${Math.ceil(fontSize * resolvedConfig.lineHeight * fallbackMaxLines)}px` : undefined,
           overflow: "hidden",
           ...SAFE_CAPTION_TEXT_STYLE,
           ...(hasGradient
@@ -893,7 +1456,7 @@ export default function CaptionRenderer({
             : {}),
         }}
       >
-        {activeCaption.text}
+        {getCaptionDisplayText(activeCaption)}
       </div>
     </div>
   );

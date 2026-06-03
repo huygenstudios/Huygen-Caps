@@ -26,6 +26,18 @@ services:
         value: /tmp/huygen-caps/database.sqlite
       - key: RUNTIME_CLEANUP_HOURS
         value: "24"
+      - key: ALIGNMENT_PROVIDER
+        value: auto
+      - key: ENABLE_WHISPERX
+        value: "false"
+      - key: ENABLE_STABLE_TS
+        value: "false"
+      - key: ENABLE_SILERO_VAD
+        value: "false"
+      - key: PAUSE_SPLIT_THRESHOLD
+        value: "0.45"
+      - key: DEFAULT_GLOBAL_CAPTION_OFFSET
+        value: "0"
       - key: SARVAM_API_KEY
         sync: false
       - key: OPENAI_API_KEY

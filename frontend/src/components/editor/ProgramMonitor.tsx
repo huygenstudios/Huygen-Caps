@@ -9,6 +9,7 @@ import { Eye, EyeOff, Grid3X3, Pause, Play, SkipBack, SkipForward, Square } from
 import { normalizeClipTransform } from "@/lib/editorModel";
 import { formatTimecode } from "@/lib/captionUtils";
 import { useEditorStore } from "@/store/editorStore";
+import { useCaptionStore } from "@/store/captionStore";
 import { usePlaybackStore } from "@/store/playbackStore";
 import { useTimelineStore } from "@/store/timelineStore";
 import { useVideoPlayer } from "@/hooks/useVideoPlayer";
@@ -32,6 +33,8 @@ export default function ProgramMonitor() {
   } = usePlaybackStore();
   const { mediaFiles, activeTool, sequenceSettings } = useEditorStore();
   const tracks = useTimelineStore((s) => s.tracks);
+  const setTimelineNotice = useTimelineStore((s) => s.setNotice);
+  const captionCount = useCaptionStore((s) => s.captions.length);
   const captionsVisible = useTimelineStore((s) => s.tracks.some((track) => (track.type === "caption" || track.type === "overlay") && track.visible));
   const { attachVideo, frameForward, frameBack } = useVideoPlayer();
 
@@ -67,6 +70,7 @@ export default function ProgramMonitor() {
   }, [currentTime, tracks]);
 
   const firstVideoLayerId = activeVisualLayers.find(({ clip }) => clip.type === "video")?.clip.id;
+  const hasPlayableVideo = tracks.some((track) => track.visible && (track.clips || []).some((clip) => clip.type === "video" && clip.visible !== false));
   const audioEnabled = useMemo(
     () =>
       tracks.some((track) =>
@@ -77,7 +81,8 @@ export default function ProgramMonitor() {
       ),
     [currentTime, tracks]
   );
-  const hasVisibleComposition = activeVisualLayers.length > 0 || (showCaptionOverlay && captionsVisible);
+  const hasVisibleComposition = activeVisualLayers.length > 0 || (showCaptionOverlay && captionsVisible && captionCount > 0);
+  const hasImportedVideo = mediaFiles.some((file) => file.type === "video");
 
   const handleWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
@@ -149,6 +154,27 @@ export default function ProgramMonitor() {
         onWheel={handleWheel}
         onMouseDown={handlePanDown}
       >
+        {!hasVisibleComposition && !hasImportedVideo && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-6 text-center">
+            <div className="brutal-empty max-w-sm px-8 py-6">
+              <img
+                className="empty-logo mx-auto"
+                src="/brand/huygen-logo.png"
+                alt="Huygen Caps"
+                width={96}
+                height={73}
+                style={{ width: 96, maxWidth: 96, height: "auto", objectFit: "contain" }}
+              />
+              <div className="mb-1 text-sm font-bold" style={{ color: "var(--text-primary)" }}>
+                Import a video to start captioning.
+              </div>
+              <div className="text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                Your preview, subtitles, and export settings will light up after import.
+              </div>
+            </div>
+          </div>
+        )}
+
         <div
           className="relative max-h-full max-w-full overflow-visible"
           style={{
@@ -231,12 +257,19 @@ export default function ProgramMonitor() {
               <CaptionOverlay />
             </div>
 
-            {!hasVisibleComposition && (
+            {!hasVisibleComposition && hasImportedVideo && (
               <div className="absolute inset-0 flex items-center justify-center text-center">
                 <div className="brutal-empty px-8 py-6">
-                  <img className="empty-logo mx-auto" src="/brand/huygen-logo.png" alt="Huygen Caps" />
+                  <img
+                    className="empty-logo mx-auto"
+                    src="/brand/huygen-logo.png"
+                    alt="Huygen Caps"
+                    width={96}
+                    height={73}
+                    style={{ width: 96, maxWidth: 96, height: "auto", objectFit: "contain" }}
+                  />
                   <div className="text-sm mb-1" style={{ color: "var(--text-muted)" }}>
-                    Import media to start editing.
+                    Move the playhead over the imported clip.
                   </div>
                   <div className="text-xs" style={{ color: "var(--text-muted)" }}>
                     Generate captions to edit subtitle timing.
@@ -258,7 +291,17 @@ export default function ProgramMonitor() {
         <button className="p-1 rounded hover:bg-white/10" onClick={frameBack} title="Frame Back">
           <SkipBack size={14} style={{ color: "var(--text-muted)" }} />
         </button>
-        <button className="p-1.5 rounded hover:bg-white/10" onClick={togglePlayPause} title="Play/Pause">
+        <button
+          className="p-1.5 rounded hover:bg-white/10"
+          onClick={() => {
+            if (!hasPlayableVideo) {
+              setTimelineNotice("Import a video before playback.");
+              return;
+            }
+            togglePlayPause();
+          }}
+          title="Play/Pause"
+        >
           {isPlaying ? <Pause size={18} style={{ color: "var(--text-primary)" }} /> : <Play size={18} style={{ color: "var(--text-primary)" }} />}
         </button>
         <button className="p-1 rounded hover:bg-white/10" onClick={frameForward} title="Frame Forward">

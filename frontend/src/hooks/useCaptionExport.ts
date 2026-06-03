@@ -6,7 +6,7 @@ import { useCallback, useMemo } from "react";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { useTimelineStore } from "@/store/timelineStore";
-import { generateSRT, generateASS, downloadFile } from "@/lib/captionUtils";
+import { generateSRT, generateASS, downloadFile, getCaptionDisplayText } from "@/lib/captionUtils";
 import { captionBelongsOnTrack } from "@/lib/editorModel";
 
 export function useCaptionExport() {
@@ -41,7 +41,7 @@ export function useCaptionExport() {
   const exportTXT = useCallback(() => {
     const txt = [...exportCaptions]
       .sort((a, b) => a.start - b.start)
-      .map((c) => c.text)
+      .map(getCaptionDisplayText)
       .join("\n");
     downloadFile(txt, "captions.txt", "text/plain");
   }, [exportCaptions]);

@@ -1,32 +1,16 @@
-/* Huygen Caps - Main Editor Page
-   5-Panel Premiere Pro Layout using react-resizable-panels
-   
-   ┌─────────────────────────────────────────────────────────────┐
-   │ Toolbar                                                     │
-   ├──────────┬──────────────────────────┬───────────────────────┤
-   │ Media    │ Program Monitor          │ Caption Editor        │
-   │ Panel    │                          │ Panel                 │
-   ├──────────┴──────────────────────────┴───────────────────────┤
-   │ Timeline                                                    │
-   └─────────────────────────────────────────────────────────────┘
-*/
+/* Huygen Caps - caption-first editor shell */
 
 "use client";
 
 import React, { useEffect } from "react";
-import {
-  Panel,
-  Group as PanelGroup,
-  Separator as PanelResizeHandle,
-} from "react-resizable-panels";
 
-import Toolbar from "@/components/editor/Toolbar";
-import MediaPanel from "@/components/editor/MediaPanel";
-import ProgramMonitor from "@/components/editor/ProgramMonitor";
-import RightPanel from "@/components/editor/RightPanel";
-import Timeline from "@/components/editor/Timeline";
+import CaptionFirstLeftPanel from "@/components/editor/CaptionFirstLeftPanel";
+import CaptionStylePanel from "@/components/editor/CaptionStylePanel";
 import ExportModal from "@/components/editor/ExportModal";
+import ProgramMonitor from "@/components/editor/ProgramMonitor";
 import SequenceSettingsModal from "@/components/editor/SequenceSettingsModal";
+import Timeline from "@/components/editor/Timeline";
+import Toolbar from "@/components/editor/Toolbar";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useEditorStore } from "@/store/editorStore";
 import "@/store/projectHistoryStore";
@@ -39,12 +23,9 @@ export default function EditorPage() {
   const colorMode = useEditorStore((s) => s.colorMode);
   const setColorMode = useEditorStore((s) => s.setColorMode);
 
-  // Initialize default tracks if empty
   useEffect(() => {
     const tracks = useTimelineStore.getState().tracks;
-    if (tracks.length === 0) {
-      initDefaultTracks();
-    }
+    if (tracks.length === 0) initDefaultTracks();
   }, [initDefaultTracks]);
 
   useEffect(() => {
@@ -62,45 +43,39 @@ export default function EditorPage() {
   }, [colorMode]);
 
   return (
-    <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: "var(--bg-app)" }}>
-      {/* Top Toolbar */}
+    <div className="flex h-screen w-screen flex-col overflow-hidden" style={{ background: "var(--bg-app)" }}>
       <Toolbar />
 
-      {/* Main content area: vertical split (top panels | bottom timeline) */}
-      <PanelGroup orientation="vertical" className="flex-1">
-        {/* Top row: 3 panels side-by-side */}
-        <Panel defaultSize={65} minSize={40}>
-          <PanelGroup orientation="horizontal">
-            {/* Left: Media Panel */}
-            <Panel defaultSize={20} minSize={12}>
-              <MediaPanel />
-            </Panel>
-
-            <PanelResizeHandle />
-
-            {/* Center: Program Monitor */}
-            <Panel defaultSize={50} minSize={30}>
+      <main
+        className="grid min-h-0 flex-1 gap-1 p-1"
+        style={{ gridTemplateRows: "minmax(0, 1fr) 236px" }}
+      >
+        <section className="min-h-0 min-w-0 overflow-auto">
+          <div
+            className="grid h-full min-h-[420px] gap-1"
+            style={{
+              minWidth: "1080px",
+              gridTemplateColumns:
+                "minmax(340px, 420px) minmax(420px, 1fr) minmax(320px, 370px)",
+            }}
+          >
+            <div className="min-h-0 min-w-0 overflow-hidden">
+              <CaptionFirstLeftPanel />
+            </div>
+            <div className="min-h-0 min-w-0 overflow-hidden">
               <ProgramMonitor />
-            </Panel>
+            </div>
+            <aside className="panel min-h-0 min-w-0 overflow-hidden">
+              <CaptionStylePanel />
+            </aside>
+          </div>
+        </section>
 
-            <PanelResizeHandle />
-
-            {/* Right: inspector/editor tabs */}
-            <Panel defaultSize={30} minSize={18}>
-              <RightPanel />
-            </Panel>
-          </PanelGroup>
-        </Panel>
-
-        <PanelResizeHandle />
-
-        {/* Bottom: Timeline */}
-        <Panel defaultSize={35} minSize={15}>
+        <section className="min-h-0 min-w-0 overflow-hidden">
           <Timeline />
-        </Panel>
-      </PanelGroup>
+        </section>
+      </main>
 
-      {/* Export Modal */}
       <ExportModal />
       <SequenceSettingsModal />
     </div>

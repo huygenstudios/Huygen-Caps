@@ -5,6 +5,7 @@
 import React, { useCallback, useRef } from "react";
 import { Caption, TimelineTrack } from "@/lib/types";
 import { canDropOnTrack, getDropRejectReason } from "@/lib/editorModel";
+import { getCaptionDisplayText } from "@/lib/captionUtils";
 import { timeToPixel, pixelToTime } from "@/lib/timelineUtils";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
@@ -23,6 +24,7 @@ export default function CaptionBlock({ caption, track }: Props) {
 
   const left = timeToPixel(caption.start, pixelsPerSecond, scrollLeft);
   const width = (caption.end - caption.start) * pixelsPerSecond;
+  const displayWidth = Math.max(82, width);
   const isSelected = selectedIds.has(caption.id);
   const dragRef = useRef<{ type: "move" | "left" | "right"; startX: number; startY: number; origStart: number; origEnd: number } | null>(null);
   const lastPointerRef = useRef({ x: 0, y: 0 });
@@ -112,17 +114,22 @@ export default function CaptionBlock({ caption, track }: Props) {
       : "lang-hinglish";
 
   if (left + width < 0) return null;
+  const displayText = getCaptionDisplayText(caption);
 
   return (
     <div
       className={`caption-block ${langClass} ${isSelected ? "selected" : ""}`}
       style={{
         left: Math.max(0, left),
-        width: Math.max(20, width),
+        width: displayWidth,
+        minWidth: 82,
+        background: isSelected ? "#F5B21A" : undefined,
+        borderColor: isSelected ? "#15E0D2" : undefined,
+        boxShadow: isSelected ? "0 0 0 2px #15E0D2" : undefined,
         cursor: track.locked ? "not-allowed" : activeTool === "razor" ? "crosshair" : "grab",
         opacity: track.locked ? 0.72 : 1,
       }}
-      title={track.locked ? "Track locked" : caption.text}
+      title={track.locked ? "Track locked" : displayText}
       onClick={(event) => {
         event.stopPropagation();
         selectCaption(caption.id, event.ctrlKey || event.metaKey);
@@ -137,7 +144,7 @@ export default function CaptionBlock({ caption, track }: Props) {
         className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-white/20"
         onMouseDown={(event) => handleMouseDown(event, "left")}
       />
-      <span className="text-[10px] leading-tight">{caption.text}</span>
+      <span className="block min-w-0 truncate text-[10px] font-bold leading-tight">{displayText}</span>
       <div
         className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-white/20"
         onMouseDown={(event) => handleMouseDown(event, "right")}

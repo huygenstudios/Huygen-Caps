@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "cross-env NEXT_DIST_DIR=.next-dev next dev",
+    "build": "cross-env NEXT_OUTPUT=export next build",
+    "build:export": "cross-env NEXT_OUTPUT=export next build",
     "start": "next start",
     "lint": "next lint"
   },
@@ -31,6 +32,7 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "cross-env": "^7.0.3",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
     "postcss": "^8",

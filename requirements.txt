@@ -8,6 +8,11 @@ pyspellchecker
 soundfile
 numpy
 langdetect
+stable-ts>=2.15.0
+silero-vad>=5.1.0
+whisperx
+torch
+torchaudio
 
 # === Backend (Full Stack - NEW) ===
 fastapi

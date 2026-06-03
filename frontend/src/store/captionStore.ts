@@ -1,17 +1,24 @@
 /* Caption Store — caption list state and operations */
 
 import { create } from "zustand";
-import { Caption, CaptionTheme, CAPTION_THEMES } from "@/lib/types";
+import { Caption, CaptionCoverageReport, CaptionDocument, CaptionTheme, CAPTION_THEMES } from "@/lib/types";
 import { applyManualCaptionTiming, generateCaptionId, normalizeCaptionWords } from "@/lib/captionUtils";
 import { recordProjectHistory } from "@/lib/projectHistory";
 
+function syncDocumentChunks(captionDocument: CaptionDocument | null, captions: Caption[]) {
+  return captionDocument ? { ...captionDocument, chunks: captions } : captionDocument;
+}
+
 interface CaptionState {
   captions: Caption[];
+  captionDocument: CaptionDocument | null;
   selectedIds: Set<string>;
   editingId: string | null;
 
   // CRUD
   setCaptions: (captions: Caption[]) => void;
+  setCaptionDocument: (document: CaptionDocument | null) => void;
+  setCaptionCoverageReport: (report: CaptionCoverageReport) => void;
   addCaption: (caption: Omit<Caption, "id">) => void;
   updateCaption: (id: string, updates: Partial<Caption>) => void;
   deleteCaption: (id: string) => void;
@@ -42,6 +49,7 @@ interface CaptionState {
 
 export const useCaptionStore = create<CaptionState>((set, get) => ({
   captions: [],
+  captionDocument: null,
   selectedIds: new Set(),
   editingId: null,
   history: [],
@@ -50,21 +58,39 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
   setCaptions: (captions) => {
     recordProjectHistory("Set captions");
     get().pushHistory();
-    set({ captions });
+    set((s) => ({ captions, captionDocument: syncDocumentChunks(s.captionDocument, captions) }));
+  },
+
+  setCaptionDocument: (document) => {
+    set({
+      captionDocument: document,
+      captions: document?.chunks || [],
+      selectedIds: new Set(),
+      editingId: null,
+    });
+  },
+
+  setCaptionCoverageReport: (report) => {
+    set((s) => ({
+      captionDocument: s.captionDocument ? { ...s.captionDocument, coverageReport: report } : s.captionDocument,
+    }));
   },
 
   addCaption: (caption) => {
     recordProjectHistory("Add caption");
     get().pushHistory();
     const newCaption: Caption = { ...caption, id: generateCaptionId() };
-    set((s) => ({ captions: [...s.captions, newCaption] }));
+    set((s) => {
+      const captions = [...s.captions, newCaption];
+      return { captions, captionDocument: syncDocumentChunks(s.captionDocument, captions) };
+    });
   },
 
   updateCaption: (id, updates) => {
     recordProjectHistory("Update caption", { debounceKey: `caption:${id}`, debounceMs: 700 });
     get().pushHistory();
-    set((s) => ({
-      captions: s.captions.map((c) => {
+    set((s) => {
+      const captions = s.captions.map((c) => {
         if (c.id !== id) return c;
         if ((updates.start !== undefined || updates.end !== undefined) && updates.words === undefined) {
           const timed = applyManualCaptionTiming(c, updates.start ?? c.start, updates.end ?? c.end);
@@ -74,17 +100,22 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
           return { ...timed, ...restUpdates, words: timed.words, timingWarning: timed.timingWarning };
         }
         return { ...c, ...updates };
-      }),
-    }));
+      });
+      return { captions, captionDocument: syncDocumentChunks(s.captionDocument, captions) };
+    });
   },
 
   deleteCaption: (id) => {
     recordProjectHistory("Delete caption");
     get().pushHistory();
-    set((s) => ({
-      captions: s.captions.filter((c) => c.id !== id),
-      selectedIds: new Set(Array.from(s.selectedIds).filter((sid) => sid !== id)),
-    }));
+    set((s) => {
+      const captions = s.captions.filter((c) => c.id !== id);
+      return {
+        captions,
+        captionDocument: syncDocumentChunks(s.captionDocument, captions),
+        selectedIds: new Set(Array.from(s.selectedIds).filter((sid) => sid !== id)),
+      };
+    });
   },
 
   deleteSelected: () => {
@@ -92,16 +123,20 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
     if (selectedIds.size === 0) return;
     recordProjectHistory("Delete selected captions");
     get().pushHistory();
-    set((s) => ({
-      captions: s.captions.filter((c) => !selectedIds.has(c.id)),
-      selectedIds: new Set(),
-    }));
+    set((s) => {
+      const captions = s.captions.filter((c) => !selectedIds.has(c.id));
+      return {
+        captions,
+        captionDocument: syncDocumentChunks(s.captionDocument, captions),
+        selectedIds: new Set(),
+      };
+    });
   },
 
   clearAll: () => {
     recordProjectHistory("Clear captions");
     get().pushHistory();
-    set({ captions: [], selectedIds: new Set(), editingId: null });
+    set({ captions: [], captionDocument: null, selectedIds: new Set(), editingId: null });
   },
 
   selectCaption: (id, multi = false) => {
@@ -140,8 +175,8 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
     const firstWords = timedWords.filter((word) => word.start < splitTime);
     const secondWords = timedWords.filter((word) => word.end >= splitTime);
 
-    set((s) => ({
-      captions: s.captions.flatMap((c) =>
+    set((s) => {
+      const captions = s.captions.flatMap((c) =>
         c.id === id
           ? [
               {
@@ -161,8 +196,9 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
               },
             ]
           : [c]
-      ),
-    }));
+      );
+      return { captions, captionDocument: syncDocumentChunks(s.captionDocument, captions) };
+    });
   },
 
   mergeCaptions: (ids) => {
@@ -193,20 +229,25 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
     };
 
     const mergeIds = new Set(ids.slice(1));
-    set((s) => ({
-      captions: s.captions
+    set((s) => {
+      const captions = s.captions
         .filter((c) => !mergeIds.has(c.id))
-        .map((c) => (c.id === merged.id ? merged : c)),
-      selectedIds: new Set(),
-    }));
+        .map((c) => (c.id === merged.id ? merged : c));
+      return {
+        captions,
+        captionDocument: syncDocumentChunks(s.captionDocument, captions),
+        selectedIds: new Set(),
+      };
+    });
   },
 
   setThemeForAll: (theme) => {
     recordProjectHistory("Caption style");
     get().pushHistory();
-    set((s) => ({
-      captions: s.captions.map((c) => ({ ...c, theme, style: CAPTION_THEMES[theme] })),
-    }));
+    set((s) => {
+      const captions = s.captions.map((c) => ({ ...c, theme, style: CAPTION_THEMES[theme] }));
+      return { captions, captionDocument: syncDocumentChunks(s.captionDocument, captions) };
+    });
   },
 
   pushHistory: () =>
@@ -224,6 +265,7 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
       const captions = s.history[s.historyIndex];
       return {
         captions: captions || s.captions,
+        captionDocument: syncDocumentChunks(s.captionDocument, captions || s.captions),
         historyIndex: s.historyIndex - 1,
       };
     }),
@@ -234,10 +276,11 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
       const captions = s.history[s.historyIndex + 1];
       return {
         captions: captions || s.captions,
+        captionDocument: syncDocumentChunks(s.captionDocument, captions || s.captions),
         historyIndex: s.historyIndex + 1,
       };
     }),
 
   getCaptionAtTime: (time) =>
-    get().captions.find((c) => time >= c.start && time <= c.end),
+    get().captions.find((c) => time >= c.start && time < c.end),
 }));

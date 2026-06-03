@@ -18,6 +18,7 @@ export default function CaptionOverlay() {
   const captionStyleConfig = useEditorStore((s) => s.captionStyleConfig);
   const sequenceSettings = useEditorStore((s) => s.sequenceSettings);
   const sequenceFps = useEditorStore((s) => s.sequenceSettings.fps);
+  const globalOffsetSeconds = useEditorStore((s) => s.captionTimingConfig.globalOffsetSeconds);
   const setCaptionLayerTransform = useEditorStore((s) => s.setCaptionLayerTransform);
   const tracks = useTimelineStore((s) => s.tracks);
   const captionVisible = tracks.some((track) =>
@@ -49,8 +50,8 @@ export default function CaptionOverlay() {
   const frameTime = useMemo(() => {
     const fps = Math.max(1, Number(sequenceFps) || 30);
     const frame = Math.max(0, Math.floor(currentTime * fps + 1e-6));
-    return frame / fps;
-  }, [currentTime, sequenceFps]);
+    return frame / fps + globalOffsetSeconds;
+  }, [currentTime, globalOffsetSeconds, sequenceFps]);
 
   const previewScale = useMemo(() => {
     const sequenceWidth = Math.max(1, sequenceSettings.width);
@@ -59,6 +60,14 @@ export default function CaptionOverlay() {
     const fitScale = Math.min(overlaySize.width / sequenceWidth, overlaySize.height / sequenceHeight);
     return Math.max(0.05, Math.min(3, fitScale));
   }, [overlaySize.height, overlaySize.width, sequenceSettings.height, sequenceSettings.width]);
+
+  const activeCaption = useMemo(
+    () =>
+      captions
+        .filter((caption) => frameTime >= caption.start && frameTime < caption.end)
+        .sort((a, b) => b.start - a.start || a.end - b.end)[0] || null,
+    [captions, frameTime]
+  );
 
   const updatePositionFromPointer = useCallback(
     (event: PointerEvent | React.PointerEvent<HTMLDivElement>, element: HTMLDivElement) => {
@@ -93,7 +102,7 @@ export default function CaptionOverlay() {
     [captions.length, locked, updatePositionFromPointer]
   );
 
-  if (!showOverlay || !captionVisible) return null;
+  if (!showOverlay || !captionVisible || !activeCaption) return null;
   const previewReady = overlaySize.width > 0 && overlaySize.height > 0;
   const effectivePreviewScale = previewReady ? previewScale : 0.25;
 
@@ -110,7 +119,7 @@ export default function CaptionOverlay() {
       onPointerDown={handlePointerDown}
     >
       <CaptionRenderer
-        captions={captions}
+        captions={[activeCaption]}
         currentTime={frameTime}
         fps={sequenceFps}
         scale={effectivePreviewScale}

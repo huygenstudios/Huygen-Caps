@@ -18,6 +18,8 @@ The app is optimized for Instagram Reels, YouTube Shorts, and TikTok.
 - [Docker](docs/DOCKER.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Environment](docs/ENVIRONMENT.md)
+- [Caption Workflow](docs/CAPTION_WORKFLOW.md)
+- [Caption Timing](docs/CAPTION_TIMING.md)
 - [Export Pipeline](docs/EXPORT_PIPELINE.md)
 - [Pricing](docs/PRICING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
@@ -66,6 +68,12 @@ STT_PROVIDER=auto
 GROQ_API_KEY=
 OPENAI_API_KEY=
 SARVAM_API_KEY=
+ALIGNMENT_PROVIDER=auto
+ENABLE_WHISPERX=false
+ENABLE_STABLE_TS=false
+ENABLE_SILERO_VAD=false
+PAUSE_SPLIT_THRESHOLD=0.45
+DEFAULT_GLOBAL_CAPTION_OFFSET=0
 FFMPEG_PATH=ffmpeg
 ```
 
@@ -110,8 +118,10 @@ Health check:
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/api/health
 Invoke-RestMethod http://127.0.0.1:8000/api/health/export
+Invoke-RestMethod http://127.0.0.1:8000/api/health/timing
 Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/health/export
+Invoke-RestMethod http://127.0.0.1:8000/health/timing
 ```
 
 ## Render Deployment
@@ -152,6 +162,8 @@ docker run --rm -p 10000:10000 --env-file .env huygen-caps
 Open http://localhost:10000 and check http://localhost:10000/health.
 
 Export diagnostics are available at `/api/health/export` and `/health/export`. They report FFmpeg, FFprobe, Playwright package availability, Chromium launch status, the render page URL, and whether the export directory is writable.
+
+Timing diagnostics are available at `/api/health/timing` and `/api/captions/jobs/{jobId}/timing-debug`. They report optional alignment provider availability, timing source counts, silence gaps, suspicious word timing, and the pause threshold used for chunking.
 
 Render storage note: Render web service disk is ephemeral unless you add persistent storage. Huygen Caps stores uploads, temporary files, the SQLite job DB, and exports in `/tmp/huygen-caps` for the current running instance. Use S3/R2 or another object store before relying on long-lived uploaded media or exports.
 

@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG, normalizeCaptionStyleConfig } from "@/lib/captionStyleConfig";
 import { getCaptionPreset } from "@/lib/captionStylePresets";
-import { DEFAULT_CAPTION_CHUNKING_CONFIG } from "@/lib/captionUtils";
+import { DEFAULT_CAPTION_CHUNKING_CONFIG, DEFAULT_CAPTION_TIMING_CONFIG } from "@/lib/captionUtils";
 import { DEFAULT_EXPORT_SETTINGS, DEFAULT_SEQUENCE_SETTINGS, normalizeExportSettings, normalizeSequenceSettings } from "@/lib/editorModel";
 import { recordProjectHistory } from "@/lib/projectHistory";
 import {
@@ -11,11 +11,13 @@ import {
   CaptionChunkingConfig,
   CaptionLayerTransform,
   CaptionStylePresetId,
+  CaptionTimingConfig,
   ColorMode,
   ExportSettings,
   CaptionStyleConfig,
   CaptionTheme,
   Language,
+  LeftSidebarTab,
   MediaFile,
   RightPanelTab,
   SequenceSettings,
@@ -29,6 +31,8 @@ interface EditorState {
   // Tool
   activeTool: ToolMode;
   setActiveTool: (tool: ToolMode) => void;
+  leftSidebarTab: LeftSidebarTab;
+  setLeftSidebarTab: (tab: LeftSidebarTab) => void;
 
   // Media
   mediaFiles: MediaFile[];
@@ -50,6 +54,12 @@ interface EditorState {
   saveCaptionPreset: (name?: string) => void;
   captionChunkingConfig: CaptionChunkingConfig;
   setCaptionChunkingConfig: (config: Partial<CaptionChunkingConfig>) => void;
+  captionCharsPerSubtitle: number;
+  setCaptionCharsPerSubtitle: (chars: number) => void;
+  captionNeedsRebuild: boolean;
+  setCaptionNeedsRebuild: (needsRebuild: boolean) => void;
+  captionTimingConfig: CaptionTimingConfig;
+  setCaptionTimingConfig: (config: Partial<CaptionTimingConfig>) => void;
   transcriptSegments: AlignedSegment[];
   setTranscriptSegments: (segments: AlignedSegment[]) => void;
   captionLayerTransform: CaptionLayerTransform;
@@ -85,6 +95,8 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   activeTool: "selection",
   setActiveTool: (tool) => set({ activeTool: tool }),
+  leftSidebarTab: "subtitles",
+  setLeftSidebarTab: (tab) => set({ leftSidebarTab: tab }),
 
   mediaFiles: [],
   activeMediaId: null,
@@ -112,13 +124,17 @@ export const useEditorStore = create<EditorState>((set) => ({
       recordProjectHistory("Caption style preset");
       const preset = getCaptionPreset(presetId);
       const captionStyleConfig = normalizeCaptionStyleConfig(preset.defaultStyleConfig);
+      const captionChunkingConfig =
+        presetId === "modern_minimalist_lockup"
+          ? state.captionChunkingConfig
+          : {
+              ...state.captionChunkingConfig,
+              ...preset.defaultChunkingConfig,
+            };
       return {
         theme: presetId,
         captionStyleConfig,
-        captionChunkingConfig: {
-          ...state.captionChunkingConfig,
-          ...preset.defaultChunkingConfig,
-        },
+        captionChunkingConfig,
         captionLayerTransform: {
           xPercent: captionStyleConfig.positionX,
           yPercent: captionStyleConfig.positionY,
@@ -184,6 +200,24 @@ export const useEditorStore = create<EditorState>((set) => ({
         ...config,
       },
     })),
+  captionCharsPerSubtitle: DEFAULT_CAPTION_CHUNKING_CONFIG.maxCharsPerCaption,
+  setCaptionCharsPerSubtitle: (chars) => set({ captionCharsPerSubtitle: Math.max(18, Math.min(160, Math.round(chars))) }),
+  captionNeedsRebuild: false,
+  setCaptionNeedsRebuild: (needsRebuild) => set({ captionNeedsRebuild: needsRebuild }),
+  captionTimingConfig: {
+    ...DEFAULT_CAPTION_TIMING_CONFIG,
+    globalOffsetSeconds: Number(process.env.NEXT_PUBLIC_DEFAULT_GLOBAL_CAPTION_OFFSET || 0) || 0,
+  },
+  setCaptionTimingConfig: (config) =>
+    set((state) => ({
+      captionTimingConfig: {
+        ...state.captionTimingConfig,
+        ...config,
+        globalOffsetSeconds: Math.max(-1, Math.min(1, config.globalOffsetSeconds ?? state.captionTimingConfig.globalOffsetSeconds)),
+        phrasePostHoldSeconds: Math.max(0, Math.min(0.5, config.phrasePostHoldSeconds ?? state.captionTimingConfig.phrasePostHoldSeconds)),
+        pauseClearThresholdSeconds: Math.max(0.1, Math.min(1.2, config.pauseClearThresholdSeconds ?? state.captionTimingConfig.pauseClearThresholdSeconds)),
+      },
+    })),
   transcriptSegments: [],
   setTranscriptSegments: (segments) => set({ transcriptSegments: segments }),
   captionLayerTransform: {
@@ -246,7 +280,7 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   mediaPanelTab: "project",
   setMediaPanelTab: (tab) => set({ mediaPanelTab: tab }),
-  rightPanelTab: "effect-controls",
+  rightPanelTab: "caption-style",
   setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
 
   showExportModal: false,

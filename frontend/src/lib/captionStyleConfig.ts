@@ -38,6 +38,9 @@ export const FONT_STACKS: Record<string, string> = {
   Arial: "Arial, sans-serif",
 };
 
+export const BUILD_BIG_FONT_SIZE_PX = 220;
+export const BUILD_SMALL_FONT_SIZE_PX = 104;
+
 export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   presetName: "Word Highlight Box",
   fontFamily: "Poppins",
@@ -48,21 +51,22 @@ export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   backgroundEnabled: true,
   backgroundColor: "#000000",
   backgroundOpacity: 0.78,
+  backgroundFit: "wrap",
   borderRadius: 16,
   paddingX: 24,
   paddingY: 14,
   letterSpacing: 0,
   lineHeight: 1.12,
   textTransform: "none",
-  textShadowEnabled: true,
+  textShadowEnabled: false,
   textStrokeEnabled: false,
   textStrokeColor: "#000000",
   textStrokeWidth: 0,
   textShadowColor: "#000000",
-  textShadowOpacity: 0.45,
-  textShadowBlur: 2,
-  textShadowDistance: 2,
-  textShadowAngle: 90,
+  textShadowOpacity: 0.3,
+  textShadowBlur: 8,
+  textShadowDistance: 4,
+  textShadowAngle: 45,
   activeWordScale: 1.06,
   activeWordGlow: false,
   activeWordBackgroundEnabled: false,
@@ -71,20 +75,21 @@ export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   activeWordBackgroundPaddingX: 6,
   activeWordBackgroundPaddingY: 2,
   activeWordBackgroundBorderRadius: 8,
+  wordEffect: "pop",
   animationType: "pop",
   animationStrength: 0.55,
   animationSpeed: 1,
   animationSmoothness: 0.72,
   entranceAnimation: "none",
-  backgroundShadow: true,
+  backgroundShadow: false,
   backgroundBorderEnabled: false,
   backgroundBorderColor: "#FFFFFF",
   backgroundBorderWidth: 0,
   backgroundShadowColor: "#000000",
-  backgroundShadowOpacity: 0.42,
-  backgroundShadowBlur: 28,
-  backgroundShadowDistance: 8,
-  backgroundShadowAngle: 90,
+  backgroundShadowOpacity: 0.3,
+  backgroundShadowBlur: 8,
+  backgroundShadowDistance: 4,
+  backgroundShadowAngle: 45,
   safeAreaEnabled: true,
   positionX: 50,
   positionY: 78,
@@ -93,6 +98,9 @@ export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   opacity: 1,
   alignment: "center",
   maxWidth: 82,
+  maxLines: 2,
+  asymmetricScaleEnabled: false,
+  asymmetricScaleStrength: 0,
   randomTiltEnabled: false,
   smartHighlightEnabled: false,
   emphasisGreenColor: "#00FF00",
@@ -102,16 +110,22 @@ export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   revealYOffset: 30,
   revealBlur: 25,
   phraseHoldDuration: 0.2,
-  anchorSizeMultiplier: 1.45,
-  supportSizeMultiplier: 0.36,
+  bigFontSizePx: BUILD_BIG_FONT_SIZE_PX,
+  smallFontSizePx: BUILD_SMALL_FONT_SIZE_PX,
+  anchorSizeMultiplier: 1.55,
+  supportSizeMultiplier: 0.28,
   layoutMode: "auto",
-  tightness: 0.88,
-  hardCutReveal: true,
+  layoutAsymmetry: 0.45,
+  layoutSafeMarginPercent: 8,
+  collisionPadding: 8,
+  showBuildWordBounds: false,
+  tightness: 0.75,
+  hardCutReveal: false,
 };
 
 export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   ...DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG,
-  presetName: "Modern Minimalist Build",
+  presetName: "Editorial Lockup",
   fontFamily: "Inter",
   fontSize: 112,
   fontWeight: 900,
@@ -126,11 +140,12 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   textShadowEnabled: false,
   textStrokeEnabled: false,
   textShadowColor: "#000000",
-  textShadowOpacity: 0.25,
+  textShadowOpacity: 0.3,
   textShadowBlur: 8,
-  textShadowDistance: 2,
-  textShadowAngle: 90,
+  textShadowDistance: 4,
+  textShadowAngle: 45,
   activeWordScale: 1,
+  wordEffect: "reveal",
   animationType: "none",
   animationStrength: 0,
   animationSpeed: 1,
@@ -144,10 +159,19 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   opacity: 1,
   alignment: "center",
   maxWidth: 86,
-  anchorSizeMultiplier: 1,
-  supportSizeMultiplier: 1,
+  maxLines: 2,
+  asymmetricScaleEnabled: false,
+  asymmetricScaleStrength: 0,
+  bigFontSizePx: BUILD_BIG_FONT_SIZE_PX,
+  smallFontSizePx: BUILD_SMALL_FONT_SIZE_PX,
+  anchorSizeMultiplier: 1.55,
+  supportSizeMultiplier: 0.28,
   layoutMode: "auto",
-  tightness: 0.95,
+  layoutAsymmetry: 0.45,
+  layoutSafeMarginPercent: 8,
+  collisionPadding: 8,
+  showBuildWordBounds: false,
+  tightness: 0.75,
   hardCutReveal: false,
 };
 
@@ -167,8 +191,42 @@ function safeFont(value: unknown) {
   return typeof value === "string" && value in FONT_STACKS ? value : DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.fontFamily;
 }
 
-function safeLayoutMode(value: unknown) {
-  return value === "a" || value === "b" || value === "c" || value === "auto" ? value : DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.layoutMode;
+function safeLayoutMode(value: unknown): CaptionStyleConfig["layoutMode"] {
+  if (value === "a") return "center_anchor";
+  if (value === "b") return "left_anchor";
+  if (value === "c") return "right_anchor";
+  if (
+    value === "auto" ||
+    value === "center_anchor" ||
+    value === "left_anchor" ||
+    value === "right_anchor" ||
+    value === "top_heavy" ||
+    value === "bottom_stack" ||
+    value === "split_lockup"
+  ) {
+    return value;
+  }
+  return DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.layoutMode;
+}
+
+function safeBackgroundFit(value: unknown) {
+  return value === "fill" ? "fill" : "wrap";
+}
+
+function safeMaxLines(value: unknown) {
+  return value === "auto" || value === 1 || value === 2 || value === 3 ? value : DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.maxLines;
+}
+
+function safeWordEffect(value: unknown) {
+  return value === "none" ||
+    value === "reveal" ||
+    value === "highlight" ||
+    value === "bounce" ||
+    value === "paint" ||
+    value === "pop" ||
+    value === "fade"
+    ? value
+    : DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.wordEffect;
 }
 
 export function resolveFontFamily(fontFamily: string) {
@@ -212,6 +270,18 @@ export function normalizeCaptionStyleConfig(
 ): CaptionStyleConfig {
   const defaults = DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG;
   const merged = { ...defaults, ...(raw || {}) };
+  const inferredWordEffect = raw?.wordEffect || (merged.activeWordBackgroundEnabled ? "highlight" : defaults.wordEffect);
+  const wordEffect = safeWordEffect(inferredWordEffect);
+  const activeWordColor = safeColor(merged.activeWordColor, defaults.activeWordColor);
+  const activeWordBackgroundColor = safeColor(
+    wordEffect === "highlight" && !raw?.activeWordBackgroundColor ? activeWordColor : merged.activeWordBackgroundColor,
+    defaults.activeWordBackgroundColor
+  );
+  const bigFontSizePx = clamp(merged.bigFontSizePx, 80, 400, defaults.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX);
+  const smallFontSizePx = Math.min(
+    bigFontSizePx,
+    clamp(merged.smallFontSizePx, 20, 160, defaults.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX)
+  );
 
   return {
     presetName: typeof merged.presetName === "string" && merged.presetName.trim() ? merged.presetName : defaults.presetName,
@@ -219,10 +289,11 @@ export function normalizeCaptionStyleConfig(
     fontSize: clamp(merged.fontSize, 0, 180, defaults.fontSize),
     fontWeight: [400, 500, 600, 700, 800, 900].includes(Number(merged.fontWeight)) ? Number(merged.fontWeight) : defaults.fontWeight,
     textColor: safeColor(merged.textColor, defaults.textColor),
-    activeWordColor: safeColor(merged.activeWordColor, defaults.activeWordColor),
+    activeWordColor,
     backgroundEnabled: Boolean(merged.backgroundEnabled),
     backgroundColor: safeColor(merged.backgroundColor, defaults.backgroundColor),
     backgroundOpacity: clamp(merged.backgroundOpacity, 0, 1, defaults.backgroundOpacity),
+    backgroundFit: safeBackgroundFit(merged.backgroundFit),
     borderRadius: clamp(merged.borderRadius, 0, 36, defaults.borderRadius),
     paddingX: clamp(merged.paddingX, 6, 48, defaults.paddingX),
     paddingY: clamp(merged.paddingY, 4, 32, defaults.paddingY),
@@ -241,11 +312,12 @@ export function normalizeCaptionStyleConfig(
     activeWordScale: clamp(merged.activeWordScale, 1, 1.16, defaults.activeWordScale),
     activeWordGlow: Boolean(merged.activeWordGlow),
     activeWordBackgroundEnabled: Boolean(merged.activeWordBackgroundEnabled),
-    activeWordBackgroundColor: safeColor(merged.activeWordBackgroundColor, defaults.activeWordBackgroundColor),
+    activeWordBackgroundColor,
     activeWordBackgroundOpacity: clamp(merged.activeWordBackgroundOpacity, 0, 1, defaults.activeWordBackgroundOpacity),
     activeWordBackgroundPaddingX: clamp(merged.activeWordBackgroundPaddingX, 0, 28, defaults.activeWordBackgroundPaddingX),
     activeWordBackgroundPaddingY: clamp(merged.activeWordBackgroundPaddingY, 0, 18, defaults.activeWordBackgroundPaddingY),
     activeWordBackgroundBorderRadius: clamp(merged.activeWordBackgroundBorderRadius, 0, 28, defaults.activeWordBackgroundBorderRadius),
+    wordEffect,
     animationType: merged.animationType === "bounce" || merged.animationType === "none" ? merged.animationType : "pop",
     animationStrength: clamp(merged.animationStrength, 0, 1.4, defaults.animationStrength),
     animationSpeed: clamp(merged.animationSpeed, 0.4, 2, defaults.animationSpeed),
@@ -278,6 +350,9 @@ export function normalizeCaptionStyleConfig(
         ? merged.alignment
         : defaults.alignment,
     maxWidth: clamp(merged.maxWidth, 45, 96, defaults.maxWidth),
+    maxLines: safeMaxLines(merged.maxLines),
+    asymmetricScaleEnabled: Boolean(merged.asymmetricScaleEnabled),
+    asymmetricScaleStrength: clamp(merged.asymmetricScaleStrength, 0, 1, defaults.asymmetricScaleStrength || 0),
     randomTiltEnabled: Boolean(merged.randomTiltEnabled),
     smartHighlightEnabled: Boolean(merged.smartHighlightEnabled),
     emphasisGreenColor: safeColor(merged.emphasisGreenColor, defaults.emphasisGreenColor || "#00FF00"),
@@ -287,10 +362,16 @@ export function normalizeCaptionStyleConfig(
     revealYOffset: clamp(merged.revealYOffset, 0, 80, defaults.revealYOffset || 30),
     revealBlur: clamp(merged.revealBlur, 0, 40, defaults.revealBlur || 25),
     phraseHoldDuration: clamp(merged.phraseHoldDuration, 0, 2, defaults.phraseHoldDuration || 0.2),
-    anchorSizeMultiplier: clamp(merged.anchorSizeMultiplier, 1.1, 2.8, defaults.anchorSizeMultiplier || 1.75),
-    supportSizeMultiplier: clamp(merged.supportSizeMultiplier, 0.25, 0.8, defaults.supportSizeMultiplier || 0.42),
+    bigFontSizePx,
+    smallFontSizePx,
+    anchorSizeMultiplier: clamp(merged.anchorSizeMultiplier, 0.8, 2, defaults.anchorSizeMultiplier || 1.55),
+    supportSizeMultiplier: clamp(merged.supportSizeMultiplier, 0.18, 0.6, defaults.supportSizeMultiplier || 0.28),
     layoutMode: safeLayoutMode(merged.layoutMode),
-    tightness: clamp(merged.tightness, 0.5, 1.2, defaults.tightness || 0.88),
+    layoutAsymmetry: clamp(merged.layoutAsymmetry, 0, 1, defaults.layoutAsymmetry || 0.45),
+    layoutSafeMarginPercent: clamp(merged.layoutSafeMarginPercent, 0, 20, defaults.layoutSafeMarginPercent || 8),
+    collisionPadding: clamp(merged.collisionPadding, 4, 16, defaults.collisionPadding || 8),
+    showBuildWordBounds: Boolean(merged.showBuildWordBounds),
+    tightness: clamp(merged.tightness, 0, 1, defaults.tightness || 0.75),
     hardCutReveal: merged.hardCutReveal !== false,
   };
 }
@@ -299,10 +380,20 @@ export function normalizeModernMinimalistStyleConfig(
   raw?: Partial<CaptionStyleConfig> | null
 ): CaptionStyleConfig {
   const presetName = typeof raw?.presetName === "string" ? raw.presetName.toLowerCase() : "";
-  const isModernConfig = presetName.includes("modern minimalist");
+  const isBuildConfig =
+    presetName.includes("modern minimalist") ||
+    presetName.includes("editorial") ||
+    presetName.includes("build") ||
+    raw?.layoutMode !== undefined ||
+    raw?.bigFontSizePx !== undefined ||
+    raw?.smallFontSizePx !== undefined ||
+    raw?.anchorSizeMultiplier !== undefined ||
+    raw?.supportSizeMultiplier !== undefined ||
+    raw?.layoutAsymmetry !== undefined;
   const normalized = normalizeCaptionStyleConfig({
     ...MODERN_MINIMALIST_BASE_CONFIG,
-    ...(isModernConfig ? raw : {}),
+    ...(isBuildConfig ? raw : {}),
+    presetName: MODERN_MINIMALIST_BASE_CONFIG.presetName,
   });
 
   return {

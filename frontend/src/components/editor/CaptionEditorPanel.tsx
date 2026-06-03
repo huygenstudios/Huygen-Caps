@@ -1,116 +1,481 @@
-/* CaptionEditorPanel — Right panel for caption list, generation, editing */
-
-/* eslint-disable @next/next/no-img-element */
+/* CaptionEditorPanel - Kapwing-style subtitles workflow */
 
 "use client";
 
-import React, { useState, useCallback, useMemo, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Languages,
-  Wand2,
-  Plus,
-  Trash2,
-  Scissors,
-  Palette,
-  Search,
-  Replace,
-  Clock3,
   AlertTriangle,
-  RotateCcw,
-  ChevronsLeft,
-  ChevronsRight,
-  Merge,
+  ChevronLeft,
+  Download,
+  Eye,
+  EyeOff,
+  Info,
+  Languages,
+  MoreVertical,
+  Plus,
+  Search,
+  Sparkles,
+  Wand2,
 } from "lucide-react";
-import { useEditorStore } from "@/store/editorStore";
-import { useCaptionStore } from "@/store/captionStore";
-import { usePlaybackStore } from "@/store/playbackStore";
-import { useTimelineStore } from "@/store/timelineStore";
-import { useCaptionExport } from "@/hooks/useCaptionExport";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import { getHealth, uploadVideo, getJob } from "@/lib/api";
 import {
+  alignedWordsToCaptions,
   applyEditedCaptionText,
-  applyManualCaptionTiming,
-  inferWordTimingSource,
-  segmentsToCaptions,
-  formatTime,
+  captionsToTranscriptSegments,
+  getAlignedWordsFromSegments,
   parseTime,
-  shiftCaptionTiming,
+  segmentsToCaptions,
   validateCaptionTiming,
 } from "@/lib/captionUtils";
+import { addMediaSpeechToCoverageReport, validateCaptionCoverage } from "@/lib/captionCoverage";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
-import { Language, CaptionTheme, CAPTION_THEMES } from "@/lib/types";
-import { CAPTION_PRESET_LIST } from "@/lib/captionStylePresets";
+import { AlignedSegment, AlignedWord, Caption, CaptionCoverageReport, CaptionDocument, Language } from "@/lib/types";
+import { getHealth, getJob, uploadVideo } from "@/lib/api";
+import { useCaptionExport } from "@/hooks/useCaptionExport";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { openMediaPicker } from "@/lib/mediaImport";
+import { useCaptionStore } from "@/store/captionStore";
+import { useEditorStore } from "@/store/editorStore";
+import { usePlaybackStore } from "@/store/playbackStore";
+import { useTimelineStore } from "@/store/timelineStore";
 
-const LANGUAGES: { value: Language; label: string }[] = [
-  { value: "auto_mixed_indian", label: "Auto Mixed Indian" },
+interface CaptionEditorPanelProps {
+  initialFlow?: "setup" | "list";
+}
+
+type OriginalLanguageOption = "auto_detect" | "english" | "telugu" | "hindi" | "auto_mixed_indian" | "hinglish" | "telgish";
+type TranslateOption = "same" | "english" | "telugu" | "hindi" | "roman_telgish";
+
+const ORIGINAL_LANGUAGE_OPTIONS: { value: OriginalLanguageOption; label: string }[] = [
+  { value: "auto_detect", label: "Auto Detect" },
   { value: "english", label: "English" },
+  { value: "telugu", label: "Telugu" },
+  { value: "hindi", label: "Hindi" },
+  { value: "auto_mixed_indian", label: "Auto Mixed Indian" },
   { value: "hinglish", label: "Hinglish" },
   { value: "telgish", label: "Telgish / Teluglish" },
 ];
+
+const TRANSLATE_OPTIONS: { value: TranslateOption; label: string }[] = [
+  { value: "same", label: "None / Same as original" },
+  { value: "english", label: "English" },
+  { value: "telugu", label: "Telugu" },
+  { value: "hindi", label: "Hindi" },
+  { value: "roman_telgish", label: "Roman English / Telgish output" },
+];
+
+function languageModeFromSelection(original: OriginalLanguageOption, translate: TranslateOption): Language {
+  if (translate === "english") return "english";
+  if (translate === "hindi") return "hinglish";
+  if (translate === "telugu" || translate === "roman_telgish") return "telgish";
+  if (original === "english") return "english";
+  if (original === "hindi" || original === "hinglish") return "hinglish";
+  if (original === "telugu" || original === "telgish") return "telgish";
+  return "auto_mixed_indian";
+}
+
+function chunkingForChars(chars: number, maxLines: number | "auto" = "auto") {
+  const safeChars = Math.max(18, Math.min(160, Math.round(chars)));
+
+  const wordBudget = (maxChars: number, minTarget = 2) => {
+    const targetWordsPerCaption = Math.max(minTarget, Math.min(18, Math.round(maxChars / 8)));
+    return {
+      targetWordsPerCaption,
+      maxWordsPerCaption: Math.max(targetWordsPerCaption + 2, Math.min(22, Math.round(maxChars / 6))),
+    };
+  };
+
+  if (maxLines === 1) {
+    return { maxCharsPerCaption: Math.min(safeChars, 34), targetWordsPerCaption: 3, maxWordsPerCaption: 4, maxCaptionDuration: 2.2 };
+  }
+  if (maxLines === 2) {
+    const maxChars = Math.min(Math.max(safeChars, 24), 90);
+    return { maxCharsPerCaption: maxChars, ...wordBudget(maxChars, 3), maxCaptionDuration: maxChars >= 72 ? 6.5 : maxChars >= 56 ? 5.2 : 3.6 };
+  }
+  if (maxLines === 3) {
+    const maxChars = Math.min(Math.max(safeChars, 40), 120);
+    return { maxCharsPerCaption: maxChars, ...wordBudget(maxChars, 5), maxCaptionDuration: maxChars >= 90 ? 8.0 : 6.5 };
+  }
+  if (safeChars <= 24) {
+    return { maxCharsPerCaption: safeChars, targetWordsPerCaption: 2, maxWordsPerCaption: 3, maxCaptionDuration: 1.8 };
+  }
+  if (safeChars <= 45) {
+    return { maxCharsPerCaption: safeChars, targetWordsPerCaption: 4, maxWordsPerCaption: 6, maxCaptionDuration: 3.2 };
+  }
+  if (safeChars <= 90) {
+    return { maxCharsPerCaption: safeChars, ...wordBudget(safeChars, 5), maxCaptionDuration: safeChars >= 72 ? 6.5 : 5.2 };
+  }
+  return { maxCharsPerCaption: safeChars, ...wordBudget(safeChars, 8), maxCaptionDuration: 8.0 };
+}
+
+function effectiveCharsForLayout(chars: number, maxLines: number | "auto" = "auto") {
+  if (maxLines === 1) return Math.min(chars, 34);
+  if (maxLines === 2) return Math.min(Math.max(chars, 24), 90);
+  if (maxLines === 3) return Math.min(Math.max(chars, 40), 120);
+  return chars;
+}
+
+function formatSubtitleTime(seconds: number) {
+  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  const minutes = Math.floor(safe / 60).toString().padStart(2, "0");
+  const secs = Math.floor(safe % 60).toString().padStart(2, "0");
+  const millis = Math.floor((safe % 1) * 1000).toString().padStart(3, "0");
+  return `${minutes}:${secs}.${millis}`;
+}
 
 function formatGenerateError(message: string) {
   if (!message) return "";
   if (message.includes("<!DOCTYPE html") || message.includes("<html")) {
     if (message.includes("This page could not be found") || message.includes("404")) {
-      return "Backend API returned a Next.js 404 page. The editor is calling the frontend server instead of FastAPI. Refresh the page and make sure the backend is running on http://127.0.0.1:8000.";
+      return "Backend API returned a frontend 404 page. Make sure FastAPI is reachable and NEXT_PUBLIC_API_URL is correct.";
     }
-    return "Backend returned an HTML error page instead of JSON. Check the backend terminal and /api/health.";
+    return "Backend returned HTML instead of JSON. Check the backend logs and /api/health.";
   }
   return message.length > 500 ? `${message.slice(0, 500)}...` : message;
 }
 
-export default function CaptionEditorPanel() {
+function tokenizeCaptionForDisplay(caption: Caption) {
+  const fromWords = caption.words
+    ?.map((word) => (word.displayedWord || word.word || "").trim())
+    .filter(Boolean);
+  if (fromWords?.length) return fromWords;
+  return caption.text
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function shouldAppendSpace(tokens: string[], index: number) {
+  if (index >= tokens.length - 1) return false;
+  const next = tokens[index + 1] || "";
+  return !/^[,.;!?)]$/.test(next);
+}
+
+function resolveActiveWordIndex(caption: Caption, currentTime: number) {
+  if (caption.words?.length) {
+    const exact = caption.words.findIndex((word) => currentTime >= word.start && currentTime < word.end);
+    if (exact >= 0) return exact;
+    return -1;
+  }
+
+  const fallbackTokens = tokenizeCaptionForDisplay(caption);
+  if (!fallbackTokens.length) return -1;
+  const duration = Math.max(0.001, caption.end - caption.start);
+  const progress = Math.max(0, Math.min(0.999, (currentTime - caption.start) / duration));
+  return Math.min(fallbackTokens.length - 1, Math.floor(progress * fallbackTokens.length));
+}
+
+function resolveCanonicalSegments(
+  captionDocument: CaptionDocument | null,
+  transcriptSegments: AlignedSegment[],
+  captions: Caption[]
+) {
+  if (captionDocument?.transcript?.segments?.length) return captionDocument.transcript.segments;
+  if (transcriptSegments.length) return transcriptSegments;
+  return captionsToTranscriptSegments(captions);
+}
+
+function resolveCanonicalWords(
+  captionDocument: CaptionDocument | null,
+  transcriptSegments: AlignedSegment[],
+  captions: Caption[]
+) {
+  if (captionDocument?.originalAlignedWords?.length) return captionDocument.originalAlignedWords;
+  const segmentWords = getAlignedWordsFromSegments(transcriptSegments);
+  if (segmentWords.length) return segmentWords;
+  return getAlignedWordsFromSegments(captionsToTranscriptSegments(captions));
+}
+
+function buildCaptionsFromCanonicalSource(
+  words: AlignedWord[],
+  segments: AlignedSegment[],
+  language: Language,
+  theme: string,
+  config: Parameters<typeof alignedWordsToCaptions>[3]
+) {
+  if (words.length) return alignedWordsToCaptions(words, language, theme, config);
+  return segmentsToCaptions(segments, language, theme, config);
+}
+
+function summarizeCoverageReport(report: CaptionCoverageReport) {
+  const suspiciousSpeechGaps = report.largeGaps.filter((gap) => gap.speechStatus === "speech");
+  if (suspiciousSpeechGaps.length) {
+    const first = suspiciousSpeechGaps[0];
+    return `Speech detected but no captions exist from ${first.start}s to ${first.end}s. Regenerate captions.`;
+  }
+  if (report.largeGaps.length) {
+    const first = report.largeGaps[0];
+    return `Large caption gap detected: ${first.start}s to ${first.end}s. ${first.speechStatus === "silence" ? "Audio looks silent there." : "Audio status unknown."}`;
+  }
+  if (report.warnings.length) return report.warnings[0];
+  return `Caption coverage OK: ${report.chunkCount} chunks, ${report.totalOriginalAlignedWords} aligned words.`;
+}
+
+function InfoDot({ title }: { title: string }) {
+  return (
+    <span className="inline-flex items-center" title={title}>
+      <Info size={12} style={{ color: "var(--text-muted)" }} />
+    </span>
+  );
+}
+
+function CharsPerSubtitleSlider({
+  value,
+  onChange,
+  onCommit,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
+  const min = 18;
+  const max = 160;
+  const percent = ((value - min) / (max - min)) * 100;
+  const commitFromInput = (event: React.SyntheticEvent<HTMLInputElement>) => {
+    onCommit(Number(event.currentTarget.value));
+  };
+
+  return (
+    <div className="relative pt-7">
+      <div
+        className="absolute top-0 -translate-x-1/2 rounded px-2 py-1 text-xs font-bold"
+        style={{
+          left: `${percent}%`,
+          background: "#CFF5E4",
+          color: "#171217",
+          boxShadow: "var(--shadow-hard-small)",
+        }}
+      >
+        {value}
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        onMouseUp={commitFromInput}
+        onTouchEnd={commitFromInput}
+        onKeyUp={(event) => {
+          if (event.key === "Enter" || event.key === " ") onCommit(Number(event.currentTarget.value));
+        }}
+        className="w-full accent-[var(--accent)]"
+      />
+    </div>
+  );
+}
+
+export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelProps) {
   const {
     language,
     setLanguage,
     mediaFiles,
     activeMediaId,
+    setMediaPanelTab,
     pipelineStatus,
     pipelinePercent,
     setJobId,
     setPipelineProgress,
     captionChunkingConfig,
     setCaptionChunkingConfig,
+    captionCharsPerSubtitle,
+    setCaptionCharsPerSubtitle,
+    captionNeedsRebuild,
+    setCaptionNeedsRebuild,
+    captionStyleConfig,
+    captionTimingConfig,
     transcriptSegments,
     setTranscriptSegments,
-  } =
-    useEditorStore();
-  const { captions, selectedIds, selectCaption, updateCaption, deleteCaption, addCaption, splitCaption, mergeCaptions, setCaptions } =
-    useCaptionStore();
-  const setThemeForAll = useCaptionStore((s) => s.setThemeForAll);
-  const { currentTime } = usePlaybackStore();
+    theme,
+  } = useEditorStore();
+  const {
+    captions,
+    captionDocument,
+    selectedIds,
+    selectCaption,
+    updateCaption,
+    addCaption,
+    setCaptions,
+    setCaptionDocument,
+    setCaptionCoverageReport,
+  } = useCaptionStore();
+  const { currentTime, showCaptionOverlay, toggleCaptionOverlay, setCurrentTime } = usePlaybackStore();
   const tracks = useTimelineStore((s) => s.tracks);
-  const { exportSRT, exportASS } = useCaptionExport();
+  const { exportSRT } = useCaptionExport();
+  const [flow, setFlow] = useState<"setup" | "list">(
+    initialFlow === "setup"
+      ? "setup"
+      : initialFlow === "list"
+      ? captions.length > 0
+        ? "list"
+        : "setup"
+      : captions.length > 0
+      ? "list"
+      : "setup"
+  );
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState("");
-  const [stylePickerForId, setStylePickerForId] = useState<string | null>(null);
-  const [editingTimeId, setEditingTimeId] = useState<string | null>(null);
-  const [editingTimeField, setEditingTimeField] = useState<"start" | "end">("start");
   const [captionSearch, setCaptionSearch] = useState("");
-  const [replaceText, setReplaceText] = useState("");
-  const [globalOffset, setGlobalOffset] = useState(0);
-  const [selectedOffset, setSelectedOffset] = useState(0);
-  const globalOffsetRef = useRef(0);
-  const selectedOffsetRef = useRef(0);
+  const [originalLanguage, setOriginalLanguage] = useState<OriginalLanguageOption>(
+    language === "english" ? "english" : language === "hinglish" ? "hinglish" : language === "telgish" ? "telgish" : "auto_mixed_indian"
+  );
+  const [translateTo, setTranslateTo] = useState<TranslateOption>("same");
+  const [isRebuilding, setIsRebuilding] = useState(false);
+  const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null);
+  const [coverageNotice, setCoverageNotice] = useState("");
+  const charsPerSubtitle = captionCharsPerSubtitle;
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const lastAutoScrolledCaptionRef = useRef<string | null>(null);
 
   useWebSocket();
 
-  const activeMedia = mediaFiles.find((f) => f.id === activeMediaId);
+  const activeMedia = mediaFiles.find((file) => file.id === activeMediaId);
+  const sortedCaptions = useMemo(() => [...captions].sort((a, b) => a.start - b.start), [captions]);
+  const selectedCaptionId = useMemo(() => Array.from(selectedIds)[0] || null, [selectedIds]);
+  const captionClockTime = currentTime + captionTimingConfig.globalOffsetSeconds;
+  const { activePlaybackChunkId, activePlaybackWordId, activePlaybackWordIndex } = useMemo(() => {
+    const activeCaption = sortedCaptions.find((caption) => captionClockTime >= caption.start && captionClockTime < caption.end) || null;
+    if (!activeCaption) {
+      return {
+        activePlaybackChunkId: null as string | null,
+        activePlaybackWordId: null as string | null,
+        activePlaybackWordIndex: null as number | null,
+      };
+    }
+
+    const activeWordIndexForCaption = resolveActiveWordIndex(activeCaption, captionClockTime);
+    return {
+      activePlaybackChunkId: activeCaption.id,
+      activePlaybackWordId: activeWordIndexForCaption >= 0 ? `${activeCaption.id}:${activeWordIndexForCaption}` : null,
+      activePlaybackWordIndex: activeWordIndexForCaption >= 0 ? activeWordIndexForCaption : null,
+    };
+  }, [captionClockTime, sortedCaptions]);
+  const visibleCaptions = useMemo(() => {
+    const query = captionSearch.trim().toLowerCase();
+    if (!query) return sortedCaptions;
+    return sortedCaptions.filter((caption) => caption.text.toLowerCase().includes(query));
+  }, [captionSearch, sortedCaptions]);
+
+  useEffect(() => {
+    if (flow !== "list") return;
+    if (!activePlaybackChunkId) {
+      lastAutoScrolledCaptionRef.current = null;
+      return;
+    }
+    if (lastAutoScrolledCaptionRef.current === activePlaybackChunkId) return;
+
+    const container = listContainerRef.current;
+    const row = rowRefs.current[activePlaybackChunkId];
+    if (!container || !row) {
+      lastAutoScrolledCaptionRef.current = activePlaybackChunkId;
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const guard = Math.max(16, containerRect.height * 0.1);
+    const comfortablyVisible = rowRect.top >= containerRect.top + guard && rowRect.bottom <= containerRect.bottom - guard;
+
+    if (!comfortablyVisible) {
+      row.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    }
+
+    lastAutoScrolledCaptionRef.current = activePlaybackChunkId;
+  }, [activePlaybackChunkId, flow]);
+
+  useEffect(() => {
+    if (!editingCaptionId) return;
+    const stillExists = captions.some((caption) => caption.id === editingCaptionId);
+    if (!stillExists) {
+      setEditingCaptionId(null);
+    }
+  }, [captions, editingCaptionId]);
+
+  const rebuildCaptions = useCallback((requestedChars = charsPerSubtitle) => {
+    setIsRebuilding(true);
+    const sourceSegments = resolveCanonicalSegments(captionDocument, transcriptSegments, captions);
+    const originalAlignedWords = resolveCanonicalWords(captionDocument, sourceSegments, captions);
+    if (!sourceSegments.length && !originalAlignedWords.length) {
+      setGenerateError("Generate subtitles first before rebuilding.");
+      setIsRebuilding(false);
+      return;
+    }
+    const oldChunkCount = captions.length;
+    const config = {
+      ...captionChunkingConfig,
+      ...chunkingForChars(requestedChars, captionStyleConfig.maxLines),
+    };
+    setCaptionChunkingConfig(config);
+    if (!transcriptSegments.length) {
+      setTranscriptSegments(sourceSegments);
+    }
+    const rebuilt = buildCaptionsFromCanonicalSource(originalAlignedWords, sourceSegments, language, theme, config).map((caption) => ({
+      ...caption,
+      trackId: defaultCaptionTrackId(tracks),
+      sourceMediaId: activeMediaId || undefined,
+    }));
+    const coverageReport = validateCaptionCoverage(rebuilt, originalAlignedWords);
+    setCaptions(rebuilt);
+    setCaptionDocument({
+      id: captionDocument?.id || `caption_document_${Date.now()}`,
+      name: activeMedia?.name ? `${activeMedia.name} captions` : "Generated captions",
+      sourceMediaId: activeMediaId || captionDocument?.sourceMediaId,
+      languageMode: language,
+      transcript: { segments: sourceSegments, metadata: captionDocument?.transcript?.metadata },
+      originalAlignedWords,
+      chunks: rebuilt,
+      style: captionStyleConfig,
+      chunkingConfig: config,
+      timingConfig: captionTimingConfig,
+      coverageReport,
+    });
+    setCaptionCoverageReport(coverageReport);
+    setCoverageNotice(summarizeCoverageReport(coverageReport));
+    setCaptionNeedsRebuild(false);
+    setGenerateError("");
+    setIsRebuilding(false);
+    if (process.env.NODE_ENV !== "production") {
+      console.debug("[captions] rebuild", {
+        charsPerSubtitle: requestedChars,
+        effectiveMaxChars: config.maxCharsPerCaption,
+        maxLines: captionStyleConfig.maxLines,
+        sourceWordCount: originalAlignedWords.length,
+        oldChunkCount,
+        newChunkCount: rebuilt.length,
+        coverageWarnings: coverageReport.warnings,
+        needsRebuild: false,
+      });
+    }
+  }, [
+    activeMedia?.name,
+    activeMediaId,
+    captionChunkingConfig,
+    captionDocument,
+    captionStyleConfig,
+    captionTimingConfig,
+    captions,
+    charsPerSubtitle,
+    language,
+    setCaptionChunkingConfig,
+    setCaptionCoverageReport,
+    setCaptionDocument,
+    setCaptionNeedsRebuild,
+    setCaptions,
+    setTranscriptSegments,
+    theme,
+    tracks,
+    transcriptSegments,
+  ]);
 
   const handleGenerate = useCallback(async () => {
     if (!activeMedia || isGenerating) return;
     if (activeMedia.type !== "video") {
-      setGenerateError("Upload an MP4 or MOV video before generating captions.");
+      setGenerateError("Import an MP4 or MOV video before generating subtitles.");
       return;
     }
 
-    const lowerName = activeMedia.name.toLowerCase();
-    if (!lowerName.endsWith(".mp4") && !lowerName.endsWith(".mov") && !lowerName.endsWith(".m4v")) {
-      setGenerateError("Only MP4 and MOV uploads are supported for burned captions.");
-      return;
-    }
-
+    const requestedLanguage = languageModeFromSelection(originalLanguage, translateTo);
+    setLanguage(requestedLanguage);
     setIsGenerating(true);
     setGenerateError("");
     setPipelineProgress("Checking backend...", 2);
@@ -118,17 +483,16 @@ export default function CaptionEditorPanel() {
     try {
       const health = await getHealth();
       if (health.dependencies?.ffmpeg !== true) {
-        throw new Error("Backend is reachable, but FFmpeg is not available. Install FFmpeg or set FFMPEG_PATH on the server.");
+        throw new Error("Backend is reachable, but FFmpeg is not available.");
       }
       if (health.dependencies?.ffprobe !== true) {
-        throw new Error("Backend is reachable, but FFprobe is not available. Install FFmpeg/FFprobe on the server.");
+        throw new Error("Backend is reachable, but FFprobe is not available.");
       }
 
       setPipelineProgress("Uploading...", 5);
-      const result = await uploadVideo(activeMedia.file, language);
+      const result = await uploadVideo(activeMedia.file, requestedLanguage);
       setJobId(result.job_id);
 
-      // Poll for completion
       let pollFailures = 0;
       const pollInterval = window.setInterval(async () => {
         try {
@@ -137,36 +501,62 @@ export default function CaptionEditorPanel() {
           if (job.status === "completed") {
             window.clearInterval(pollInterval);
             setPipelineProgress("Done", 100);
-
             const sourceSegments = job.transcript?.segments?.length ? job.transcript.segments : job.segments || [];
             if (sourceSegments.length) {
               setTranscriptSegments(sourceSegments);
-              const newCaptions = segmentsToCaptions(
+              const originalAlignedWords = getAlignedWordsFromSegments(sourceSegments);
+              const config = {
+                ...useEditorStore.getState().captionChunkingConfig,
+                ...chunkingForChars(charsPerSubtitle, useEditorStore.getState().captionStyleConfig.maxLines),
+              };
+              setCaptionChunkingConfig(config);
+              const newCaptions = buildCaptionsFromCanonicalSource(
+                originalAlignedWords,
                 sourceSegments,
-                job.languageMode || language,
-                useEditorStore.getState().theme,
-                useEditorStore.getState().captionChunkingConfig
+                job.languageMode || requestedLanguage,
+                theme,
+                config
               ).map((caption) => ({
                 ...caption,
                 trackId: defaultCaptionTrackId(useTimelineStore.getState().tracks),
                 sourceMediaId: activeMedia.id,
               }));
+              const coverageReport = validateCaptionCoverage(newCaptions, originalAlignedWords);
               setCaptions(newCaptions);
+              setCaptionDocument({
+                id: `caption_document_${result.job_id}`,
+                name: activeMedia.name ? `${activeMedia.name} captions` : "Generated captions",
+                sourceMediaId: activeMedia.id,
+                languageMode: job.languageMode || requestedLanguage,
+                transcript: { segments: sourceSegments, metadata: job.transcript?.metadata },
+                originalAlignedWords,
+                chunks: newCaptions,
+                style: useEditorStore.getState().captionStyleConfig,
+                chunkingConfig: config,
+                timingConfig: useEditorStore.getState().captionTimingConfig,
+                coverageReport,
+              });
+              setCaptionCoverageReport(coverageReport);
+              setCoverageNotice(summarizeCoverageReport(coverageReport));
+              if (coverageReport.warnings.length && process.env.NODE_ENV !== "production") {
+                console.warn("[captions] coverage warnings after generation", coverageReport);
+              }
+              setFlow("list");
+              setCaptionCharsPerSubtitle(charsPerSubtitle);
+              setCaptionNeedsRebuild(false);
             }
             setIsGenerating(false);
           } else if (job.status === "failed") {
             window.clearInterval(pollInterval);
-            const message = job.error || "Caption generation failed.";
             setPipelineProgress("Failed", -1);
-            setGenerateError(message);
+            setGenerateError(job.error || "Subtitle generation failed.");
             setIsGenerating(false);
           } else {
             setPipelineProgress(job.status || "Processing", Math.max(0, job.progress || 0));
           }
-        } catch (err) {
+        } catch (error) {
           pollFailures += 1;
-          const msg = err instanceof Error ? err.message : "Failed to read job status.";
-          setGenerateError(msg);
+          setGenerateError(error instanceof Error ? error.message : "Failed to read job status.");
           if (pollFailures >= 3) {
             window.clearInterval(pollInterval);
             setPipelineProgress("Error", -1);
@@ -174,901 +564,459 @@ export default function CaptionEditorPanel() {
           }
         }
       }, 2000);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Upload failed.";
+    } catch (error) {
       setPipelineProgress("Error", -1);
-      setGenerateError(msg);
+      setGenerateError(error instanceof Error ? error.message : "Upload failed.");
       setIsGenerating(false);
     }
-  }, [activeMedia, isGenerating, language, setJobId, setPipelineProgress, setCaptions, setTranscriptSegments]);
+  }, [
+    activeMedia,
+    charsPerSubtitle,
+    isGenerating,
+    originalLanguage,
+    setCaptionChunkingConfig,
+    setCaptionCharsPerSubtitle,
+    setCaptionCoverageReport,
+    setCaptionDocument,
+    setCaptionNeedsRebuild,
+    setCaptions,
+    setJobId,
+    setLanguage,
+    setPipelineProgress,
+    setTranscriptSegments,
+    theme,
+    translateTo,
+  ]);
 
-  const rebuildCaptions = useCallback(() => {
-    const sourceSegments = transcriptSegments.length ? transcriptSegments : [];
-    if (!sourceSegments.length) {
-      setGenerateError("Generate captions first before rebuilding chunks.");
+  const handleRowSelect = useCallback(
+    (captionId: string, start: number) => {
+      if (!useCaptionStore.getState().selectedIds.has(captionId)) {
+        selectCaption(captionId);
+      }
+      setCurrentTime(Math.max(0, start - captionTimingConfig.globalOffsetSeconds));
+    },
+    [captionTimingConfig.globalOffsetSeconds, selectCaption, setCurrentTime]
+  );
+
+  const updateCaptionText = useCallback(
+    (captionId: string, value: string) => {
+      const caption = captions.find((candidate) => candidate.id === captionId);
+      if (!caption || isCaptionLocked(caption, tracks)) return;
+      updateCaption(captionId, applyEditedCaptionText(caption, value));
+    },
+    [captions, tracks, updateCaption]
+  );
+
+  const updateCaptionTime = useCallback(
+    (captionId: string, field: "start" | "end", value: string) => {
+      const parsed = parseTime(value);
+      if (parsed === null) return;
+      updateCaption(captionId, { [field]: parsed });
+    },
+    [updateCaption]
+  );
+
+  const addSubtitleLine = useCallback(() => {
+    addCaption({
+      start: captionClockTime,
+      end: captionClockTime + 2,
+      text: "",
+      lang: language,
+      theme,
+      trackId: defaultCaptionTrackId(tracks),
+      sourceMediaId: activeMediaId || undefined,
+      timingNeedsReview: true,
+      timingWarning: "New subtitle line needs text and timing review.",
+    });
+    setFlow("list");
+  }, [activeMediaId, addCaption, captionClockTime, language, theme, tracks]);
+
+  const handleCharsChange = useCallback(
+    (value: number) => {
+      setCaptionCharsPerSubtitle(value);
+      setCaptionChunkingConfig({ ...captionChunkingConfig, ...chunkingForChars(value, captionStyleConfig.maxLines) });
+      setCaptionNeedsRebuild(Boolean(transcriptSegments.length || captions.length));
+      if (process.env.NODE_ENV !== "production") {
+        console.debug("[captions] chars changed", {
+          oldCharsPerSubtitle: charsPerSubtitle,
+          newCharsPerSubtitle: value,
+          needsRebuild: Boolean(transcriptSegments.length || captions.length),
+          maxLines: captionStyleConfig.maxLines,
+        });
+      }
+    },
+    [captionChunkingConfig, captionStyleConfig.maxLines, captions.length, charsPerSubtitle, setCaptionCharsPerSubtitle, setCaptionChunkingConfig, setCaptionNeedsRebuild, transcriptSegments.length]
+  );
+
+  const runCaptionCoverageValidation = useCallback(async () => {
+    if (!captions.length) {
+      setCoverageNotice("Generate subtitles first before validating coverage.");
       return;
     }
-    const rebuilt = segmentsToCaptions(
-      sourceSegments,
-      language,
-      useEditorStore.getState().theme,
-      captionChunkingConfig
-    ).map((caption) => ({
-      ...caption,
-      trackId: defaultCaptionTrackId(tracks),
-      sourceMediaId: activeMediaId || undefined,
-    }));
-    setCaptions(rebuilt);
-    setGenerateError("");
-  }, [activeMediaId, captionChunkingConfig, language, setCaptions, tracks, transcriptSegments]);
 
-  const updateChunking = useCallback(
-    (patch: Partial<typeof captionChunkingConfig>) => {
-      const nextConfig = { ...captionChunkingConfig, ...patch };
-      setCaptionChunkingConfig(patch);
-      if (transcriptSegments.length) {
-        setCaptions(
-          segmentsToCaptions(
-            transcriptSegments,
-            language,
-            useEditorStore.getState().theme,
-            nextConfig
-          ).map((caption) => ({
-            ...caption,
-            trackId: defaultCaptionTrackId(tracks),
-            sourceMediaId: activeMediaId || undefined,
-          }))
-        );
-        setGenerateError("");
-      }
-    },
-    [activeMediaId, captionChunkingConfig, language, setCaptionChunkingConfig, setCaptions, tracks, transcriptSegments]
-  );
-
-  const handleAddCaption = useCallback(() => {
-    addCaption({
-      start: currentTime,
-      end: currentTime + 3,
-      text: "New caption",
-      lang: language,
-      theme: useEditorStore.getState().theme,
-      trackId: defaultCaptionTrackId(tracks),
-      sourceMediaId: activeMediaId || undefined,
+    const sourceSegments = resolveCanonicalSegments(captionDocument, transcriptSegments, captions);
+    const originalAlignedWords = resolveCanonicalWords(captionDocument, sourceSegments, captions);
+    const baseReport = validateCaptionCoverage(captions, originalAlignedWords);
+    const enrichedReport = await addMediaSpeechToCoverageReport(baseReport, activeMedia);
+    setCaptionCoverageReport(enrichedReport);
+    setCaptionDocument({
+      id: captionDocument?.id || `caption_document_${Date.now()}`,
+      name: captionDocument?.name || (activeMedia?.name ? `${activeMedia.name} captions` : "Generated captions"),
+      sourceMediaId: activeMediaId || captionDocument?.sourceMediaId,
+      languageMode: language,
+      transcript: { segments: sourceSegments, metadata: captionDocument?.transcript?.metadata },
+      originalAlignedWords,
+      chunks: captions,
+      style: captionStyleConfig,
+      chunkingConfig: captionChunkingConfig,
+      timingConfig: captionTimingConfig,
+      coverageReport: enrichedReport,
     });
-  }, [activeMediaId, currentTime, addCaption, language, tracks]);
-
-  const handleSplit = useCallback(
-    (id: string) => {
-      splitCaption(id, currentTime);
-    },
-    [currentTime, splitCaption]
-  );
-
-  // ── Inline time editing ──
-  const handleTimeClick = useCallback((captionId: string, field: "start" | "end", e: React.MouseEvent) => {
-    e.stopPropagation();
-    setEditingTimeId(captionId);
-    setEditingTimeField(field);
-  }, []);
-
-  const handleTimeBlur = useCallback((captionId: string, field: "start" | "end", value: string) => {
-    const parsed = parseTime(value);
-    if (parsed !== null) {
-      updateCaption(captionId, { [field]: parsed });
-    }
-    setEditingTimeId(null);
-  }, [updateCaption]);
-
-  const handleTimeKeyDown = useCallback((captionId: string, field: "start" | "end", e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      const parsed = parseTime(e.currentTarget.value);
-      if (parsed !== null) {
-        updateCaption(captionId, { [field]: parsed });
-      }
-      setEditingTimeId(null);
-    }
-    if (e.key === "Escape") {
-      setEditingTimeId(null);
-    }
-  }, [updateCaption]);
-
-  const sortedCaptions = useMemo(() => [...captions].sort((a, b) => a.start - b.start), [captions]);
-  const selectedCaptionId = useMemo(() => Array.from(selectedIds)[0] || null, [selectedIds]);
-  const selectedCaption = useMemo(
-    () => (selectedCaptionId ? captions.find((caption) => caption.id === selectedCaptionId) || null : null),
-    [captions, selectedCaptionId]
-  );
-  const filteredCaptions = useMemo(() => {
-    const query = captionSearch.trim().toLowerCase();
-    if (!query) return sortedCaptions;
-    return sortedCaptions.filter((caption) => caption.text.toLowerCase().includes(query));
-  }, [captionSearch, sortedCaptions]);
-
-  const THEME_NAMES: { id: CaptionTheme; label: string }[] = CAPTION_PRESET_LIST.map((preset) => ({
-    id: preset.id,
-    label: preset.name.replace(" Style", "").replace(" Cinematic", "").replace("Modern Minimalist ", ""),
-  }));
-
-  const applyTextEdit = useCallback(
-    (captionId: string, nextText: string) => {
-      const caption = captions.find((candidate) => candidate.id === captionId);
-      if (!caption || isCaptionLocked(caption, tracks)) return;
-      updateCaption(captionId, applyEditedCaptionText(caption, nextText));
-    },
-    [captions, tracks, updateCaption]
-  );
-
-  const resetCaptionText = useCallback(
-    (captionId: string) => {
-      const caption = captions.find((candidate) => candidate.id === captionId);
-      if (!caption || isCaptionLocked(caption, tracks)) return;
-      const original =
-        caption.originalText ||
-        caption.words?.map((word) => word.originalWord || word.word).join(" ") ||
-        caption.text;
-      updateCaption(captionId, applyEditedCaptionText(caption, original));
-    },
-    [captions, tracks, updateCaption]
-  );
-
-  const applyGlobalOffset = useCallback(
-    (nextOffset: number) => {
-      const delta = nextOffset - globalOffsetRef.current;
-      globalOffsetRef.current = nextOffset;
-      setGlobalOffset(nextOffset);
-      if (Math.abs(delta) < 0.0001) return;
-      setCaptions(captions.map((caption) => shiftCaptionTiming(caption, delta)));
-    },
-    [captions, setCaptions]
-  );
-
-  const applySelectedOffset = useCallback(
-    (nextOffset: number) => {
-      const delta = nextOffset - selectedOffsetRef.current;
-      selectedOffsetRef.current = nextOffset;
-      setSelectedOffset(nextOffset);
-      if (!selectedCaption || Math.abs(delta) < 0.0001) return;
-      updateCaption(selectedCaption.id, shiftCaptionTiming(selectedCaption, delta));
-    },
-    [selectedCaption, updateCaption]
-  );
-
-  const nudgeSelectedCaption = useCallback(
-    (delta: number) => {
-      if (!selectedCaption || isCaptionLocked(selectedCaption, tracks)) return;
-      updateCaption(selectedCaption.id, shiftCaptionTiming(selectedCaption, delta));
-      const next = Math.max(-0.5, Math.min(0.5, selectedOffsetRef.current + delta));
-      selectedOffsetRef.current = next;
-      setSelectedOffset(next);
-    },
-    [selectedCaption, tracks, updateCaption]
-  );
-
-  const updateSelectedTiming = useCallback(
-    (patch: Partial<{ start: number; end: number }>) => {
-      if (!selectedCaption || isCaptionLocked(selectedCaption, tracks)) return;
-      const next = applyManualCaptionTiming(
-        selectedCaption,
-        patch.start ?? selectedCaption.start,
-        patch.end ?? selectedCaption.end
-      );
-      updateCaption(selectedCaption.id, next);
-    },
-    [selectedCaption, tracks, updateCaption]
-  );
-
-  const resetTimingAdjustments = useCallback(() => {
-    globalOffsetRef.current = 0;
-    selectedOffsetRef.current = 0;
-    setGlobalOffset(0);
-    setSelectedOffset(0);
-    rebuildCaptions();
-  }, [rebuildCaptions]);
-
-  const replaceInCaptions = useCallback(() => {
-    const query = captionSearch.trim();
-    if (!query) return;
-    const search = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    captions.forEach((caption) => {
-      if (!search.test(caption.text) || isCaptionLocked(caption, tracks)) return;
-      search.lastIndex = 0;
-      updateCaption(caption.id, applyEditedCaptionText(caption, caption.text.replace(search, replaceText)));
+    setCoverageNotice(summarizeCoverageReport(enrichedReport));
+    console.info("[captions] coverage validation", {
+      currentTime,
+      captionClockTime,
+      activeChunkId: activePlaybackChunkId,
+      previousChunk:
+        sortedCaptions
+          .filter((caption) => caption.end <= captionClockTime)
+          .at(-1) || null,
+      nextChunk: sortedCaptions.find((caption) => caption.start > captionClockTime) || null,
+      report: enrichedReport,
     });
-  }, [captionSearch, captions, replaceText, tracks, updateCaption]);
+  }, [
+    activeMedia,
+    activeMediaId,
+    activePlaybackChunkId,
+    captionChunkingConfig,
+    captionClockTime,
+    captionDocument,
+    captionStyleConfig,
+    captionTimingConfig,
+    captions,
+    currentTime,
+    language,
+    setCaptionCoverageReport,
+    setCaptionDocument,
+    sortedCaptions,
+    transcriptSegments,
+  ]);
 
-  const mergeWithNext = useCallback(
-    (captionId: string) => {
-      const index = sortedCaptions.findIndex((caption) => caption.id === captionId);
-      const next = sortedCaptions[index + 1];
-      if (!next) return;
-      mergeCaptions([captionId, next.id]);
-    },
-    [mergeCaptions, sortedCaptions]
-  );
+  const setupPanel = (
+    <div className="flex h-full flex-col">
+      <div className="panel-header justify-center">
+        <span>Subtitles</span>
+      </div>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        {captions.length > 0 && (
+          <button className="btn-ghost inline-flex items-center gap-1" onClick={() => setFlow("list")}>
+            <ChevronLeft size={13} />
+            Back to subtitle rows
+          </button>
+        )}
 
-  const handleApplyThemeToCaption = useCallback(
-    (captionId: string, newTheme: CaptionTheme) => {
-      const caption = captions.find((candidate) => candidate.id === captionId);
-      if (caption && isCaptionLocked(caption, tracks)) return;
-      updateCaption(captionId, { theme: newTheme, style: CAPTION_THEMES[newTheme] });
-      setStylePickerForId(null);
-    },
-    [captions, tracks, updateCaption]
-  );
-
-  const handleApplyThemeToAll = useCallback(
-    (newTheme: CaptionTheme) => {
-      setThemeForAll(newTheme);
-    },
-    [setThemeForAll]
-  );
-
-  const deleteSelectedUnlocked = useCallback(() => {
-    Array.from(selectedIds).forEach((captionId) => {
-      const caption = captions.find((candidate) => candidate.id === captionId);
-      if (!caption || isCaptionLocked(caption, tracks)) return;
-      deleteCaption(captionId);
-    });
-  }, [captions, deleteCaption, selectedIds, tracks]);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div
-        className="min-h-0 flex-1 overflow-y-scroll"
-        style={{ scrollbarGutter: "stable", overscrollBehavior: "contain" }}
-      >
-      {/* Controls */}
-      <div className="p-2 space-y-2" style={{ borderBottom: "1px solid var(--border)" }}>
-        {/* Language selector */}
-        <div className="flex items-center gap-2">
-          <Languages size={14} style={{ color: "var(--text-muted)" }} />
+        <label className="grid gap-2 text-xs" style={{ color: "var(--text-primary)" }}>
+          <span className="flex items-center justify-between">
+            Original language
+            <InfoDot title="Choose the language spoken in the video. Use Auto Mixed Indian for Telugu + English or Hindi + English speech." />
+          </span>
           <select
-            className="flex-1 text-xs px-2 py-1 rounded border-0 outline-none cursor-pointer"
-            style={{ background: "var(--bg-panel-dark)", color: "var(--text-primary)" }}
-            value={language}
-            onChange={(e) => setLanguage(e.target.value as Language)}
+            className="control-input"
+            value={originalLanguage}
+            onChange={(event) => setOriginalLanguage(event.target.value as OriginalLanguageOption)}
           >
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>
-                {l.label}
-              </option>
+            {ORIGINAL_LANGUAGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-        </div>
+        </label>
 
-        {/* Generate button */}
+        <label className="grid gap-2 text-xs" style={{ color: "var(--text-primary)" }}>
+          <span className="flex items-center justify-between">
+            Translate video to
+            <InfoDot title="Choose if captions should stay in the same language or be translated/romanized." />
+          </span>
+          <select
+            className="control-input"
+            value={translateTo}
+            onChange={(event) => setTranslateTo(event.target.value as TranslateOption)}
+          >
+            {TRANSLATE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+
+        {translateTo !== "same" && (
+          <button className="btn-ghost flex w-full items-center justify-center gap-2" type="button">
+            <Languages size={14} />
+            Edit Translation Rules
+          </button>
+        )}
+
+        {!activeMedia && (
+          <button
+            className="btn-ghost flex w-full items-center justify-center gap-2"
+            onClick={() => {
+              setMediaPanelTab("project");
+              void openMediaPicker();
+            }}
+          >
+            <Plus size={14} />
+            Import Video
+          </button>
+        )}
+
         <button
           id="generate-captions-btn"
-          className="btn-primary w-full flex items-center justify-center gap-2"
+          className="btn-primary flex w-full items-center justify-center gap-2 py-3"
           onClick={handleGenerate}
           disabled={!activeMedia || isGenerating}
+          title="Generates editable subtitles using speech recognition and timing alignment."
         >
-          <Wand2 size={14} />
-          {isGenerating ? "Generating..." : "Generate Captions"}
+          <Wand2 size={15} />
+          {isGenerating ? "Generating..." : "Auto Subtitle"}
         </button>
 
-        {/* Progress bar */}
+        {isGenerating && (
+          <button className="btn-ghost w-full" onClick={() => setIsGenerating(false)}>
+            Cancel
+          </button>
+        )}
+
         {pipelinePercent > 0 && pipelinePercent < 100 && (
           <div className="space-y-1">
             <div className="flex justify-between text-[10px]" style={{ color: "var(--text-muted)" }}>
               <span>{pipelineStatus}</span>
               <span>{pipelinePercent}%</span>
             </div>
-            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--bg-panel-dark)" }}>
-              <div
-                className="h-full rounded-full transition-all duration-300"
-                style={{
-                  width: `${pipelinePercent}%`,
-                  background: "var(--accent)",
-                }}
-              />
+            <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--bg-panel-dark)" }}>
+              <div className="h-full transition-all duration-300" style={{ width: `${pipelinePercent}%`, background: "var(--accent)" }} />
             </div>
           </div>
         )}
 
         {generateError && (
-          <div
-            className="text-[11px] leading-snug rounded px-2 py-1.5"
-            style={{ color: "var(--error-text)", background: "var(--error-bg)", border: "1px solid var(--error-border)" }}
-          >
+          <div className="editor-notice error whitespace-pre-wrap">
             {formatGenerateError(generateError)}
           </div>
         )}
 
-        <div className="grid gap-2 rounded p-2" style={{ background: "var(--bg-panel-dark)" }}>
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1 text-[10px] font-semibold uppercase" style={{ color: "var(--text-muted)" }}>
-              <Clock3 size={11} />
-              Timing & Sync
-            </span>
-            <button className="btn-ghost text-[10px]" onClick={resetTimingAdjustments} title="Rebuild timing from the saved transcript">
-              Reset Timing
-            </button>
+        <div className="brutal-box p-3 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          <div className="mb-1 flex items-center gap-2 font-bold uppercase" style={{ color: "var(--text-primary)" }}>
+            <Sparkles size={13} style={{ color: "var(--accent)" }} />
+            Caption workflow
           </div>
-
-          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            <span>Global caption offset {globalOffset.toFixed(2)}s</span>
-            <input
-              type="range"
-              min={-1}
-              max={1}
-              step={0.01}
-              value={globalOffset}
-              onChange={(e) => applyGlobalOffset(Number(e.target.value))}
-              className="accent-[var(--accent)]"
-            />
-          </label>
-
-          <label className="grid gap-1 text-[10px]" style={{ color: selectedCaption ? "var(--text-muted)" : "var(--text-disabled)" }}>
-            <span>Selected caption offset {selectedOffset.toFixed(2)}s</span>
-            <input
-              type="range"
-              min={-0.5}
-              max={0.5}
-              step={0.01}
-              value={selectedOffset}
-              disabled={!selectedCaption}
-              onChange={(e) => applySelectedOffset(Number(e.target.value))}
-              className="accent-[var(--accent)] disabled:opacity-50"
-            />
-          </label>
-
-          <div className="grid grid-cols-4 gap-1">
-            {[-0.1, -0.05, 0.05, 0.1].map((delta) => (
-              <button
-                key={delta}
-                className="btn-ghost flex items-center justify-center gap-1 text-[10px]"
-                disabled={!selectedCaption}
-                onClick={() => nudgeSelectedCaption(delta)}
-                title={`Nudge selected caption ${delta > 0 ? "right" : "left"} by ${Math.abs(delta).toFixed(2)}s`}
-              >
-                {delta < 0 ? <ChevronsLeft size={10} /> : <ChevronsRight size={10} />}
-                {delta > 0 ? "+" : ""}
-                {delta.toFixed(2)}
-              </button>
-            ))}
-          </div>
-
-          {selectedCaption && (
-            <div className="grid grid-cols-2 gap-2">
-              <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                <span>Selected start</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={selectedCaption.start}
-                  onChange={(e) => updateSelectedTiming({ start: Number(e.target.value) })}
-                  className="rounded border-0 px-2 py-1 text-xs outline-none"
-                  style={{ background: "var(--bg-app)", color: "var(--text-primary)" }}
-                />
-              </label>
-              <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                <span>Selected end</span>
-                <input
-                  type="number"
-                  min={selectedCaption.start + 0.08}
-                  step={0.01}
-                  value={selectedCaption.end}
-                  onChange={(e) => updateSelectedTiming({ end: Number(e.target.value) })}
-                  className="rounded border-0 px-2 py-1 text-xs outline-none"
-                  style={{ background: "var(--bg-app)", color: "var(--text-primary)" }}
-                />
-              </label>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-2">
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Word sensitivity {(captionChunkingConfig.wordTimingSensitivity ?? 1).toFixed(2)}</span>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={captionChunkingConfig.wordTimingSensitivity ?? 1}
-                onChange={(e) => updateChunking({ wordTimingSensitivity: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Min word {(captionChunkingConfig.minWordDuration ?? 0.06).toFixed(2)}s</span>
-              <input
-                type="range"
-                min={0.03}
-                max={0.2}
-                step={0.01}
-                value={captionChunkingConfig.minWordDuration ?? 0.06}
-                onChange={(e) => updateChunking({ minWordDuration: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Max hold {(captionChunkingConfig.maxHoldAfterWord ?? 0.12).toFixed(2)}s</span>
-              <input
-                type="range"
-                min={0}
-                max={0.3}
-                step={0.01}
-                value={captionChunkingConfig.maxHoldAfterWord ?? 0.12}
-                onChange={(e) => updateChunking({ maxHoldAfterWord: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-            <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Snap to waveform peaks</span>
-              <input
-                type="checkbox"
-                checked={Boolean(captionChunkingConfig.snapToWaveformPeaks)}
-                onChange={(e) => updateChunking({ snapToWaveformPeaks: e.target.checked })}
-                className="accent-[var(--accent)]"
-                title="Waveform data is visual-only right now; manual offsets still apply."
-              />
-            </label>
-          </div>
-
-          <button id="rebuild-timing-btn" className="btn-primary text-[10px]" onClick={rebuildCaptions}>
-            Rebuild Timing
-          </button>
-        </div>
-
-        <div className="grid gap-2 rounded p-2" style={{ background: "var(--bg-panel-dark)" }}>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-semibold uppercase" style={{ color: "var(--text-muted)" }}>
-              Caption Chunking
-            </span>
-            <button id="rebuild-captions-btn" className="btn-ghost text-[10px]" onClick={rebuildCaptions}>
-              Rebuild Captions
-            </button>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Target words: {captionChunkingConfig.targetWordsPerCaption}</span>
-              <input
-                type="range"
-                min={2}
-                max={6}
-                value={captionChunkingConfig.targetWordsPerCaption}
-                onChange={(e) => updateChunking({ targetWordsPerCaption: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Max words: {captionChunkingConfig.maxWordsPerCaption}</span>
-              <input
-                type="range"
-                min={2}
-                max={8}
-                value={captionChunkingConfig.maxWordsPerCaption}
-                onChange={(e) => updateChunking({ maxWordsPerCaption: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-          </div>
-          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            <span>Min words per caption: {captionChunkingConfig.minWordsPerCaption}</span>
-            <input
-              type="range"
-              min={1}
-              max={4}
-              value={captionChunkingConfig.minWordsPerCaption}
-              onChange={(e) => updateChunking({ minWordsPerCaption: Number(e.target.value) })}
-              className="accent-[var(--accent)]"
-            />
-          </label>
-          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            <span>Max characters: {captionChunkingConfig.maxCharsPerCaption}</span>
-            <input
-              type="range"
-              min={12}
-              max={48}
-              value={captionChunkingConfig.maxCharsPerCaption}
-              onChange={(e) => updateChunking({ maxCharsPerCaption: Number(e.target.value) })}
-              className="accent-[var(--accent)]"
-            />
-          </label>
-          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            <span>Target reading speed: {captionChunkingConfig.targetReadingSpeedCps} cps</span>
-            <input
-              type="range"
-              min={12}
-              max={24}
-              value={captionChunkingConfig.targetReadingSpeedCps}
-              onChange={(e) => updateChunking({ targetReadingSpeedCps: Number(e.target.value) })}
-              className="accent-[var(--accent)]"
-            />
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Min duration {captionChunkingConfig.minCaptionDuration.toFixed(2)}s</span>
-              <input
-                type="range"
-                min={0.1}
-                max={1.2}
-                step={0.05}
-                value={captionChunkingConfig.minCaptionDuration}
-                onChange={(e) => updateChunking({ minCaptionDuration: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Max duration {captionChunkingConfig.maxCaptionDuration.toFixed(2)}s</span>
-              <input
-                type="range"
-                min={0.5}
-                max={4}
-                step={0.05}
-                value={captionChunkingConfig.maxCaptionDuration}
-                onChange={(e) => updateChunking({ maxCaptionDuration: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Pause split {captionChunkingConfig.pauseSplitThreshold.toFixed(2)}s</span>
-              <input
-                type="range"
-                min={0.15}
-                max={1}
-                step={0.05}
-                value={captionChunkingConfig.pauseSplitThreshold}
-                onChange={(e) => updateChunking({ pauseSplitThreshold: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>Merge gap {captionChunkingConfig.mergeSmallGapThreshold.toFixed(2)}s</span>
-              <input
-                type="range"
-                min={0}
-                max={0.35}
-                step={0.02}
-                value={captionChunkingConfig.mergeSmallGapThreshold}
-                onChange={(e) => updateChunking({ mergeSmallGapThreshold: Number(e.target.value) })}
-                className="accent-[var(--accent)]"
-              />
-            </label>
-          </div>
-          <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            <span>Avoid single-word captions</span>
-            <input
-              type="checkbox"
-              checked={captionChunkingConfig.avoidSingleWordCaptions}
-              onChange={(e) => updateChunking({ avoidSingleWordCaptions: e.target.checked })}
-              className="accent-[var(--accent)]"
-            />
-          </label>
-          <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            <span>Balance line length</span>
-            <input
-              type="checkbox"
-              checked={captionChunkingConfig.balanceLineLength}
-              onChange={(e) => updateChunking({ balanceLineLength: e.target.checked })}
-              className="accent-[var(--accent)]"
-            />
-          </label>
+          Import a video, choose the spoken language, pick an output mode, then generate editable subtitle rows.
         </div>
       </div>
+    </div>
+  );
 
-      {/* Subtitle editor */}
-      <div className="p-1">
-        <div className="px-1 py-1 text-[10px] font-semibold uppercase" style={{ color: "var(--text-muted)" }}>
-          Caption Editor
-        </div>
-        <div className="mb-2 grid gap-1 px-1">
-          <label className="flex items-center gap-1 rounded px-2 py-1" style={{ background: "var(--bg-panel-dark)" }}>
-            <Search size={11} style={{ color: "var(--text-muted)" }} />
-            <input
-              value={captionSearch}
-              onChange={(e) => setCaptionSearch(e.target.value)}
-              placeholder="Search captions"
-              className="w-full border-0 bg-transparent text-xs outline-none"
-              style={{ color: "var(--text-primary)" }}
-            />
+  const listPanel = (
+    <div className="flex h-full flex-col">
+      <div className="panel-header justify-center">
+        <span>Subtitles</span>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2" style={{ borderColor: "var(--border)" }}>
+        <button className="icon-button" onClick={() => setFlow("setup")} title="Back">
+          <ChevronLeft size={15} />
+        </button>
+        <label className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1" style={{ background: "var(--bg-panel-dark)" }}>
+          <Search size={13} style={{ color: "var(--text-muted)" }} />
+          <input
+            className="w-full border-0 bg-transparent text-xs outline-none"
+            value={captionSearch}
+            placeholder="Search subtitles"
+            onChange={(event) => setCaptionSearch(event.target.value)}
+            style={{ color: "var(--text-primary)" }}
+          />
+        </label>
+        <button className="icon-button" onClick={exportSRT} title="Download SRT" disabled={!captions.length}>
+          <Download size={15} />
+        </button>
+        <button className="icon-button" onClick={toggleCaptionOverlay} title="Preview subtitles">
+          {showCaptionOverlay ? <Eye size={15} /> : <EyeOff size={15} />}
+        </button>
+        <button className="icon-button" title="More">
+          <MoreVertical size={15} />
+        </button>
+      </div>
+
+      <div className="space-y-2 border-b p-3" style={{ borderColor: "var(--border)" }}>
+        <div className="flex items-center justify-between gap-2">
+          <label className="flex flex-1 items-center gap-2 text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+            <span>Chars per subtitle:</span>
+            <InfoDot title="Controls how much text appears in each subtitle block. Lower values create faster shorter captions. Higher values create longer subtitle blocks. Requires Rebuild Subtitles." />
           </label>
-          <div className="grid grid-cols-[1fr_auto] gap-1">
-            <input
-              value={replaceText}
-              onChange={(e) => setReplaceText(e.target.value)}
-              placeholder="Replace with"
-              className="rounded border-0 px-2 py-1 text-xs outline-none"
-              style={{ background: "var(--bg-panel-dark)", color: "var(--text-primary)" }}
-            />
-            <button className="btn-ghost flex items-center gap-1 text-[10px]" onClick={replaceInCaptions} disabled={!captionSearch.trim()}>
-              <Replace size={11} />
-              Replace
+        </div>
+        <div className="grid grid-cols-[1fr_auto] items-end gap-2">
+          <CharsPerSubtitleSlider value={charsPerSubtitle} onChange={handleCharsChange} onCommit={handleCharsChange} />
+          <button className="btn-ghost text-[10px]" title="Smart tools are coming later">
+            Smart tools
+          </button>
+        </div>
+        <button
+          className="btn-ghost w-full text-[10px]"
+          type="button"
+          disabled={!captions.length}
+          onClick={() => void runCaptionCoverageValidation()}
+        >
+          Validate Caption Coverage
+        </button>
+        {captionNeedsRebuild && (
+          <div className="editor-notice flex items-center justify-between gap-2">
+            <span>Subtitle length changed. Click Rebuild Subtitles to apply.</span>
+            <button id="rebuild-captions-btn" className="btn-primary" disabled={isRebuilding} onClick={() => rebuildCaptions(charsPerSubtitle)}>
+              {isRebuilding ? "Rebuilding..." : "Rebuild Subtitles"}
             </button>
           </div>
+        )}
+        {captionStyleConfig.maxLines === 1 && charsPerSubtitle > 34 && (
+          <div className="editor-notice">
+            {charsPerSubtitle} chars may not fit one line. Rebuild will split into shorter one-line captions around {effectiveCharsForLayout(charsPerSubtitle, captionStyleConfig.maxLines)} chars.
+          </div>
+        )}
+        {coverageNotice && (
+          <div className="editor-notice">
+            {coverageNotice}
+          </div>
+        )}
+      </div>
+
+      {generateError && (
+        <div className="mx-3 mt-3 editor-notice error whitespace-pre-wrap">
+          {formatGenerateError(generateError)}
         </div>
-        {sortedCaptions.length === 0 ? (
-          <div className="brutal-empty flex flex-col items-center justify-center py-8 text-center">
-            <img className="empty-logo" src="/brand/huygen-logo.png" alt="Huygen Caps" />
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Generate captions to edit subtitle timing.
-              <br />
-              Or add a caption manually.
-            </p>
+      )}
+
+      <div ref={listContainerRef} className="min-h-0 flex-1 overflow-y-auto bg-white text-black">
+        {visibleCaptions.length === 0 ? (
+          <div className="p-6 text-center text-xs text-neutral-500">
+            No subtitle rows yet.
           </div>
         ) : (
-          filteredCaptions.map((caption) => {
+          visibleCaptions.map((caption) => {
             const locked = isCaptionLocked(caption, tracks);
-            const rowIndex = sortedCaptions.findIndex((candidate) => candidate.id === caption.id) + 1;
             const timingWarning = validateCaptionTiming(caption);
-            const timingSource = caption.words?.[0] ? inferWordTimingSource(caption.words[0]) : caption.timingNeedsReview ? "estimated" : "manual";
+            const selected = selectedCaptionId === caption.id;
+            const playbackActive = activePlaybackChunkId === caption.id;
+            const combinedActive = selected && playbackActive;
+            const isEditingRow = editingCaptionId === caption.id;
+            const playbackWordIndex = playbackActive ? activePlaybackWordIndex ?? -1 : -1;
+            const tokens = tokenizeCaptionForDisplay(caption);
             return (
-            <div
-              key={caption.id}
-              className="p-2 mb-1 rounded cursor-pointer transition-colors group"
-              style={{
-                background: selectedIds.has(caption.id)
-                  ? "rgba(245, 56, 56, 0.16)"
-                  : "var(--bg-panel-dark)",
-                border: selectedIds.has(caption.id)
-                  ? "2px solid var(--accent)"
-                  : "2px solid transparent",
-              }}
-              onClick={() => {
-                selectCaption(caption.id);
-                usePlaybackStore.getState().setCurrentTime(caption.start);
-              }}
-            >
-              {/* Timestamp — clickable for inline edit */}
-              <div className="flex items-center gap-1 mb-1">
-                <span className="text-[10px] font-semibold tabular-nums" style={{ color: "var(--text-muted)" }}>
-                  #{rowIndex}
-                </span>
-                {editingTimeId === caption.id && editingTimeField === "start" ? (
-                  <input
-                    className="font-mono text-[10px] w-16 px-1 py-0 rounded border-0 outline-none"
-                    style={{ background: "var(--bg-app)", color: "var(--accent)" }}
-                    defaultValue={formatTime(caption.start)}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                    onBlur={(e) => handleTimeBlur(caption.id, "start", e.target.value)}
-                    onKeyDown={(e) => handleTimeKeyDown(caption.id, "start", e)}
-                  />
-                ) : (
-                  <span
-                    className={`font-mono text-[10px] ${locked ? "" : "cursor-text hover:underline"}`}
-                    style={{ color: locked ? "var(--text-muted)" : "var(--accent)" }}
-                    onClick={(e) => {
-                      if (!locked) handleTimeClick(caption.id, "start", e);
-                    }}
-                    title={locked ? "Track locked" : "Click to edit start time"}
-                  >
-                    {formatTime(caption.start)}
-                  </span>
-                )}
-                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-                  →
-                </span>
-                {editingTimeId === caption.id && editingTimeField === "end" ? (
-                  <input
-                    className="font-mono text-[10px] w-16 px-1 py-0 rounded border-0 outline-none"
-                    style={{ background: "var(--bg-app)", color: "var(--accent)" }}
-                    defaultValue={formatTime(caption.end)}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                    onBlur={(e) => handleTimeBlur(caption.id, "end", e.target.value)}
-                    onKeyDown={(e) => handleTimeKeyDown(caption.id, "end", e)}
-                  />
-                ) : (
-                  <span
-                    className={`font-mono text-[10px] ${locked ? "" : "cursor-text hover:underline"}`}
-                    style={{ color: locked ? "var(--text-muted)" : "var(--accent)" }}
-                    onClick={(e) => {
-                      if (!locked) handleTimeClick(caption.id, "end", e);
-                    }}
-                    title={locked ? "Track locked" : "Click to edit end time"}
-                  >
-                    {formatTime(caption.end)}
-                  </span>
-                )}
-                <span
-                  className="text-[8px] px-1 py-0.5 rounded ml-auto uppercase"
-                  style={{
-                    background:
-                      caption.lang === "english"
-                        ? "var(--caption-en)"
-                        : caption.lang === "hinglish"
-                        ? "var(--caption-hing)"
-                        : "var(--caption-tel)",
-                    color: "#ffffff",
-                  }}
-                >
-                  {caption.lang}
-                </span>
-                <span
-                  className="text-[8px] px-1 py-0.5 rounded uppercase"
-                  style={{
-                    background:
-                      timingSource === "provider" || timingSource === "aligned"
-                        ? "rgba(34,197,94,0.16)"
-                        : timingSource === "manual"
-                        ? "rgba(168,85,247,0.16)"
-                        : "rgba(255,212,59,0.16)",
-                    color:
-                      timingSource === "provider" || timingSource === "aligned"
-                        ? "#22c55e"
-                        : timingSource === "manual"
-                        ? "var(--accent)"
-                        : "#ffd36b",
-                  }}
-                  title={`Timing source: ${timingSource}`}
-                >
-                  {timingSource}
-                </span>
-                {timingWarning && <AlertTriangle size={11} style={{ color: "#ffd36b" }} aria-label={timingWarning} />}
-              </div>
-
-              {/* Text */}
-              <textarea
-                key={`${caption.id}-${caption.text}`}
-                className="min-h-16 w-full resize-y rounded border-0 px-2 py-1 text-xs leading-relaxed outline-none disabled:opacity-60"
+              <div
+                key={caption.id}
+                data-active-word-id={playbackActive ? activePlaybackWordId || undefined : undefined}
+                ref={(node) => {
+                  if (node) {
+                    rowRefs.current[caption.id] = node;
+                  } else {
+                    delete rowRefs.current[caption.id];
+                  }
+                }}
+                className="grid cursor-pointer grid-cols-[82px_1fr_82px] items-start gap-2 border-b px-3 py-2 text-xs"
                 style={{
-                  background: "var(--bg-app)",
-                  color: "var(--text-primary)",
+                  background: combinedActive ? "#FFEAB2" : selected ? "#FFF7C7" : playbackActive ? "#EAF4FF" : "#FFFFFF",
+                  borderColor: "#ECECEC",
+                  boxShadow: playbackActive ? "inset 3px 0 0 #2B6CB0" : undefined,
                 }}
-                defaultValue={caption.text}
-                disabled={locked}
-                onClick={(e) => e.stopPropagation()}
-                onBlur={(e) => applyTextEdit(caption.id, e.target.value)}
-                onKeyDown={(e) => {
-                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                    applyTextEdit(caption.id, e.currentTarget.value);
-                    e.currentTarget.blur();
-                  }
-                  if (e.key === "Escape") {
-                    e.currentTarget.value = caption.text;
-                    e.currentTarget.blur();
-                  }
-                }}
-              />
-
-              {locked && (
-                <div className="mt-1 text-[9px]" style={{ color: "#ffd36b" }}>
-                  Track locked
+                onClick={() => handleRowSelect(caption.id, caption.start)}
+              >
+                <input
+                  key={`${caption.id}-start-${caption.start}`}
+                  className="w-full border-0 bg-transparent font-mono text-[11px] outline-none"
+                  defaultValue={formatSubtitleTime(caption.start)}
+                  disabled={locked}
+                  onClick={(event) => event.stopPropagation()}
+                  onBlur={(event) => updateCaptionTime(caption.id, "start", event.target.value)}
+                  title="Start time"
+                />
+                <div className="flex items-start gap-2">
+                  {isEditingRow ? (
+                    <textarea
+                      className="min-h-8 flex-1 resize-y border-0 bg-transparent px-1 py-0 text-sm leading-relaxed outline-none disabled:opacity-60"
+                      value={caption.text}
+                      disabled={locked}
+                      onClick={(event) => event.stopPropagation()}
+                      onFocus={() => {
+                        setEditingCaptionId(caption.id);
+                      }}
+                      onBlur={() => {
+                        setEditingCaptionId((current) => (current === caption.id ? null : current));
+                      }}
+                      onChange={(event) => updateCaptionText(caption.id, event.target.value)}
+                      placeholder="Subtitle text"
+                    />
+                  ) : (
+                    <div
+                      className="min-h-8 flex-1 px-1 py-0.5 text-sm leading-relaxed"
+                      style={{ color: "#111111" }}
+                      title={locked ? undefined : "Double-click to edit subtitle text"}
+                      onDoubleClick={(event) => {
+                        if (locked) return;
+                        event.stopPropagation();
+                        if (!selected) {
+                          handleRowSelect(caption.id, caption.start);
+                        }
+                        setEditingCaptionId(caption.id);
+                      }}
+                    >
+                      {tokens.length === 0 ? (
+                        <span style={{ color: "#8A8A8A" }}>Subtitle text</span>
+                      ) : (
+                        tokens.map((token, tokenIndex) => {
+                          const wordActive = playbackActive && tokenIndex === playbackWordIndex;
+                          return (
+                            <span
+                              key={`${caption.id}-token-${tokenIndex}`}
+                              style={{
+                                display: "inline-block",
+                                borderRadius: 4,
+                                padding: wordActive ? "0 2px" : "0",
+                                background: wordActive ? "#FFE79A" : "transparent",
+                                boxShadow: wordActive ? "inset 0 -1px 0 rgba(0,0,0,0.2)" : "none",
+                              }}
+                            >
+                              {token}
+                              {shouldAppendSpace(tokens, tokenIndex) ? " " : ""}
+                            </span>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                  {(caption.timingNeedsReview || timingWarning) && (
+                    <span className="mt-1 shrink-0 text-amber-500" title={timingWarning || caption.timingWarning || "Needs review"}>
+                      <AlertTriangle size={14} />
+                    </span>
+                  )}
                 </div>
-              )}
-
-              {(caption.timingNeedsReview || timingWarning) && (
-                <div className="mt-1 text-[9px]" style={{ color: "#ffd36b" }}>
-                  {timingWarning || "Edited text may need timing review for exact word highlighting."}
-                </div>
-              )}
-
-              {/* Actions (visible on hover) */}
-              <div className="flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  className="p-0.5 rounded hover:bg-white/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (locked) return;
-                    resetCaptionText(caption.id);
-                  }}
-                  title="Reset to original transcript text"
-                >
-                  <RotateCcw size={10} style={{ color: "var(--text-muted)" }} />
-                </button>
-                <button
-                  className="p-0.5 rounded hover:bg-white/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (locked) return;
-                    setStylePickerForId(stylePickerForId === caption.id ? null : caption.id);
-                  }}
-                  title="Change style"
-                >
-                  <Palette size={10} style={{ color: "var(--text-muted)" }} />
-                </button>
-                <button
-                  className="p-0.5 rounded hover:bg-white/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (locked) return;
-                    handleSplit(caption.id);
-                  }}
-                  title="Split at playhead"
-                >
-                  <Scissors size={10} style={{ color: "var(--text-muted)" }} />
-                </button>
-                <button
-                  className="p-0.5 rounded hover:bg-white/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (locked) return;
-                    mergeWithNext(caption.id);
-                  }}
-                  title="Merge with next caption"
-                >
-                  <Merge size={10} style={{ color: "var(--text-muted)" }} />
-                </button>
-                <button
-                  className="p-0.5 rounded hover:bg-white/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (locked) return;
-                    deleteCaption(caption.id);
-                  }}
-                  title="Delete"
-                >
-                  <Trash2 size={10} style={{ color: "var(--text-muted)" }} />
-                </button>
+                <input
+                  key={`${caption.id}-end-${caption.end}`}
+                  className="w-full border-0 bg-transparent text-right font-mono text-[11px] outline-none"
+                  defaultValue={formatSubtitleTime(caption.end)}
+                  disabled={locked}
+                  onClick={(event) => event.stopPropagation()}
+                  onBlur={(event) => updateCaptionTime(caption.id, "end", event.target.value)}
+                  title="End time"
+                />
               </div>
-
-              {/* Per-caption style picker dropdown */}
-              {stylePickerForId === caption.id && (
-                <div
-                  className="mt-1 p-1.5 rounded grid grid-cols-4 gap-1"
-                  style={{ background: "var(--bg-app)", border: "1px solid var(--border)" }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {THEME_NAMES.map((t) => {
-                    const s = CAPTION_THEMES[t.id];
-                    return (
-                      <button
-                        key={t.id}
-                        className="px-1 py-1 rounded text-[8px] text-center transition-all"
-                        style={{
-                          background: caption.theme === t.id ? "var(--accent)" : "var(--bg-panel-dark)",
-                          color: caption.theme === t.id ? "#fff" : s?.color || "var(--text-muted)",
-                          fontWeight: s?.bold ? 700 : 400,
-                          border: "1px solid var(--border)",
-                        }}
-                        onClick={() => handleApplyThemeToCaption(caption.id, t.id)}
-                        title={t.label}
-                      >
-                        {t.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
+            );
           })
         )}
       </div>
-      </div>
 
-      {/* Bottom toolbar */}
-      <div
-        className="flex items-center gap-1 px-2 py-1.5 shrink-0"
-        style={{ borderTop: "1px solid var(--border)", background: "var(--bg-panel-dark)" }}
-      >
-        <button className="btn-ghost flex items-center gap-1" onClick={handleAddCaption}>
-          <Plus size={12} /> Add
-        </button>
-
-        {selectedIds.size > 0 && (
-          <button className="btn-ghost flex items-center gap-1" onClick={deleteSelectedUnlocked}>
-            <Trash2 size={12} /> Delete
-          </button>
-        )}
-
-        {captions.length > 0 && (
-          <button
-            className="btn-ghost flex items-center gap-1"
-            onClick={() => handleApplyThemeToAll(useEditorStore.getState().theme)}
-            title="Apply current theme to all captions"
-          >
-            <Palette size={12} /> Apply All
-          </button>
-        )}
-
-        <div className="flex-1" />
-
-        <button className="btn-ghost" onClick={exportSRT} title="Export SRT">
-          SRT
-        </button>
-        <button className="btn-ghost" onClick={exportASS} title="Export ASS">
-          ASS
+      <div className="shrink-0 border-t p-3" style={{ borderColor: "var(--border)", background: "var(--bg-panel-dark)" }}>
+        <button className="btn-ghost flex w-full items-center justify-center gap-2" onClick={addSubtitleLine}>
+          <Plus size={14} />
+          Add New Subtitle Line
         </button>
       </div>
     </div>
   );
+
+  return flow === "setup" && captions.length === 0 ? setupPanel : flow === "setup" ? setupPanel : listPanel;
 }

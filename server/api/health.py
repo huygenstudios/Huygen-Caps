@@ -92,6 +92,16 @@ def export_health_payload() -> dict[str, object]:
     return payload
 
 
+def timing_health_payload() -> dict[str, object]:
+    from ai_pipeline.timing import alignment_provider_status
+
+    payload = alignment_provider_status()
+    payload["status"] = "ok" if payload["ffmpegAvailable"] and payload["ffprobeAvailable"] else "degraded"
+    payload["pauseSplitThreshold"] = float(os.getenv("PAUSE_SPLIT_THRESHOLD", "0.45") or 0.45)
+    payload["defaultGlobalCaptionOffset"] = float(os.getenv("DEFAULT_GLOBAL_CAPTION_OFFSET", "0") or 0)
+    return payload
+
+
 async def export_health_payload_async() -> dict[str, object]:
     payload = await check_export_runtime_async()
     temp_writable, temp_error = _dir_writable(TEMP_DIR)
@@ -125,3 +135,8 @@ async def health_check():
 @router.get("/export")
 async def export_health_check():
     return await export_health_payload_async()
+
+
+@router.get("/timing")
+async def timing_health_check():
+    return timing_health_payload()

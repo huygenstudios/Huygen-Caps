@@ -2,6 +2,7 @@
 
 export type Language = "english" | "hinglish" | "telgish" | "auto_mixed_indian";
 export type ToolMode = "selection" | "razor" | "hand" | "zoom";
+export type LeftSidebarTab = "ai" | "media" | "text" | "subtitles" | "transcript" | "translate" | "templates";
 export type ExportFormat = "mp4" | "srt" | "json" | "ass" | "project";
 export type RightPanelTab = "effect-controls" | "caption-editor" | "caption-style" | "export-settings";
 export type ColorMode = "dark" | "light";
@@ -49,7 +50,7 @@ export type CaptionStylePresetId =
   | "apple_cinematic"
   | "modern_minimalist_lockup";
 
-export type CaptionTimingSource = "provider" | "aligned" | "manual" | "estimated";
+export type CaptionTimingSource = "provider" | "whisperx" | "stable_ts" | "vad_adjusted" | "manual" | "estimated";
 
 export interface MediaFile {
   id: string;
@@ -146,8 +147,61 @@ export interface CaptionDocument {
     segments: AlignedSegment[];
     metadata?: Record<string, unknown>;
   };
+  originalAlignedWords: AlignedWord[];
   chunks: Caption[];
   style: CaptionStyleConfig;
+  chunkingConfig: CaptionChunkingConfig;
+  timingConfig: CaptionTimingConfig;
+  coverageReport?: CaptionCoverageReport;
+}
+
+export type CaptionGapSpeechStatus = "speech" | "silence" | "unknown";
+
+export interface CaptionCoverageChunkSummary {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+  wordCount: number;
+}
+
+export interface CaptionCoverageGap {
+  start: number;
+  end: number;
+  duration: number;
+  previousChunkId?: string;
+  nextChunkId?: string;
+  previousText?: string;
+  nextText?: string;
+  wordsInGap: AlignedWord[];
+  speechStatus: CaptionGapSpeechStatus;
+  audioRms?: number;
+  audioPeak?: number;
+  warning?: string;
+}
+
+export interface CaptionCoverageReport {
+  generatedAt: string;
+  totalOriginalAlignedWords: number;
+  firstWordTime: number | null;
+  lastWordTime: number | null;
+  chunkCount: number;
+  totalCaptionCoverageSeconds: number;
+  chunks: CaptionCoverageChunkSummary[];
+  largeGaps: CaptionCoverageGap[];
+  invalidChunks: {
+    chunkId: string;
+    start: number;
+    end: number;
+    reason: string;
+  }[];
+  overlappingChunks: {
+    leftChunkId: string;
+    rightChunkId: string;
+    overlapSeconds: number;
+  }[];
+  wordsNotAssigned: AlignedWord[];
+  warnings: string[];
 }
 
 export interface ProjectData {
@@ -165,6 +219,7 @@ export interface ProjectData {
     captionStyleConfig?: CaptionStyleConfig;
     captionChunkingConfig?: CaptionChunkingConfig;
     captionLayerTransform?: CaptionLayerTransform;
+    captionTimingConfig?: CaptionTimingConfig;
     sequenceSettings?: SequenceSettings;
     exportSettings?: ExportSettings;
   };
@@ -344,7 +399,14 @@ export interface ExportSettings {
 export type CaptionAlignment = "left" | "center" | "right";
 export type CaptionEntranceAnimation = "none" | "hard_cut" | "fade" | "pop" | "slide_up" | "blur_fade";
 export type CaptionWordAnimation = "none" | "pop" | "bounce";
+export type CaptionWordEffect = "none" | "reveal" | "highlight" | "bounce" | "paint" | "pop" | "fade";
+export type CaptionMaxLines = "auto" | 1 | 2 | 3;
 export type KineticAnimateBy = "word" | "letter";
+
+export interface BuildPresetFontSizeConfig {
+  bigFontSizePx: number;
+  smallFontSizePx: number;
+}
 
 export interface CaptionStyleConfig {
   presetName: string;
@@ -356,6 +418,7 @@ export interface CaptionStyleConfig {
   backgroundEnabled: boolean;
   backgroundColor: string;
   backgroundOpacity: number;
+  backgroundFit?: "wrap" | "fill";
   borderRadius: number;
   paddingX: number;
   paddingY: number;
@@ -379,6 +442,7 @@ export interface CaptionStyleConfig {
   activeWordBackgroundPaddingX: number;
   activeWordBackgroundPaddingY: number;
   activeWordBackgroundBorderRadius: number;
+  wordEffect: CaptionWordEffect;
   animationType: CaptionWordAnimation;
   animationStrength: number;
   animationSpeed: number;
@@ -401,6 +465,9 @@ export interface CaptionStyleConfig {
   opacity: number;
   alignment: CaptionAlignment;
   maxWidth: number;
+  maxLines: CaptionMaxLines;
+  asymmetricScaleEnabled?: boolean;
+  asymmetricScaleStrength?: number;
   randomTiltEnabled?: boolean;
   smartHighlightEnabled?: boolean;
   emphasisGreenColor?: string;
@@ -410,9 +477,25 @@ export interface CaptionStyleConfig {
   revealYOffset?: number;
   revealBlur?: number;
   phraseHoldDuration?: number;
+  bigFontSizePx?: number;
+  smallFontSizePx?: number;
   anchorSizeMultiplier?: number;
   supportSizeMultiplier?: number;
-  layoutMode?: "auto" | "a" | "b" | "c";
+  layoutMode?:
+    | "auto"
+    | "center_anchor"
+    | "left_anchor"
+    | "right_anchor"
+    | "top_heavy"
+    | "bottom_stack"
+    | "split_lockup"
+    | "a"
+    | "b"
+    | "c";
+  layoutAsymmetry?: number;
+  layoutSafeMarginPercent?: number;
+  collisionPadding?: number;
+  showBuildWordBounds?: boolean;
   tightness?: number;
   hardCutReveal?: boolean;
 }
@@ -431,7 +514,7 @@ export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
     letterSpacing: "0",
     borderRadius: "16px",
     padding: "14px 24px",
-    shadow: "0 4px 16px rgba(0,0,0,0.55)",
+    shadow: "none",
     animation: "pop",
   },
   kinetic_fade: {
@@ -446,7 +529,7 @@ export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
     letterSpacing: "0",
     borderRadius: "12px",
     padding: "10px 18px",
-    shadow: "0 3px 10px rgba(0,0,0,0.45)",
+    shadow: "none",
     animation: "fade-in",
   },
   attention_punch: {
@@ -462,7 +545,7 @@ export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
     letterSpacing: "0",
     borderRadius: "8px",
     padding: "8px 16px",
-    shadow: "0 5px 16px rgba(0,0,0,0.65)",
+    shadow: "none",
     animation: "pop",
   },
   mrbeast_style: {
@@ -478,7 +561,7 @@ export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
     letterSpacing: "0",
     borderRadius: "0",
     padding: "4px 10px",
-    shadow: "0 7px 0 #000000, 0 12px 18px rgba(0,0,0,0.72)",
+    shadow: "none",
     animation: "pop",
   },
   apple_cinematic: {
@@ -493,7 +576,7 @@ export const CAPTION_THEMES: Record<CaptionTheme, CaptionStyle> = {
     letterSpacing: "-0.02em",
     borderRadius: "0",
     padding: "0",
-    shadow: "0 10px 34px rgba(0,0,0,0.22)",
+    shadow: "none",
     animation: "fade-in",
   },
   modern_minimalist_lockup: {

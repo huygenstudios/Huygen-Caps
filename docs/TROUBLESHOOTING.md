@@ -59,6 +59,39 @@ Common fixes:
 - Add `SARVAM_API_KEY`, `OPENAI_API_KEY`, or `GROQ_API_KEY`.
 - Use MP4/MOV.
 
+## Chars Per Subtitle Does Not Immediately Change Rows
+
+This is expected. Chars per subtitle controls chunk length and requires a rebuild.
+
+Fix:
+
+- Move the Chars per subtitle slider.
+- Click `Rebuild Subtitles`.
+- The app rebuilds from the saved aligned transcript, not from already-edited caption rows.
+
+If Rebuild Subtitles is disabled or shows an error, generate subtitles first so `transcriptSegments` exists.
+
+## Subtitle Row And Timeline Chunk Are Out Of Sync
+
+Rows and timeline chunks share the same caption id. If they appear out of sync:
+
+- Click the subtitle row again; preview should seek to the row start.
+- Click the matching timeline chunk; the row should highlight.
+- If timing looks stale while editing a timestamp, blur the time field so the value commits.
+
+Timeline trimming writes through `updateCaption`, so row start/end fields refresh after the trim completes.
+
+## Background Or Outline Controls Do Not Show In Export
+
+Preview and export read `captionStyleConfig`.
+
+Check:
+
+- Make sure you changed controls in the right Caption Style panel.
+- Use MP4 export with burned captions enabled.
+- Re-export after style edits.
+- For captions-only export, verify the export mode background is not hiding the caption style.
+
 ## Export Failed
 
 Check:

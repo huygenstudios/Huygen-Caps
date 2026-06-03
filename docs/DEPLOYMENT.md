@@ -36,6 +36,12 @@ UPLOAD_DIR=/tmp/huygen-caps/uploads
 EXPORT_DIR=/tmp/huygen-caps/exports
 DB_PATH=/tmp/huygen-caps/database.sqlite
 RUNTIME_CLEANUP_HOURS=24
+ALIGNMENT_PROVIDER=auto
+ENABLE_WHISPERX=false
+ENABLE_STABLE_TS=false
+ENABLE_SILERO_VAD=false
+PAUSE_SPLIT_THRESHOLD=0.45
+DEFAULT_GLOBAL_CAPTION_OFFSET=0
 ```
 
 Set at least one provider key:
@@ -70,9 +76,11 @@ Manual checks:
 ```text
 https://YOUR_RENDER_SERVICE.onrender.com/health
 https://YOUR_RENDER_SERVICE.onrender.com/health/export
+https://YOUR_RENDER_SERVICE.onrender.com/health/timing
 ```
 
 `/health/export` may be `degraded` if FFmpeg, FFprobe, Playwright, Chromium, or writable temp/export dirs are unavailable.
+`/health/timing` reports WhisperX, stable-ts, Silero VAD, FFmpeg, and FFprobe availability. Optional alignment packages are disabled by default on Render; fallback word timings are marked as `estimated`.
 
 ## Common Render Issues
 

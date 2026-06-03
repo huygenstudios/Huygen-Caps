@@ -99,7 +99,7 @@ export function resolveSafeCaptionLayout(
 
   const availableWidth = (canvas.width * widthPercent) / 100;
   const availableHeight = (canvas.height * maxHeightPercent) / 100;
-  const lineClamp = Math.max(1, Math.round(safety.lineClamp));
+  const lineClamp = config.maxLines === "auto" ? Math.max(1, Math.round(safety.lineClamp)) : config.maxLines;
   const lineHeight = clamp(Number(config.lineHeight) || 1.1, 0.9, 1.6);
   const charWidthFactor = config.textTransform === "uppercase" || Number(config.fontWeight) >= 800 ? 0.62 : 0.56;
 
@@ -156,5 +156,5 @@ export const SAFE_CAPTION_TEXT_STYLE: CSSProperties = {
   whiteSpace: "normal",
   wordBreak: "normal",
   overflowWrap: "normal",
-  hyphens: "manual",
+  hyphens: "none",
 };

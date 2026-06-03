@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 from .alignment_validator import check_hallucination, validate_alignment
-from .aligner import align_text
+from .aligner import TranscriptAligner, align_text
 from .audio import apply_fade, extract_audio, overlap_chunk
 from .chunk_merger import merge_chunks
 from .confidence import determine_confidence_threshold
@@ -21,6 +21,12 @@ from .logger import PipelineLogger
 from .quality_estimator import adaptive_thresholds, measure_audio_quality
 from .renderer import generate_srt, generate_vtt
 from .sentence_splitter import split_sentences_v2
+from .timing import (
+    alignment_provider_status,
+    annotate_word_timing_sources,
+    build_timing_report,
+    detect_silence_gaps,
+)
 from .transcriber import transcribe_audio
 from .language_modes import CODE_MIXED_LANGUAGE_MODES, normalize_caption_text, normalize_language_mode
 from .transcript_normalizer import (
@@ -72,6 +78,10 @@ def run_pipeline(
 
         emit_progress("normalizing", 10, "Estimating audio quality.")
         metrics = measure_audio_quality(audio_path)
+        timing_provider_status = alignment_provider_status()
+        transcript_aligner = TranscriptAligner()
+        timing_provider_status["transcriptAligner"] = transcript_aligner.status()
+        vad_report = detect_silence_gaps(audio_path, min_silence=transcript_aligner.pause_threshold)
         adaptive_thresholds_dict = adaptive_thresholds(metrics["snr_db"], metrics["speech_rate"])
         logger.info(f"Adaptive Thresholds Applied: {adaptive_thresholds_dict}")
 
@@ -242,6 +252,19 @@ def run_pipeline(
 
             clamped_segments = normalize_aligned_segments(clamped_segments, language_mode)
 
+        emit_progress("normalizing", 88, "Optimizing word-level timestamps.")
+        try:
+            clamped_segments = transcript_aligner.optimize_segments(audio_path, clamped_segments, language_mode)
+        except Exception as exc:
+            logger.warning(
+                "Local timestamp optimization failed for %s: %s. Continuing with existing timestamps.",
+                audio_path,
+                exc,
+            )
+
+        clamped_segments = annotate_word_timing_sources(clamped_segments)
+        timing_report = build_timing_report(clamped_segments, vad_report.get("silenceGaps") or [])
+
         _stage_log("caption chunks generated", segment_count=len(clamped_segments))
         emit_progress("chunking", 92, "Preparing readable caption chunks.")
 
@@ -255,11 +278,27 @@ def run_pipeline(
         log_summary = pipeline_logger.get_summary()
         provider_name = ",".join(sorted(transcription_providers)) or "unknown"
         transcript = build_normalized_transcript(clamped_segments, language_mode, provider_name)
-        transcript["metadata"] = log_summary
+        transcript["metadata"] = {
+            **log_summary,
+            "audio": {
+                "sampleRate": 16000,
+                "channels": 1,
+                "format": "wav",
+                "extractedAudioPath": os.path.basename(audio_path),
+                "duration": vad_report.get("audioDuration"),
+            },
+            "timing": {
+                "alignment": timing_provider_status,
+                "vad": vad_report,
+                "report": timing_report,
+            },
+        }
         _stage_log(
             "transcript normalized",
             provider=provider_name,
             segment_count=len(transcript.get("segments") or []),
+            timing_sources=timing_report.get("timingSourceCounts"),
+            silence_gaps=timing_report.get("silenceGapCount"),
         )
 
         return {
@@ -269,7 +308,7 @@ def run_pipeline(
             "vtt": vtt_content,
             "segments": clamped_segments,
             "transcript": transcript,
-            "metrics": log_summary,
+            "metrics": transcript["metadata"],
         }
 
     except TranscriptValidationError as e:

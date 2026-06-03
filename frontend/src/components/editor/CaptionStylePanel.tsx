@@ -1,16 +1,121 @@
 "use client";
 
-import React, { useCallback } from "react";
-import { RotateCcw, Save, SlidersHorizontal } from "lucide-react";
-import { CREATOR_FONTS, DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG } from "@/lib/captionStyleConfig";
-import { CAPTION_PRESET_LIST, getCaptionPreset } from "@/lib/captionStylePresets";
-import { isCaptionLocked } from "@/lib/editorModel";
+import React, { useCallback, useState } from "react";
+import { Palette, RotateCcw, Type } from "lucide-react";
+import { alignedWordsToCaptions, captionsToTranscriptSegments, getAlignedWordsFromSegments, segmentsToCaptions } from "@/lib/captionUtils";
+import { validateCaptionCoverage } from "@/lib/captionCoverage";
+import { BUILD_BIG_FONT_SIZE_PX, BUILD_SMALL_FONT_SIZE_PX, CREATOR_FONTS, DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG } from "@/lib/captionStyleConfig";
+import { CAPTION_PRESET_LIST } from "@/lib/captionStylePresets";
+import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
 import { CaptionAlignment, CaptionEntranceAnimation, CaptionStyleConfig, CaptionStylePresetId, CaptionWordAnimation } from "@/lib/types";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { useTimelineStore } from "@/store/timelineStore";
 
-interface SliderProps {
+const SWATCHES = ["#000000", "#FFFFFF", "#FF5A5F", "#FFD43B", "#6CC24A", "#1687D9", "#A970FF"];
+const OUTLINE_OPTIONS = [
+  { label: "None", width: 0 },
+  { label: "Thin", width: 2 },
+  { label: "Medium", width: 5 },
+  { label: "Thick", width: 8 },
+];
+const ANIMATION_CARDS: {
+  label: string;
+  value: CaptionWordAnimation;
+  patch: Partial<CaptionStyleConfig>;
+  preview: "plain" | "highlight" | "paint";
+}[] = [
+  { label: "None", value: "none", preview: "plain", patch: { wordEffect: "none", animationType: "none", entranceAnimation: "none", activeWordBackgroundEnabled: false } },
+  { label: "Reveal", value: "pop", preview: "plain", patch: { wordEffect: "reveal", animationType: "none", entranceAnimation: "none", animationStrength: 0.45, activeWordBackgroundEnabled: false } },
+  { label: "Highlight", value: "pop", preview: "highlight", patch: { wordEffect: "highlight", animationType: "pop", entranceAnimation: "none", animationStrength: 0.9, activeWordBackgroundEnabled: true, activeWordBackgroundOpacity: 1, backgroundEnabled: false } },
+  { label: "Bounce", value: "bounce", preview: "plain", patch: { wordEffect: "bounce", animationType: "bounce", entranceAnimation: "none", animationStrength: 1, activeWordBackgroundEnabled: false } },
+  { label: "Paint", value: "pop", preview: "paint", patch: { wordEffect: "paint", animationType: "none", entranceAnimation: "none", animationStrength: 0.55, activeWordBackgroundEnabled: false } },
+  { label: "Pop", value: "pop", preview: "plain", patch: { wordEffect: "pop", animationType: "pop", entranceAnimation: "none", animationStrength: 1.2, activeWordBackgroundEnabled: false } },
+  { label: "Fade", value: "none", preview: "plain", patch: { wordEffect: "fade", animationType: "none", entranceAnimation: "fade", activeWordBackgroundEnabled: false } },
+];
+const TRANSITION_CARDS: {
+  label: string;
+  value: CaptionEntranceAnimation;
+  preview: "none" | "fade" | "flip" | "pop" | "slide";
+}[] = [
+  { label: "None", value: "none", preview: "none" },
+  { label: "Fade", value: "fade", preview: "fade" },
+  { label: "Flip", value: "blur_fade", preview: "flip" },
+  { label: "Pop", value: "pop", preview: "pop" },
+  { label: "Slide", value: "slide_up", preview: "slide" },
+];
+const MAX_LINE_OPTIONS: { label: string; value: CaptionStyleConfig["maxLines"] }[] = [
+  { label: "Auto", value: "auto" },
+  { label: "1 line", value: 1 },
+  { label: "2 lines", value: 2 },
+  { label: "3 lines", value: 3 },
+];
+const BUILD_LAYOUT_OPTIONS: { label: string; value: NonNullable<CaptionStyleConfig["layoutMode"]> }[] = [
+  { label: "Auto", value: "auto" },
+  { label: "Center", value: "center_anchor" },
+  { label: "Left Anchor", value: "left_anchor" },
+  { label: "Right Anchor", value: "right_anchor" },
+];
+
+function chunkingPatchForMaxLines(maxLines: CaptionStyleConfig["maxLines"], currentMaxChars: number) {
+  const safeChars = Math.max(18, Math.min(160, Math.round(currentMaxChars)));
+
+  const wordBudget = (maxChars: number, minTarget = 2) => {
+    const targetWordsPerCaption = Math.max(minTarget, Math.min(18, Math.round(maxChars / 8)));
+    return {
+      targetWordsPerCaption,
+      maxWordsPerCaption: Math.max(targetWordsPerCaption + 2, Math.min(22, Math.round(maxChars / 6))),
+    };
+  };
+
+  if (maxLines === 1) {
+    return {
+      maxCharsPerCaption: Math.min(safeChars, 34),
+      targetWordsPerCaption: 3,
+      maxWordsPerCaption: 4,
+      maxCaptionDuration: 2.2,
+    };
+  }
+  if (maxLines === 2) {
+    const maxChars = Math.min(Math.max(safeChars, 24), 90);
+    return {
+      maxCharsPerCaption: maxChars,
+      ...wordBudget(maxChars, 3),
+      maxCaptionDuration: maxChars >= 72 ? 6.5 : maxChars >= 56 ? 5.2 : 3.6,
+    };
+  }
+  if (maxLines === 3) {
+    const maxChars = Math.min(Math.max(safeChars, 40), 120);
+    return {
+      maxCharsPerCaption: maxChars,
+      ...wordBudget(maxChars, 5),
+      maxCaptionDuration: maxChars >= 90 ? 8.0 : 6.5,
+    };
+  }
+  return {};
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-3 border-b pb-4" style={{ borderColor: "var(--border)" }}>
+      <div className="text-[11px] font-bold uppercase" style={{ color: "var(--text-primary)" }}>
+        {title}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SliderControl({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  suffix = "",
+  disabled,
+  onChange,
+}: {
   label: string;
   value: number;
   min: number;
@@ -19,15 +124,13 @@ interface SliderProps {
   suffix?: string;
   disabled?: boolean;
   onChange: (value: number) => void;
-}
-
-function SliderControl({ label, value, min, max, step = 1, suffix = "", disabled = false, onChange }: SliderProps) {
+}) {
   return (
     <label className="grid gap-1">
-      <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-muted)" }}>
+      <span className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }}>
         <span>{label}</span>
         <span>{Number(value).toFixed(step < 1 ? 2 : 0)}{suffix}</span>
-      </div>
+      </span>
       <input
         type="range"
         min={min}
@@ -35,104 +138,116 @@ function SliderControl({ label, value, min, max, step = 1, suffix = "", disabled
         step={step}
         value={value}
         disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-[var(--accent)]"
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="accent-[var(--accent)]"
       />
     </label>
   );
 }
 
-function ColorControl({
-  label,
+function ColorInput({
   value,
-  disabled = false,
+  disabled,
   onChange,
 }: {
-  label: string;
   value: string;
   disabled?: boolean;
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-      <span>{label}</span>
-      <input
-        type="color"
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-7 w-10 rounded border-0 bg-transparent"
-      />
-    </label>
-  );
-}
-
-function ToggleControl({
-  label,
-  checked,
-  disabled = false,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-      <span>{label}</span>
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-3.5 w-3.5 accent-[var(--accent)]"
-      />
-    </label>
-  );
-}
-
-function SelectControl<T extends string>({
-  label,
-  value,
-  options,
-  disabled = false,
-  onChange,
-}: {
-  label: string;
-  value: T;
-  options: readonly T[];
-  disabled?: boolean;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-      <span>{label}</span>
-      <select
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value as T)}
-        className="w-full rounded border-0 px-2 py-1 text-xs outline-none"
-        style={{ background: "var(--bg-panel-dark)", color: "var(--text-primary)" }}
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option.replace("_", " ")}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-2 pt-2">
-      <div className="text-[10px] font-semibold uppercase" style={{ color: "var(--text-muted)" }}>
-        {title}
+    <div className="grid gap-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-8 w-10 rounded border-0 bg-transparent"
+        />
+        <input
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          className="control-input h-8 min-h-0 flex-1 py-1 text-xs"
+        />
       </div>
-      {children}
+      <div className="flex flex-wrap gap-2">
+        {SWATCHES.map((swatch) => (
+          <button
+            key={swatch}
+            type="button"
+            disabled={disabled}
+            className="h-5 w-5 rounded border"
+            style={{ background: swatch, borderColor: value.toUpperCase() === swatch ? "var(--accent)" : "var(--border)" }}
+            title={swatch}
+            onClick={() => onChange(swatch)}
+          />
+        ))}
+      </div>
     </div>
+  );
+}
+
+function PreviewCard({
+  label,
+  selected,
+  disabled,
+  activeColor,
+  mode,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  disabled?: boolean;
+  activeColor: string;
+  mode: "plain" | "highlight" | "paint" | "none" | "fade" | "flip" | "pop" | "slide";
+  onClick: () => void;
+}) {
+  const words = ["YOUR", "SUBTITLES", "HERE"];
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="grid gap-1 text-center"
+      title={label}
+      style={{ opacity: disabled ? 0.45 : 1 }}
+    >
+      <div
+        className="grid aspect-square place-items-center rounded"
+        style={{
+          background: selected ? "rgba(169,112,255,0.18)" : "#242424",
+          border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
+          boxShadow: selected ? "var(--shadow-hard-small)" : "none",
+          filter: mode === "fade" ? "blur(3px)" : "none",
+          transform: mode === "flip" ? "perspective(180px) rotateY(-18deg)" : mode === "pop" ? "scale(1.04)" : "none",
+        }}
+      >
+        <div
+          className="text-[15px] font-black leading-[1.08]"
+          style={{
+            color: "#fff",
+            textShadow: "0 2px 0 #000",
+            transform: mode === "slide" ? "translateY(-5px)" : "none",
+          }}
+        >
+          {words.map((word, index) => (
+            <div key={word}>
+              <span
+                style={{
+                  color: mode === "paint" && index < 2 ? activeColor : "#fff",
+                  background: mode === "highlight" && index === 1 ? activeColor : "transparent",
+                  padding: mode === "highlight" && index === 1 ? "0 3px" : 0,
+                }}
+              >
+                {word}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <span className="text-xs" style={{ color: "var(--text-primary)" }}>{label}</span>
+    </button>
   );
 }
 
@@ -142,14 +257,28 @@ export default function CaptionStylePanel() {
     theme,
     setCaptionStyleConfig,
     resetCaptionStyleConfig,
-    saveCaptionPreset,
     applyCaptionStylePreset,
-    savedCaptionPresets,
+    captionChunkingConfig,
+    setCaptionChunkingConfig,
+    captionCharsPerSubtitle,
+    captionTimingConfig,
+    setCaptionNeedsRebuild,
+    setLeftSidebarTab,
+    activeMediaId,
+    language,
+    transcriptSegments,
+    setTranscriptSegments,
   } = useEditorStore();
   const captions = useCaptionStore((s) => s.captions);
+  const captionDocument = useCaptionStore((s) => s.captionDocument);
   const selectedIds = useCaptionStore((s) => s.selectedIds);
+  const setCaptions = useCaptionStore((s) => s.setCaptions);
+  const setCaptionDocument = useCaptionStore((s) => s.setCaptionDocument);
+  const setCaptionCoverageReport = useCaptionStore((s) => s.setCaptionCoverageReport);
   const setThemeForAll = useCaptionStore((s) => s.setThemeForAll);
   const tracks = useTimelineStore((s) => s.tracks);
+  const [maxLinesNotice, setMaxLinesNotice] = useState("");
+  const isBuildPreset = theme === "modern_minimalist_lockup";
 
   const locked =
     captions.some((caption) => selectedIds.has(caption.id) && isCaptionLocked(caption, tracks)) ||
@@ -172,215 +301,432 @@ export default function CaptionStylePanel() {
     [applyCaptionStylePreset, locked, setThemeForAll]
   );
 
+  const updateMaxLines = useCallback(
+    (maxLines: CaptionStyleConfig["maxLines"]) => {
+      update({ maxLines });
+      setCaptionChunkingConfig({
+        ...captionChunkingConfig,
+        ...chunkingPatchForMaxLines(maxLines, captionCharsPerSubtitle),
+      });
+      if (captions.length) {
+        setCaptionNeedsRebuild(true);
+        setMaxLinesNotice("Max lines changed. Rebuild subtitles for best results.");
+      }
+    },
+    [captionCharsPerSubtitle, captionChunkingConfig, captions.length, setCaptionChunkingConfig, setCaptionNeedsRebuild, update]
+  );
+
+  const rebuildForMaxLines = useCallback(() => {
+    const sourceSegments =
+      captionDocument?.transcript?.segments?.length ? captionDocument.transcript.segments : transcriptSegments.length ? transcriptSegments : captionsToTranscriptSegments(captions);
+    const originalAlignedWords = captionDocument?.originalAlignedWords?.length
+      ? captionDocument.originalAlignedWords
+      : getAlignedWordsFromSegments(sourceSegments).length
+      ? getAlignedWordsFromSegments(sourceSegments)
+      : getAlignedWordsFromSegments(captionsToTranscriptSegments(captions));
+    if (!sourceSegments.length && !originalAlignedWords.length) {
+      setMaxLinesNotice("Generate subtitles first before rebuilding.");
+      setLeftSidebarTab("subtitles");
+      return;
+    }
+
+    const config = {
+      ...captionChunkingConfig,
+      ...chunkingPatchForMaxLines(captionStyleConfig.maxLines, captionCharsPerSubtitle),
+    };
+    setCaptionChunkingConfig(config);
+    if (!transcriptSegments.length) {
+      setTranscriptSegments(sourceSegments);
+    }
+    const rebuilt = (originalAlignedWords.length
+      ? alignedWordsToCaptions(originalAlignedWords, language, theme, config)
+      : segmentsToCaptions(sourceSegments, language, theme, config)
+    ).map((caption) => ({
+        ...caption,
+        trackId: defaultCaptionTrackId(tracks),
+        sourceMediaId: activeMediaId || undefined,
+      }));
+    const coverageReport = validateCaptionCoverage(rebuilt, originalAlignedWords);
+    setCaptions(rebuilt);
+    setCaptionDocument({
+      id: captionDocument?.id || `caption_document_${Date.now()}`,
+      name: captionDocument?.name || "Generated captions",
+      sourceMediaId: activeMediaId || captionDocument?.sourceMediaId,
+      languageMode: language,
+      transcript: { segments: sourceSegments, metadata: captionDocument?.transcript?.metadata },
+      originalAlignedWords,
+      chunks: rebuilt,
+      style: captionStyleConfig,
+      chunkingConfig: config,
+      timingConfig: captionTimingConfig,
+      coverageReport,
+    });
+    setCaptionCoverageReport(coverageReport);
+    setCaptionNeedsRebuild(false);
+    setMaxLinesNotice("");
+    setLeftSidebarTab("subtitles");
+  }, [
+    activeMediaId,
+    captionChunkingConfig,
+    captionCharsPerSubtitle,
+    captionDocument,
+    captionStyleConfig,
+    captions,
+    captionTimingConfig,
+    language,
+    setCaptionChunkingConfig,
+    setCaptionCoverageReport,
+    setCaptionDocument,
+    setCaptionNeedsRebuild,
+    setCaptions,
+    setLeftSidebarTab,
+    setTranscriptSegments,
+    theme,
+    tracks,
+    transcriptSegments,
+  ]);
+
+  const outlineLabel = OUTLINE_OPTIONS.find((option) => option.width === captionStyleConfig.textStrokeWidth)?.label || "Custom";
+
   return (
-    <div className="h-full space-y-3 overflow-y-auto p-2">
-      <div className="flex items-center gap-2">
-        <SlidersHorizontal size={14} style={{ color: "var(--accent)" }} />
-        <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+    <div className="flex h-full flex-col">
+      <div className="panel-header justify-between">
+        <span className="flex items-center gap-2">
+          <Palette size={14} style={{ color: "var(--accent)" }} />
           Caption Style
         </span>
-        <div className="flex-1" />
         <button
-          className="p-1 rounded hover:bg-white/10"
-          title="Reset to default style"
+          className="icon-button"
+          title="Reset style"
           disabled={locked}
           onClick={() => {
             resetCaptionStyleConfig();
             setThemeForAll("word_highlight_box");
           }}
         >
-          <RotateCcw size={13} style={{ color: "var(--text-muted)" }} />
-        </button>
-        <button
-          className="p-1 rounded hover:bg-white/10"
-          title="Save as preset"
-          disabled={locked}
-          onClick={() => saveCaptionPreset(`Preset ${savedCaptionPresets.length + 1}`)}
-        >
-          <Save size={13} style={{ color: "var(--text-muted)" }} />
+          <RotateCcw size={14} />
         </button>
       </div>
 
-      {locked && (
-        <div className="rounded px-2 py-1.5 text-[10px]" style={{ background: "rgba(255, 212, 59, 0.12)", color: "#ffd36b", border: "1px solid rgba(255, 212, 59, 0.22)" }}>
-          Unlock the caption track to edit caption styling.
-        </div>
-      )}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+        {locked && (
+          <div className="editor-notice">
+            Unlock the caption track to edit subtitle styling.
+          </div>
+        )}
 
-      <div className="grid grid-cols-2 gap-2">
-        {CAPTION_PRESET_LIST.map((preset) => (
-          <button
-            key={preset.id}
-            className={theme === preset.id ? "btn-primary text-xs" : "btn-ghost text-xs"}
-            disabled={locked}
-            onClick={() => applyPreset(preset.id)}
-            title={getCaptionPreset(preset.id).description}
-          >
-            {preset.name.replace(" Style", "").replace(" Cinematic", "")}
-          </button>
-        ))}
-      </div>
-
-      <Section title="Text">
-        <SelectControl
-          label="Font family"
-          value={captionStyleConfig.fontFamily}
-          options={CREATOR_FONTS}
-          disabled={locked}
-          onChange={(fontFamily) => update({ fontFamily })}
-        />
-        <div className="grid grid-cols-2 gap-2">
-          <SelectControl
-            label="Font weight"
-            value={String(captionStyleConfig.fontWeight)}
-            options={["400", "500", "600", "700", "800", "900"]}
-            disabled={locked}
-            onChange={(fontWeight) => update({ fontWeight: Number(fontWeight) })}
-          />
-          <SelectControl
-            label="Case"
-            value={captionStyleConfig.textTransform}
-            options={["none", "uppercase"]}
-            disabled={locked}
-            onChange={(textTransform) => update({ textTransform })}
-          />
-        </div>
-        <SliderControl disabled={locked} label="Font size" value={captionStyleConfig.fontSize} min={0} max={144} onChange={(fontSize) => update({ fontSize })} />
-        <SliderControl disabled={locked} label="Letter spacing" value={captionStyleConfig.letterSpacing} min={-2} max={8} step={0.1} onChange={(letterSpacing) => update({ letterSpacing })} />
-        <SliderControl disabled={locked} label="Line height" value={captionStyleConfig.lineHeight} min={0.9} max={1.6} step={0.01} onChange={(lineHeight) => update({ lineHeight })} />
-        <ColorControl disabled={locked} label="Text color" value={captionStyleConfig.textColor} onChange={(textColor) => update({ textColor })} />
-        <ToggleControl disabled={locked} label="Text shadow" checked={captionStyleConfig.textShadowEnabled} onChange={(textShadowEnabled) => update({ textShadowEnabled })} />
-      </Section>
-
-      <Section title="Highlight">
-        <ColorControl disabled={locked} label="Active word" value={captionStyleConfig.activeWordColor} onChange={(activeWordColor) => update({ activeWordColor })} />
-        <SliderControl disabled={locked} label="Active scale" value={captionStyleConfig.activeWordScale} min={1} max={1.16} step={0.01} onChange={(activeWordScale) => update({ activeWordScale })} />
-        <SliderControl disabled={locked} label="Strength" value={captionStyleConfig.animationStrength} min={0} max={1.4} step={0.05} onChange={(animationStrength) => update({ animationStrength })} />
-        <SliderControl disabled={locked} label="Smoothness" value={captionStyleConfig.animationSmoothness} min={0} max={1} step={0.05} onChange={(animationSmoothness) => update({ animationSmoothness })} />
-        <ToggleControl disabled={locked} label="Glow" checked={captionStyleConfig.activeWordGlow} onChange={(activeWordGlow) => update({ activeWordGlow })} />
-        <ToggleControl disabled={locked} label="Active word background" checked={captionStyleConfig.activeWordBackgroundEnabled} onChange={(activeWordBackgroundEnabled) => update({ activeWordBackgroundEnabled })} />
-        <ColorControl disabled={locked} label="Active bg color" value={captionStyleConfig.activeWordBackgroundColor} onChange={(activeWordBackgroundColor) => update({ activeWordBackgroundColor })} />
-      </Section>
-
-      {theme === "mrbeast_style" && (
-        <Section title="MrBeast Controls">
-          <ToggleControl disabled={locked} label="Random tilt" checked={Boolean(captionStyleConfig.randomTiltEnabled)} onChange={(randomTiltEnabled) => update({ randomTiltEnabled })} />
-          <ToggleControl disabled={locked} label="Smart colors" checked={Boolean(captionStyleConfig.smartHighlightEnabled)} onChange={(smartHighlightEnabled) => update({ smartHighlightEnabled })} />
-          <ColorControl disabled={locked} label="Money / winning" value={captionStyleConfig.emphasisGreenColor || "#00FF00"} onChange={(emphasisGreenColor) => update({ emphasisGreenColor })} />
-          <ColorControl disabled={locked} label="Shock / now" value={captionStyleConfig.emphasisYellowColor || "#FFFF00"} onChange={(emphasisYellowColor) => update({ emphasisYellowColor })} />
-          <ColorControl disabled={locked} label="Danger / wrong" value={captionStyleConfig.emphasisRedColor || "#FF0000"} onChange={(emphasisRedColor) => update({ emphasisRedColor })} />
-        </Section>
-      )}
-
-      {theme === "apple_cinematic" && (
-        <Section title="Apple Reveal">
-          <SliderControl disabled={locked} label="Reveal duration" value={captionStyleConfig.revealDuration || 0.32} min={0.08} max={0.9} step={0.01} suffix="s" onChange={(revealDuration) => update({ revealDuration })} />
-          <SliderControl disabled={locked} label="Y movement" value={captionStyleConfig.revealYOffset || 30} min={0} max={80} suffix="px" onChange={(revealYOffset) => update({ revealYOffset })} />
-          <SliderControl disabled={locked} label="Blur amount" value={captionStyleConfig.revealBlur || 25} min={0} max={40} suffix="px" onChange={(revealBlur) => update({ revealBlur })} />
-          <SliderControl disabled={locked} label="Phrase hold" value={captionStyleConfig.phraseHoldDuration || 0.2} min={0} max={2} step={0.05} suffix="s" onChange={(phraseHoldDuration) => update({ phraseHoldDuration })} />
-        </Section>
-      )}
-
-      {theme === "modern_minimalist_lockup" && (
-        <Section title="Build Controls">
-          <SliderControl disabled={locked} label="Phrase width" value={captionStyleConfig.maxWidth} min={60} max={86} suffix="%" onChange={(maxWidth) => update({ maxWidth })} />
-          <SliderControl disabled={locked} label="Line tightness" value={captionStyleConfig.lineHeight} min={0.9} max={1.05} step={0.01} onChange={(lineHeight) => update({ lineHeight })} />
-          <SelectControl<CaptionEntranceAnimation>
-            label="Word entrance"
-            value={captionStyleConfig.entranceAnimation}
-            options={["hard_cut", "fade", "slide_up", "pop", "blur_fade"]}
-            disabled={locked}
-            onChange={(entranceAnimation) => update({ entranceAnimation })}
-          />
-        </Section>
-      )}
-
-      <Section title="Background">
-        <ToggleControl disabled={locked} label="Enabled" checked={captionStyleConfig.backgroundEnabled} onChange={(backgroundEnabled) => update({ backgroundEnabled })} />
-        <ColorControl disabled={locked} label="Color" value={captionStyleConfig.backgroundColor} onChange={(backgroundColor) => update({ backgroundColor })} />
-        <SliderControl disabled={locked} label="Opacity" value={captionStyleConfig.backgroundOpacity} min={0} max={1} step={0.01} onChange={(backgroundOpacity) => update({ backgroundOpacity })} />
-        <SliderControl disabled={locked} label="Radius" value={captionStyleConfig.borderRadius} min={0} max={36} onChange={(borderRadius) => update({ borderRadius })} />
-        <SliderControl disabled={locked} label="Padding X" value={captionStyleConfig.paddingX} min={6} max={48} onChange={(paddingX) => update({ paddingX })} />
-        <SliderControl disabled={locked} label="Padding Y" value={captionStyleConfig.paddingY} min={4} max={32} onChange={(paddingY) => update({ paddingY })} />
-        <ToggleControl disabled={locked} label="Shadow" checked={captionStyleConfig.backgroundShadow} onChange={(backgroundShadow) => update({ backgroundShadow })} />
-      </Section>
-
-      <Section title="Universal Border & Shadow">
-        <ToggleControl disabled={locked} label="Text stroke" checked={captionStyleConfig.textStrokeEnabled} onChange={(textStrokeEnabled) => update({ textStrokeEnabled })} />
-        <ColorControl disabled={locked} label="Stroke color" value={captionStyleConfig.textStrokeColor} onChange={(textStrokeColor) => update({ textStrokeColor })} />
-        <SliderControl disabled={locked} label="Stroke width" value={captionStyleConfig.textStrokeWidth} min={0} max={8} step={0.25} onChange={(textStrokeWidth) => update({ textStrokeWidth })} />
-        <ColorControl disabled={locked} label="Shadow color" value={captionStyleConfig.textShadowColor} onChange={(textShadowColor) => update({ textShadowColor })} />
-        <SliderControl disabled={locked} label="Shadow opacity" value={captionStyleConfig.textShadowOpacity} min={0} max={1} step={0.05} onChange={(textShadowOpacity) => update({ textShadowOpacity })} />
-        <SliderControl disabled={locked} label="Shadow blur" value={captionStyleConfig.textShadowBlur} min={0} max={24} onChange={(textShadowBlur) => update({ textShadowBlur })} />
-        <ToggleControl disabled={locked} label="Background border" checked={captionStyleConfig.backgroundBorderEnabled} onChange={(backgroundBorderEnabled) => update({ backgroundBorderEnabled })} />
-        <ColorControl disabled={locked} label="Border color" value={captionStyleConfig.backgroundBorderColor} onChange={(backgroundBorderColor) => update({ backgroundBorderColor })} />
-        <SliderControl disabled={locked} label="Border width" value={captionStyleConfig.backgroundBorderWidth} min={0} max={8} step={0.25} onChange={(backgroundBorderWidth) => update({ backgroundBorderWidth })} />
-      </Section>
-
-      <Section title="Position">
-        <SliderControl disabled={locked} label="X position" value={captionStyleConfig.positionX} min={0} max={100} suffix="%" onChange={(positionX) => update({ positionX })} />
-        <SliderControl disabled={locked} label="Y position" value={captionStyleConfig.positionY} min={0} max={100} suffix="%" onChange={(positionY) => update({ positionY })} />
-        <SliderControl disabled={locked} label="Caption scale" value={captionStyleConfig.scale} min={0} max={3} step={0.01} onChange={(scale) => update({ scale })} />
-        <SliderControl disabled={locked} label="Rotation" value={captionStyleConfig.rotation} min={-180} max={180} onChange={(rotation) => update({ rotation })} />
-        <SliderControl disabled={locked} label="Layer opacity" value={captionStyleConfig.opacity} min={0} max={1} step={0.01} onChange={(opacity) => update({ opacity })} />
-        <SliderControl disabled={locked} label="Max width" value={captionStyleConfig.maxWidth} min={45} max={96} suffix="%" onChange={(maxWidth) => update({ maxWidth })} />
-        <div className="grid grid-cols-2 gap-2">
-          <SelectControl<CaptionAlignment>
-            label="Alignment"
-            value={captionStyleConfig.alignment}
-            options={["left", "center", "right"]}
-            disabled={locked}
-            onChange={(alignment) => update({ alignment })}
-          />
-          <ToggleControl disabled={locked} label="Safe area" checked={captionStyleConfig.safeAreaEnabled} onChange={(safeAreaEnabled) => update({ safeAreaEnabled })} />
-        </div>
-      </Section>
-
-      <Section title="Animation">
-        <div className="grid grid-cols-2 gap-2">
-          <SelectControl<CaptionWordAnimation>
-            label="Word motion"
-            value={captionStyleConfig.animationType}
-            options={["none", "pop", "bounce"]}
-            disabled={locked}
-            onChange={(animationType) => update({ animationType })}
-          />
-          <SelectControl<CaptionEntranceAnimation>
-            label="Entrance"
-            value={captionStyleConfig.entranceAnimation}
-            options={["none", "hard_cut", "fade", "pop", "slide_up", "blur_fade"]}
-            disabled={locked}
-            onChange={(entranceAnimation) => update({ entranceAnimation })}
-          />
-        </div>
-        <SliderControl disabled={locked} label="Speed" value={captionStyleConfig.animationSpeed} min={0.4} max={2} step={0.05} onChange={(animationSpeed) => update({ animationSpeed })} />
-      </Section>
-
-      {savedCaptionPresets.length > 0 && (
-        <Section title="Saved Presets">
-          <div className="grid grid-cols-2 gap-1">
-            {savedCaptionPresets.map((preset, index) => (
+        <Section title="Preset">
+          <div className="grid grid-cols-2 gap-2">
+            {CAPTION_PRESET_LIST.map((preset) => (
               <button
-                key={`${preset.presetName}-${index}`}
-                className="btn-ghost truncate"
+                key={preset.id}
+                className={theme === preset.id ? "btn-primary text-xs" : "btn-ghost text-xs"}
                 disabled={locked}
-                onClick={() => update(preset)}
-                title={preset.presetName}
+                onClick={() => applyPreset(preset.id)}
+                title={preset.description}
               >
-                {preset.presetName}
+                {preset.name.replace(" Style", "").replace(" Cinematic", "").replace("Modern Minimalist ", "")}
               </button>
             ))}
           </div>
         </Section>
-      )}
 
-      <button
-        className="btn-ghost w-full"
-        disabled={locked}
-        onClick={() => update(DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG)}
-      >
-        Reset Defaults
-      </button>
+        <Section title="Text">
+          <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <span>Font</span>
+            <select
+              className="control-input"
+              value={captionStyleConfig.fontFamily}
+              disabled={locked}
+              onChange={(event) => update({ fontFamily: event.target.value })}
+            >
+              {CREATOR_FONTS.map((font) => (
+                <option key={font} value={font}>{font}</option>
+              ))}
+            </select>
+          </label>
+
+          <div className="grid grid-cols-3 gap-2">
+            {[600, 800, 900].map((weight) => (
+              <button
+                key={weight}
+                className={Number(captionStyleConfig.fontWeight) === weight ? "btn-primary" : "btn-ghost"}
+                disabled={locked}
+                onClick={() => update({ fontWeight: weight })}
+              >
+                <Type size={13} />
+                {weight}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {(["left", "center", "right"] as CaptionAlignment[]).map((alignment) => (
+              <button
+                key={alignment}
+                className={captionStyleConfig.alignment === alignment ? "btn-primary" : "btn-ghost"}
+                disabled={locked}
+                onClick={() => update({ alignment })}
+              >
+                {alignment}
+              </button>
+            ))}
+          </div>
+
+          {!isBuildPreset && (
+            <>
+              <SliderControl disabled={locked} label="Font size" value={captionStyleConfig.fontSize} min={8} max={120} onChange={(fontSize) => update({ fontSize })} />
+              <SliderControl disabled={locked} label="Line height" value={captionStyleConfig.lineHeight} min={0.9} max={1.6} step={0.05} suffix="x" onChange={(lineHeight) => update({ lineHeight })} />
+              <div className="grid gap-2">
+                <span className="text-[11px]" style={{ color: "var(--text-muted)" }} title="Controls how many lines subtitles can use. 1 line keeps captions on one line by shortening chunks. 2 lines is best for reels. Auto lets the app decide.">
+                  Max lines
+                </span>
+                <div className="grid grid-cols-4 gap-1">
+                  {MAX_LINE_OPTIONS.map((option) => (
+                    <button
+                      key={option.label}
+                      className={captionStyleConfig.maxLines === option.value ? "btn-primary px-1 text-[10px]" : "btn-ghost px-1 text-[10px]"}
+                      disabled={locked}
+                      onClick={() => updateMaxLines(option.value)}
+                      title="Controls how many lines subtitles can use."
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {maxLinesNotice && (
+                  <div className="editor-notice flex items-center justify-between gap-2">
+                    <span>{maxLinesNotice}</span>
+                    <button
+                      className="text-xs font-bold"
+                      onClick={rebuildForMaxLines}
+                    >
+                      Rebuild
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+          <ColorInput disabled={locked} value={captionStyleConfig.textColor} onChange={(textColor) => update({ textColor })} />
+        </Section>
+
+        <Section title="Background">
+          <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }} title="Adds a box behind subtitles to improve readability.">
+            <span>Enabled</span>
+            <input
+              type="checkbox"
+              checked={captionStyleConfig.backgroundEnabled}
+              disabled={locked}
+              onChange={(event) => update({ backgroundEnabled: event.target.checked })}
+            />
+          </label>
+          <ColorInput disabled={locked || !captionStyleConfig.backgroundEnabled} value={captionStyleConfig.backgroundColor} onChange={(backgroundColor) => update({ backgroundColor })} />
+          <button
+            className="btn-ghost w-full"
+            disabled={locked}
+            onClick={() => update({ backgroundEnabled: false, backgroundOpacity: 0 })}
+          >
+            Transparent / No Background
+          </button>
+          <div className="grid grid-cols-2 gap-2">
+            {(["wrap", "fill"] as const).map((fit) => (
+              <button
+                key={fit}
+                className={captionStyleConfig.backgroundFit === fit ? "btn-primary" : "btn-ghost"}
+                disabled={locked || !captionStyleConfig.backgroundEnabled}
+                onClick={() => update({ backgroundFit: fit })}
+                title={fit === "wrap" ? "Background fits tightly around the subtitle text." : "Background stretches wider behind the subtitle block."}
+              >
+                {fit === "wrap" ? "Wrap" : "Fill"}
+              </button>
+            ))}
+          </div>
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundEnabled} label="Opacity" value={captionStyleConfig.backgroundOpacity} min={0} max={1} step={0.05} suffix="" onChange={(backgroundOpacity) => update({ backgroundOpacity })} />
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundEnabled} label="Corners" value={captionStyleConfig.borderRadius} min={0} max={36} suffix="px" onChange={(borderRadius) => update({ borderRadius })} />
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundEnabled} label="Padding" value={captionStyleConfig.paddingX} min={0} max={48} suffix="px" onChange={(padding) => update({ paddingX: padding, paddingY: Math.max(0, Math.round(padding * 0.58)) })} />
+        </Section>
+
+        <Section title="Border">
+          <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }} title="Adds an outline around the subtitle background box.">
+            <span>Background Border</span>
+            <input
+              type="checkbox"
+              checked={captionStyleConfig.backgroundBorderEnabled}
+              disabled={locked || !captionStyleConfig.backgroundEnabled}
+              onChange={(event) => update({ backgroundBorderEnabled: event.target.checked, backgroundBorderWidth: event.target.checked ? 2 : 0 })}
+            />
+          </label>
+          <ColorInput disabled={locked || !captionStyleConfig.backgroundBorderEnabled} value={captionStyleConfig.backgroundBorderColor} onChange={(backgroundBorderColor) => update({ backgroundBorderColor })} />
+        </Section>
+
+        <Section title="Text Outline">
+          <div className="grid grid-cols-2 gap-2">
+            {OUTLINE_OPTIONS.map((option) => (
+              <button
+                key={option.label}
+                className={outlineLabel === option.label ? "btn-primary" : "btn-ghost"}
+                disabled={locked}
+                onClick={() => update({ textStrokeEnabled: option.width > 0, textStrokeWidth: option.width })}
+                title="Adds an outline around subtitle letters to make text readable on any video."
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <ColorInput disabled={locked || !captionStyleConfig.textStrokeEnabled} value={captionStyleConfig.textStrokeColor} onChange={(textStrokeColor) => update({ textStrokeColor })} />
+        </Section>
+
+        <Section title="Shadow">
+          <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <span>Text Shadow</span>
+            <input
+              type="checkbox"
+              checked={captionStyleConfig.textShadowEnabled}
+              disabled={locked}
+              onChange={(event) => update({ textShadowEnabled: event.target.checked })}
+            />
+          </label>
+          <ColorInput disabled={locked || !captionStyleConfig.textShadowEnabled} value={captionStyleConfig.textShadowColor} onChange={(textShadowColor) => update({ textShadowColor })} />
+          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text opacity" value={captionStyleConfig.textShadowOpacity} min={0} max={1} step={0.05} suffix="" onChange={(textShadowOpacity) => update({ textShadowOpacity })} />
+          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text blur" value={captionStyleConfig.textShadowBlur} min={0} max={24} suffix="px" onChange={(textShadowBlur) => update({ textShadowBlur })} />
+          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text distance" value={captionStyleConfig.textShadowDistance} min={0} max={24} suffix="px" onChange={(textShadowDistance) => update({ textShadowDistance })} />
+          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text angle" value={captionStyleConfig.textShadowAngle} min={0} max={360} suffix="deg" onChange={(textShadowAngle) => update({ textShadowAngle })} />
+
+          <label className="mt-1 flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <span>Background Shadow</span>
+            <input
+              type="checkbox"
+              checked={captionStyleConfig.backgroundShadow}
+              disabled={locked}
+              onChange={(event) => update({ backgroundShadow: event.target.checked })}
+            />
+          </label>
+          {!captionStyleConfig.backgroundEnabled && (
+            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              Background shadow is visible only when Background is enabled.
+            </div>
+          )}
+          <ColorInput disabled={locked || !captionStyleConfig.backgroundShadow} value={captionStyleConfig.backgroundShadowColor} onChange={(backgroundShadowColor) => update({ backgroundShadowColor })} />
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background opacity" value={captionStyleConfig.backgroundShadowOpacity} min={0} max={1} step={0.05} suffix="" onChange={(backgroundShadowOpacity) => update({ backgroundShadowOpacity })} />
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background blur" value={captionStyleConfig.backgroundShadowBlur} min={0} max={60} suffix="px" onChange={(backgroundShadowBlur) => update({ backgroundShadowBlur })} />
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background distance" value={captionStyleConfig.backgroundShadowDistance} min={0} max={36} suffix="px" onChange={(backgroundShadowDistance) => update({ backgroundShadowDistance })} />
+          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background angle" value={captionStyleConfig.backgroundShadowAngle} min={0} max={360} suffix="deg" onChange={(backgroundShadowAngle) => update({ backgroundShadowAngle })} />
+        </Section>
+
+        {!isBuildPreset && (
+          <Section title="Animations">
+            <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              <span>{captionStyleConfig.wordEffect === "highlight" ? "Highlight Color" : "Active Text Color"}</span>
+              <ColorInput
+                disabled={locked}
+                value={captionStyleConfig.activeWordColor}
+                onChange={(activeWordColor) => update({
+                  activeWordColor,
+                  ...(captionStyleConfig.wordEffect === "highlight" ? { activeWordBackgroundColor: activeWordColor } : {}),
+                })}
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              {ANIMATION_CARDS.map((card) => {
+                const selected = captionStyleConfig.wordEffect === card.patch.wordEffect;
+                return (
+                  <PreviewCard
+                    key={card.label}
+                    label={card.label}
+                    selected={selected}
+                    disabled={locked}
+                    activeColor={captionStyleConfig.activeWordColor}
+                    mode={card.preview}
+                    onClick={() => update({
+                      ...card.patch,
+                      ...(card.patch.wordEffect === "highlight" ? { activeWordBackgroundColor: captionStyleConfig.activeWordColor } : {}),
+                    })}
+                  />
+                );
+              })}
+            </div>
+          </Section>
+        )}
+
+        {isBuildPreset && (
+          <>
+            <Section title="Build Font Sizes">
+              <SliderControl disabled={locked} label="Big word size" value={captionStyleConfig.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX} min={80} max={400} step={1} suffix="px" onChange={(bigFontSizePx) => update({ bigFontSizePx })} />
+              <SliderControl disabled={locked} label="Small word size" value={captionStyleConfig.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX} min={20} max={160} step={1} suffix="px" onChange={(smallFontSizePx) => update({ smallFontSizePx })} />
+            </Section>
+
+            <Section title="Editorial Layout">
+              <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span>Layout</span>
+                <select
+                  className="control-input"
+                  value={(captionStyleConfig.layoutMode || "auto") as string}
+                  disabled={locked}
+                  onChange={(event) => update({ layoutMode: event.target.value as CaptionStyleConfig["layoutMode"] })}
+                >
+                  {BUILD_LAYOUT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <SliderControl disabled={locked} label="Tightness" value={captionStyleConfig.tightness || 0.75} min={0} max={1} step={0.01} onChange={(tightness) => update({ tightness })} />
+              <SliderControl disabled={locked} label="Safe margin" value={captionStyleConfig.layoutSafeMarginPercent || 8} min={0} max={20} step={1} suffix="%" onChange={(layoutSafeMarginPercent) => update({ layoutSafeMarginPercent })} />
+              <SliderControl disabled={locked} label="Collision padding" value={captionStyleConfig.collisionPadding || 8} min={4} max={16} step={1} suffix="px" onChange={(collisionPadding) => update({ collisionPadding })} />
+            </Section>
+          </>
+        )}
+
+        {!isBuildPreset && (
+          <Section title="Transitions">
+            <div className="grid grid-cols-2 gap-3">
+              {TRANSITION_CARDS.map((card) => (
+                <PreviewCard
+                  key={card.label}
+                  label={card.label}
+                  selected={captionStyleConfig.entranceAnimation === card.value}
+                  disabled={locked}
+                  activeColor={captionStyleConfig.activeWordColor}
+                  mode={card.preview}
+                  onClick={() => update({ entranceAnimation: card.value })}
+                />
+              ))}
+            </div>
+          </Section>
+        )}
+
+        <details className="brutal-box p-3">
+          <summary className="cursor-pointer text-[11px] font-bold uppercase" style={{ color: "var(--text-primary)" }}>
+            Advanced
+          </summary>
+          <div className="mt-3 grid gap-3">
+            <SliderControl disabled={locked} label="X position" value={captionStyleConfig.positionX} min={0} max={100} suffix="%" onChange={(positionX) => update({ positionX })} />
+            <SliderControl disabled={locked} label="Y position" value={captionStyleConfig.positionY} min={0} max={100} suffix="%" onChange={(positionY) => update({ positionY })} />
+            <SliderControl disabled={locked} label="Max width" value={captionStyleConfig.maxWidth} min={45} max={96} suffix="%" onChange={(maxWidth) => update({ maxWidth })} />
+            <SliderControl disabled={locked} label="Caption scale" value={captionStyleConfig.scale} min={0} max={3} step={0.01} onChange={(scale) => update({ scale })} />
+            <SliderControl disabled={locked} label="Layer opacity" value={captionStyleConfig.opacity} min={0} max={1} step={0.05} onChange={(opacity) => update({ opacity })} />
+            {!isBuildPreset && (
+              <>
+                <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  <span>Asymmetric scale</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(captionStyleConfig.asymmetricScaleEnabled)}
+                    disabled={locked}
+                    onChange={(event) => update({ asymmetricScaleEnabled: event.target.checked })}
+                  />
+                </label>
+                <SliderControl disabled={locked || !captionStyleConfig.asymmetricScaleEnabled} label="Asymmetric strength" value={captionStyleConfig.asymmetricScaleStrength || 0} min={0} max={1} step={0.05} onChange={(asymmetricScaleStrength) => update({ asymmetricScaleStrength })} />
+              </>
+            )}
+          </div>
+        </details>
+
+        <button className="btn-ghost w-full" disabled={locked} onClick={() => update(DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG)}>
+          Reset Defaults
+        </button>
+      </div>
     </div>
   );
 }
