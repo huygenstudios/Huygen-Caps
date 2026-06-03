@@ -95,6 +95,10 @@ def _public_export_stage(stage: str) -> str:
     }.get(stage, stage)
 
 
+def _export_download_url(filename: str) -> str:
+    return f"/api/export/jobs/download/{filename}"
+
+
 def _export_failure(stage: str, error: str, response_format: str, status_code: int = 500):
     public_stage = _public_export_stage(stage)
     payload = {
@@ -412,7 +416,7 @@ async def export_video(
             output_bytes = os.path.getsize(output_path)
             if output_bytes <= 0:
                 return _export_failure("write_output", "Export finished but the MP4 file is empty.", response_format)
-            download_url = f"/exports/{output_filename}"
+            download_url = _export_download_url(output_filename)
             if response_format == "json":
                 width, height = _resolve_export_dimensions(resolution, export_width, export_height)
                 await manager.broadcast(job_id, {
@@ -560,7 +564,7 @@ async def export_video(
         return {
             "success": True,
             "exportJobId": Path(output_filename).stem,
-            "downloadUrl": f"/exports/{output_filename}",
+            "downloadUrl": _export_download_url(output_filename),
             "filename": output_filename,
             "duration": total_duration,
             "width": width,
@@ -575,7 +579,7 @@ async def export_video(
         filename=f"captioned_{r['filename']}",
         headers={
             "X-Export-File": output_filename,
-            "X-Export-Url": f"/exports/{output_filename}",
+            "X-Export-Url": _export_download_url(output_filename),
             "X-Export-Bytes": str(os.path.getsize(output_filepath)) if os.path.exists(output_filepath) else "0",
         },
     )

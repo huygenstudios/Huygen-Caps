@@ -85,6 +85,25 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function toAttachmentDownloadUrl(url: string) {
+  const trimmed = url.trim();
+  const exportPrefix = "/exports/";
+  if (trimmed.startsWith(exportPrefix)) {
+    return `/api/export/jobs/download/${encodeURIComponent(trimmed.slice(exportPrefix.length))}`;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.pathname.startsWith(exportPrefix)) {
+      const filename = parsed.pathname.slice(exportPrefix.length);
+      return `${parsed.origin}/api/export/jobs/download/${encodeURIComponent(filename)}`;
+    }
+  } catch {
+    // Relative API paths already point at the backend download route.
+  }
+  return trimmed;
+}
+
 export default function ExportModal() {
   const {
     showExportModal,
@@ -340,7 +359,7 @@ export default function ExportModal() {
             if (!status.downloadUrl) {
               throw new Error("Export completed but did not return a download URL.");
             }
-            setDownloadUrl(resolveBackendUrl(status.downloadUrl));
+            setDownloadUrl(resolveBackendUrl(toAttachmentDownloadUrl(status.downloadUrl)));
             setDownloadName(status.filename || `huygen_caps_${exportSettings.mode}_${exportDimensions.width}x${exportDimensions.height}_${exportFps}fps.mp4`);
             setExportStatus("Export complete. MP4 is ready to download.");
             setExportPercent(100);

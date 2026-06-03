@@ -26,6 +26,8 @@ services:
         value: /tmp/huygen-caps/database.sqlite
       - key: RUNTIME_CLEANUP_HOURS
         value: "24"
+      - key: CORS_ORIGINS
+        value: https://huygen-caps.onrender.com
       - key: ALIGNMENT_PROVIDER
         value: auto
       - key: ENABLE_WHISPERX

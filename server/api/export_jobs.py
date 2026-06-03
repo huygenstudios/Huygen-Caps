@@ -11,7 +11,7 @@ from typing import Literal
 
 import aiosqlite
 from fastapi import APIRouter, Depends, Form, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from ..database import get_db
 from ..headless_export import ExportStageError, export_headless
@@ -106,6 +106,24 @@ class ExportJobStatus:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _export_download_url(filename: str) -> str:
+    return f"/api/export/jobs/download/{filename}"
+
+
+def _resolve_export_file(filename: str) -> Path:
+    safe_name = Path(filename).name
+    if safe_name != filename or not safe_name.lower().endswith(".mp4"):
+        raise HTTPException(status_code=400, detail="Invalid export filename.")
+
+    export_root = EXPORT_DIR.resolve()
+    file_path = (export_root / safe_name).resolve()
+    if export_root not in file_path.parents and file_path != export_root:
+        raise HTTPException(status_code=400, detail="Invalid export path.")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Export file was not found or has expired.")
+    return file_path
 
 
 def _memory_mb() -> float | None:
@@ -287,7 +305,7 @@ async def _run_export_job(export_job_id: str, request: ExportRequest) -> None:
                 raise ExportStageError("output_write", f"FFmpeg finished but output file is missing or empty: {output_path}")
 
             width, height = _resolve_export_dimensions(request.resolution, request.export_width, request.export_height)
-            download_url = f"/exports/{output.name}"
+            download_url = _export_download_url(output.name)
             completed = await _set_job(
                 export_job_id,
                 status="completed",
@@ -488,6 +506,21 @@ async def list_export_jobs():
     async with _jobs_lock:
         jobs = sorted(_jobs.values(), key=lambda job: job.created_at, reverse=True)
         return [job.to_public_dict() for job in jobs[:50]]
+
+
+@router.get("/download/{filename}")
+async def download_export_file(filename: str):
+    file_path = _resolve_export_file(filename)
+    return FileResponse(
+        file_path,
+        media_type="video/mp4",
+        filename=file_path.name,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_path.name}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=86400",
+        },
+    )
 
 
 @router.get("/{export_job_id}")
