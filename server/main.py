@@ -43,6 +43,9 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize Database
     ensure_runtime_dirs()
     await init_db()
+    recovered_exports = await export_jobs.recover_orphaned_export_jobs()
+    if recovered_exports:
+        logger.warning("export_jobs_recovered_orphaned count=%s", recovered_exports)
     removed = cleanup_old_runtime_files()
     if removed:
         logger.info("runtime_cleanup removed_files=%s", removed)

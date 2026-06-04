@@ -38,6 +38,29 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS export_jobs (
+                id TEXT PRIMARY KEY,
+                source_job_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                progress INTEGER DEFAULT 0,
+                message TEXT DEFAULT '',
+                error TEXT,
+                download_url TEXT,
+                filename TEXT,
+                output_path TEXT,
+                bytes INTEGER,
+                duration REAL,
+                width INTEGER,
+                height INTEGER,
+                fps INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        ''')
+        await db.commit()
+
 async def get_db():
     db = await aiosqlite.connect(str(DB_PATH))
     db.row_factory = aiosqlite.Row

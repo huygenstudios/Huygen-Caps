@@ -68,6 +68,9 @@ function qualityLabel(value: string) {
 
 function formatExportError(err: unknown) {
   const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "Export failed";
+  if (/export job not found/i.test(raw)) {
+    return "Export status was lost before the MP4 finished. Please start the export again; if it repeats, check Render logs for a worker restart or memory limit during export.";
+  }
   if (/\b502\b|bad gateway|backend is unreachable/i.test(raw)) {
     return "Backend export service became unreachable. Check Render logs, /health, and /health/export.";
   }

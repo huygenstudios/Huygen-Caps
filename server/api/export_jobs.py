@@ -5,7 +5,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -19,6 +19,7 @@ from ..headless_export import ExportStageError, export_headless
 from ..progress import manager
 from ..settings import (
     EXPORT_DIR,
+    DB_PATH,
     MAX_CONCURRENT_EXPORTS,
     MAX_EXPORT_DURATION_SECONDS,
     UPLOAD_DIR,
@@ -36,6 +37,25 @@ ExportStatus = Literal["queued", "running", "completed", "failed"]
 _export_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXPORTS)
 _jobs_lock = asyncio.Lock()
 _jobs: dict[str, "ExportJobStatus"] = {}
+_EXPORT_JOB_COLUMNS = (
+    "id",
+    "source_job_id",
+    "status",
+    "stage",
+    "progress",
+    "message",
+    "error",
+    "download_url",
+    "filename",
+    "output_path",
+    "bytes",
+    "duration",
+    "width",
+    "height",
+    "fps",
+    "created_at",
+    "updated_at",
+)
 
 
 @dataclass
@@ -109,6 +129,107 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _job_db_values(job: ExportJobStatus) -> tuple[object, ...]:
+    return (
+        job.id,
+        job.source_job_id,
+        job.status,
+        job.stage,
+        job.progress,
+        job.message,
+        job.error,
+        job.download_url,
+        job.filename,
+        job.output_path,
+        job.bytes,
+        job.duration,
+        job.width,
+        job.height,
+        job.fps,
+        job.created_at,
+        job.updated_at,
+    )
+
+
+def _job_from_row(row: aiosqlite.Row) -> ExportJobStatus:
+    return ExportJobStatus(
+        id=row["id"],
+        source_job_id=row["source_job_id"],
+        status=row["status"],
+        stage=row["stage"],
+        progress=int(row["progress"] or 0),
+        message=row["message"] or "",
+        error=row["error"],
+        download_url=row["download_url"],
+        filename=row["filename"],
+        output_path=row["output_path"],
+        bytes=row["bytes"],
+        duration=row["duration"],
+        width=row["width"],
+        height=row["height"],
+        fps=row["fps"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def _persist_job(job: ExportJobStatus) -> None:
+    placeholders = ", ".join("?" for _ in _EXPORT_JOB_COLUMNS)
+    update_columns = [column for column in _EXPORT_JOB_COLUMNS if column != "id"]
+    update_clause = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            f"""
+            INSERT INTO export_jobs ({", ".join(_EXPORT_JOB_COLUMNS)})
+            VALUES ({placeholders})
+            ON CONFLICT(id) DO UPDATE SET {update_clause}
+            """,
+            _job_db_values(job),
+        )
+        await db.commit()
+
+
+async def _load_job_from_db(export_job_id: str) -> ExportJobStatus | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM export_jobs WHERE id = ?", (export_job_id,))
+        row = await cursor.fetchone()
+    return _job_from_row(row) if row else None
+
+
+async def _load_recent_jobs_from_db(limit: int = 50) -> list[ExportJobStatus]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM export_jobs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    return [_job_from_row(row) for row in rows]
+
+
+async def recover_orphaned_export_jobs() -> int:
+    """Mark queued/running exports as failed after a process restart."""
+    now = _utc_now()
+    message = "Export worker restarted before this MP4 finished. Please start the export again."
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            """
+            UPDATE export_jobs
+            SET status = 'failed',
+                stage = 'worker_restart',
+                progress = -1,
+                message = ?,
+                error = ?,
+                updated_at = ?
+            WHERE status IN ('queued', 'running')
+            """,
+            (message, message, now),
+        )
+        await db.commit()
+        return cursor.rowcount or 0
+
+
 def _export_download_url(filename: str) -> str:
     return f"/api/export/jobs/download/{filename}"
 
@@ -161,6 +282,7 @@ def _stage_from_progress(status: str, details: str) -> str:
 
 async def _prune_jobs() -> None:
     cutoff = time.time() - 24 * 3600
+    cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
     async with _jobs_lock:
         old_ids = []
         for job_id, job in _jobs.items():
@@ -179,6 +301,15 @@ async def _prune_jobs() -> None:
             )
             for job in removable[: max(0, len(_jobs) - 150)]:
                 _jobs.pop(job.id, None)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            """
+            DELETE FROM export_jobs
+            WHERE status IN ('completed', 'failed') AND updated_at < ?
+            """,
+            (cutoff_iso,),
+        )
+        await db.commit()
 
 
 async def _set_job(job_id: str, **updates: object) -> ExportJobStatus:
@@ -187,7 +318,9 @@ async def _set_job(job_id: str, **updates: object) -> ExportJobStatus:
         for key, value in updates.items():
             setattr(job, key, value)
         job.updated_at = _utc_now()
-        return job
+        snapshot = replace(job)
+    await _persist_job(snapshot)
+    return snapshot
 
 
 async def _broadcast_progress(job: ExportJobStatus) -> None:
@@ -480,7 +613,7 @@ async def start_export_job(
 
     export_job_id = str(uuid.uuid4())
     async with _jobs_lock:
-        _jobs[export_job_id] = ExportJobStatus(
+        queued_job = ExportJobStatus(
             id=export_job_id,
             source_job_id=source_job_id,
             status="queued",
@@ -492,6 +625,8 @@ async def start_export_job(
             height=export_height,
             fps=export_fps,
         )
+        _jobs[export_job_id] = queued_job
+    await _persist_job(queued_job)
 
     logger.info(
         "export_job_queued export_job_id=%s source_job_id=%s mode=%s duration=%s fps=%s captions=%s output_dir=%s",
@@ -516,9 +651,8 @@ async def start_export_job(
 @router.get("")
 @router.get("/")
 async def list_export_jobs():
-    async with _jobs_lock:
-        jobs = sorted(_jobs.values(), key=lambda job: job.created_at, reverse=True)
-        return [job.to_public_dict() for job in jobs[:50]]
+    jobs = await _load_recent_jobs_from_db(50)
+    return [job.to_public_dict() for job in jobs]
 
 
 @router.get("/download/{filename}")
@@ -540,6 +674,21 @@ async def download_export_file(filename: str):
 async def get_export_job(export_job_id: str):
     async with _jobs_lock:
         job = _jobs.get(export_job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Export job not found")
-        return job.to_public_dict()
+        if job:
+            return job.to_public_dict()
+
+    job = await _load_job_from_db(export_job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Export job not found")
+
+    if job.status in {"queued", "running"}:
+        message = "Export worker restarted before this MP4 finished. Please start the export again."
+        job.status = "failed"
+        job.stage = "worker_restart"
+        job.progress = -1
+        job.message = message
+        job.error = message
+        job.updated_at = _utc_now()
+        await _persist_job(job)
+
+    return job.to_public_dict()
