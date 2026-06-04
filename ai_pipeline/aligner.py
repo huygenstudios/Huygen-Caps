@@ -757,6 +757,7 @@ class TranscriptAligner:
             return None
         return best_index, speech_ranges[best_index]
 
+
     def _load_stable_ts_model(self) -> Any:
         model_name = os.getenv("STABLE_TS_MODEL", "base").strip() or "base"
         if self._stable_ts_model is not None and self._stable_ts_model_name == model_name:
