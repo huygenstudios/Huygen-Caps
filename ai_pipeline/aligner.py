@@ -133,7 +133,7 @@ class TranscriptAligner:
             else bool(enable_stable_ts)
         )
         self.enable_whisperx = (
-            _env_bool("ENABLE_WHISPERX", True)
+            _env_bool("ENABLE_WHISPERX", False)
             if enable_whisperx is None
             else bool(enable_whisperx)
         )
@@ -1074,7 +1074,7 @@ def _fallback_align_segments(tokens: list[Any]) -> list[dict[str, Any]]:
 @with_retry(max_retries=RETRY_ALIGN)
 def align_text(tokens: list[Any], audio_path: str, model_id: str) -> list[dict[str, Any]]:
     provider = (os.getenv("ALIGNMENT_PROVIDER", "auto") or "auto").strip().lower()
-    whisperx_enabled = _env_bool("ENABLE_WHISPERX", True)
+    whisperx_enabled = _env_bool("ENABLE_WHISPERX", False)
     if provider in {"none", "provider", "silero_vad_only", "stable_ts"} or (
         provider == "auto" and not whisperx_enabled
     ):

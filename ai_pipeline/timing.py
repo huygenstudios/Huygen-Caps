@@ -25,7 +25,7 @@ def _module_available(*names: str) -> bool:
 def alignment_provider_status() -> dict[str, Any]:
     """Report optional timing providers without importing heavy packages."""
     provider = (os.getenv("ALIGNMENT_PROVIDER", "auto") or "auto").strip().lower()
-    whisperx_enabled = os.getenv("ENABLE_WHISPERX", "true").strip().lower() != "false"
+    whisperx_enabled = os.getenv("ENABLE_WHISPERX", "false").strip().lower() == "true"
     stable_ts_enabled = os.getenv("ENABLE_STABLE_TS", "false").strip().lower() == "true"
     silero_enabled = os.getenv("ENABLE_SILERO_VAD", "false").strip().lower() == "true"
     whisperx_available = _module_available("whisperx")
@@ -182,7 +182,11 @@ def annotate_word_timing_sources(segments: list[dict[str, Any]]) -> list[dict[st
     return segments
 
 
-def build_timing_report(segments: list[dict[str, Any]], silence_gaps: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_timing_report(
+    segments: list[dict[str, Any]],
+    silence_gaps: list[dict[str, Any]] | None = None,
+    sync_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     words: list[dict[str, Any]] = []
     for segment in segments:
         words.extend(segment.get("words") or [])
@@ -221,6 +225,8 @@ def build_timing_report(segments: list[dict[str, Any]], silence_gaps: list[dict[
             max_gap = max(max_gap, start - prev_end)
         prev_end = end
 
+    auto_sync = (sync_report or {}).get("autoGlobalSync") if isinstance(sync_report, dict) else {}
+    stable_ts = (sync_report or {}).get("stableTs") if isinstance(sync_report, dict) else {}
     report = {
         "totalWords": len(words),
         "timingSourceCounts": dict(source_counts),
@@ -230,9 +236,66 @@ def build_timing_report(segments: list[dict[str, Any]], silence_gaps: list[dict[
         "estimatedWordCount": estimated_words,
         "maxGapBetweenWords": _round_time(max_gap),
         "warnings": suspicious[:80],
+        "syncMode": "auto" if auto_sync.get("applied") else "manual" if (sync_report or {}).get("manualSync", {}).get("applied") else "provider",
+        "globalShiftSeconds": auto_sync.get("shiftSeconds", 0),
+        "globalSkew": auto_sync.get("skew", 1.0),
+        "autoSyncApplied": bool(auto_sync.get("applied")),
+        "autoSyncQuality": auto_sync.get("quality", 0),
+        "autoSyncImprovement": auto_sync.get("improvement", 0),
+        "stableTsAppliedWords": stable_ts.get("appliedWords", 0),
+        "stableTsCoverage": stable_ts.get("matchCoverage", 0),
+        "speechActivityRanges": auto_sync.get("speechActivityRanges", [])[:80] if isinstance(auto_sync, dict) else [],
+        "captionActivityRanges": auto_sync.get("captionActivityRanges", [])[:80] if isinstance(auto_sync, dict) else [],
+        "exportOffsetParityCheck": "preview/export use stored corrected segments plus frontend global offset only",
     }
     if estimated_words:
         logger.warning("timing_estimated_words count=%s report=%s", estimated_words, json.dumps(report, ensure_ascii=False))
     else:
         logger.info("timing_validation report=%s", json.dumps(report, ensure_ascii=False))
     return report
+
+
+def classify_caption_gaps(
+    segments: list[dict[str, Any]],
+    speech_segments: list[dict[str, Any]] | None = None,
+    min_gap_seconds: float = 0.75,
+) -> list[dict[str, Any]]:
+    sorted_segments = sorted(
+        [segment for segment in segments if isinstance(segment.get("start"), (int, float)) and isinstance(segment.get("end"), (int, float))],
+        key=lambda item: item["start"],
+    )
+    speech_ranges = [
+        (float(item.get("start")), float(item.get("end")))
+        for item in speech_segments or []
+        if isinstance(item, dict) and isinstance(item.get("start"), (int, float)) and isinstance(item.get("end"), (int, float))
+    ]
+    gaps: list[dict[str, Any]] = []
+    for previous, current in zip(sorted_segments, sorted_segments[1:]):
+        gap_start = float(previous["end"])
+        gap_end = float(current["start"])
+        duration = gap_end - gap_start
+        if duration < min_gap_seconds:
+            continue
+        overlap = [
+            {"start": max(gap_start, start), "end": min(gap_end, end)}
+            for start, end in speech_ranges
+            if min(gap_end, end) - max(gap_start, start) > 0.05
+        ]
+        if overlap:
+            status = "speech"
+            message = "Caption gap overlaps speech; missing caption words likely."
+        elif speech_ranges:
+            status = "silence"
+            message = "Caption gap is during detected silence."
+        else:
+            status = "unknown"
+            message = "Audio speech analysis missing; run timing debug or regenerate captions."
+        gaps.append({
+            "start": _round_time(gap_start),
+            "end": _round_time(gap_end),
+            "duration": _round_time(duration),
+            "speechOverlapStatus": status,
+            "message": message,
+            "speechOverlaps": overlap[:10],
+        })
+    return gaps

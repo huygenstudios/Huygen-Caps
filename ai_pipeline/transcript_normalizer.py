@@ -131,8 +131,9 @@ def _provider_time_warnings(raw_words: list[dict[str, Any]], chunk: Chunk, basis
 
 
 def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, Any] | None:
+    raw_text = str(raw_word.get("word") or raw_word.get("text") or "").strip()
     word_meta = normalize_word_token_with_metadata(
-        str(raw_word.get("word") or raw_word.get("text") or ""),
+        raw_text,
         language_mode,
     )
     word = word_meta.get("word", "")
@@ -143,6 +144,8 @@ def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, A
 
     normalized = {
         "word": word,
+        "displayedWord": word,
+        "spokenWord": str(raw_word.get("spokenWord") or raw_word.get("originalWord") or raw_text or word).strip(),
         "start": round(start, 3),
         "end": round(end, 3),
         "score": _as_float(raw_word.get("score")) if raw_word.get("score") is not None else 0.0,
@@ -155,6 +158,13 @@ def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, A
         normalized["confidence"] = _as_float(raw_word.get("confidence"))
     if raw_word.get("timing_source"):
         normalized["timing_source"] = raw_word["timing_source"]
+        source = str(raw_word["timing_source"]).lower()
+        if any(marker in source for marker in ("interpolated", "estimated", "synthetic", "fallback")):
+            normalized["timingNeedsReview"] = True
+            normalized["timingReviewRequired"] = True
+            normalized["timingWarning"] = "Word timing is estimated; sync cannot be guaranteed. Use High Quality Alignment."
+    if raw_word.get("timingSource"):
+        normalized["timingSource"] = raw_word["timingSource"]
     if raw_word.get("provider"):
         normalized["provider"] = raw_word["provider"]
     if end <= start:
@@ -190,6 +200,10 @@ def _expand_compound_raw_word(raw_word: dict[str, Any]) -> list[dict[str, Any]]:
                 "start": round(token_start, 3),
                 "end": round(max(token_start + MIN_WORD_DURATION, token_end), 3),
                 "timing_source": timing_source,
+                "timingSource": "estimated",
+                "timingNeedsReview": True,
+                "timingReviewRequired": True,
+                "timingWarning": "Provider returned one timestamp for multiple words; word timing is estimated until forced alignment runs.",
             }
         )
 

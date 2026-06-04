@@ -145,6 +145,7 @@ export interface CaptionDocument {
   languageMode: Language;
   transcript?: {
     segments: AlignedSegment[];
+    alignedWords?: AlignedWord[];
     metadata?: Record<string, unknown>;
   };
   originalAlignedWords: AlignedWord[];
@@ -280,6 +281,7 @@ export interface JobResponse {
     provider?: string;
     romanized?: boolean;
     segments: AlignedSegment[];
+    alignedWords?: AlignedWord[];
     metadata?: Record<string, unknown>;
   };
   created_at: string;
@@ -304,11 +306,14 @@ export interface AlignedWord {
   timing_source?: string;
   timingSource?: CaptionTimingSource;
   originalWord?: string;
+  spokenWord?: string;
   displayedWord?: string;
   languageHint?: "english" | "hindi" | "telugu" | "unknown";
   timing_repair?: string;
   timingWarning?: string;
   timing_warning?: string;
+  timingNeedsReview?: boolean;
+  timingReviewRequired?: boolean;
 }
 
 export interface CaptionChunkingConfig {

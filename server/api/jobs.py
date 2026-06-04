@@ -5,11 +5,12 @@ import logging
 import re
 import asyncio
 from threading import Thread
-from typing import List
+from typing import Any, List
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import aiosqlite
 import aiofiles
 
@@ -17,7 +18,13 @@ from ..database import get_db, DB_PATH
 from ..models import JobResponse, JobDetailResponse
 from ..progress import manager
 from ..settings import EXPORT_DIR, MAX_UPLOAD_SIZE_MB, UPLOAD_DIR, ensure_runtime_dirs
+from ai_pipeline.renderer import generate_srt, generate_vtt
+from ai_pipeline.sync.aligned_words import aligned_word_quality, canonical_aligned_words_from_segments
+from ai_pipeline.sync.affine import retime_segments
+from ai_pipeline.sync.auto_sync import apply_auto_sync_if_confident
+from ai_pipeline.sync.high_quality import high_quality_alignment_status, run_high_quality_alignment
 from ai_pipeline.language_modes import SUPPORTED_LANGUAGE_MODES, normalize_language_mode
+from ai_pipeline.timing import DEFAULT_PAUSE_SPLIT_THRESHOLD, build_timing_report, classify_caption_gaps, normalize_timing_source
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
@@ -34,6 +41,14 @@ WINDOWS_RESERVED_FILENAMES = {
 }
 # Keep a conservative length so the full path stays safe on Windows.
 MAX_SAFE_FILENAME_LEN = 120
+
+
+class SyncRequest(BaseModel):
+    shiftSeconds: float = 0.0
+    skew: float = 1.0
+    anchorSeconds: float = 0.0
+    startRange: float | None = None
+    endRange: float | None = None
 
 
 def _log_stage(job_id: str | None, stage: str, **fields):
@@ -78,6 +93,117 @@ def _stored_language_mode(value: str | None) -> str:
         return normalize_language_mode(value)
     except ValueError:
         return "auto_mixed_indian"
+
+
+def _load_json(value: str | None, fallback: Any) -> Any:
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+
+
+def _video_path_for_row(job_id: str, row: aiosqlite.Row) -> str:
+    return str(UPLOAD_DIR / f"{job_id}_{row['filename']}")
+
+
+def _flatten_word_debug(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    words: list[dict[str, Any]] = []
+    for seg_index, segment in enumerate(segments):
+        for word in segment.get("words") or []:
+            words.append({
+                "text": word.get("displayedWord") or word.get("word") or word.get("originalWord"),
+                "displayWord": word.get("displayedWord") or word.get("word"),
+                "spokenWord": word.get("spokenWord") or word.get("originalWord") or word.get("word"),
+                "start": word.get("start"),
+                "end": word.get("end"),
+                "timingSource": normalize_timing_source(word.get("timingSource") or word.get("timing_source"), word.get("provider")),
+                "timingSourceDetail": word.get("timingSourceDetail") or word.get("timingSource") or word.get("timing_source"),
+                "chunkIndex": seg_index,
+                "captionBlockId": segment.get("id"),
+                "timestampBasis": word.get("timestampBasis") or word.get("provider") or "stored",
+                "timingNeedsReview": bool(word.get("timingNeedsReview") or word.get("timingReviewRequired")),
+            })
+    return words
+
+
+def _words_around_time(words: list[dict[str, Any]], current_time: float | None, limit: int = 100) -> list[dict[str, Any]]:
+    if current_time is None or not words:
+        return words[:limit]
+    best_index = 0
+    best_distance = float("inf")
+    for index, word in enumerate(words):
+        try:
+            start = float(word.get("start") or 0.0)
+            end = float(word.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        distance = 0.0 if start <= current_time <= end else min(abs(current_time - start), abs(current_time - end))
+        if distance < best_distance:
+            best_distance = distance
+            best_index = index
+    half = max(1, limit // 2)
+    start_index = max(0, min(best_index - half, max(0, len(words) - limit)))
+    return words[start_index:start_index + limit]
+
+
+def _sync_metadata(transcript: dict[str, Any] | None) -> dict[str, Any]:
+    metadata = transcript.get("metadata") if isinstance(transcript, dict) else {}
+    sync = metadata.get("sync") if isinstance(metadata, dict) else {}
+    return sync if isinstance(sync, dict) else {}
+
+
+def _update_transcript_segments(
+    transcript: dict[str, Any] | None,
+    segments: list[dict[str, Any]],
+    sync_report: dict[str, Any] | None = None,
+    timing_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    next_transcript = dict(transcript or {})
+    next_transcript["segments"] = segments
+    next_transcript["alignedWords"] = canonical_aligned_words_from_segments(segments)
+    metadata = dict(next_transcript.get("metadata") or {})
+    if sync_report is not None:
+        metadata["sync"] = sync_report
+    if timing_report is not None:
+        timing = dict(metadata.get("timing") or {})
+        timing["report"] = timing_report
+        metadata["timing"] = timing
+    next_transcript["metadata"] = metadata
+    return next_transcript
+
+
+async def _persist_synced_segments(
+    db: aiosqlite.Connection,
+    job_id: str,
+    row: aiosqlite.Row,
+    segments: list[dict[str, Any]],
+    sync_report: dict[str, Any],
+) -> dict[str, Any]:
+    video_path = _video_path_for_row(job_id, row)
+    audio_for_render = video_path if os.path.exists(video_path) else None
+    srt = generate_srt(segments, audio_path=audio_for_render)
+    vtt = generate_vtt(segments, audio_path=audio_for_render)
+    transcript = _load_json(row["transcript_json"] if "transcript_json" in row.keys() else None, None)
+    timing_report = build_timing_report(segments, [], sync_report)
+    transcript = _update_transcript_segments(transcript, segments, sync_report, timing_report)
+    await db.execute(
+        """
+        UPDATE jobs
+        SET segments_json = ?, transcript_json = ?, srt_content = ?, vtt_content = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(segments, ensure_ascii=False),
+            json.dumps(transcript, ensure_ascii=False),
+            srt,
+            vtt,
+            job_id,
+        ),
+    )
+    await db.commit()
+    return {"segments": segments, "transcript": transcript, "srt": srt, "vtt": vtt, "timingReport": timing_report}
 
 
 def _public_export_stage(stage: str) -> str:
@@ -290,6 +416,191 @@ async def get_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
         created_at=r['created_at'],
         completed_at=r['completed_at']
     )
+
+
+@router.get("/{job_id}/timing-debug")
+async def get_job_timing_debug(
+    job_id: str,
+    current_time: float | None = Query(None, alias="currentTime"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    transcript = _load_json(row["transcript_json"] if "transcript_json" in row.keys() else None, None)
+    segments = transcript.get("segments") if isinstance(transcript, dict) else None
+    if not segments:
+        segments = _load_json(row["segments_json"], [])
+    metadata = transcript.get("metadata") if isinstance(transcript, dict) else {}
+    timing = metadata.get("timing") if isinstance(metadata, dict) else {}
+    vad = timing.get("vad") if isinstance(timing, dict) else {}
+    sync = metadata.get("sync") if isinstance(metadata, dict) else {}
+    report = timing.get("report") if isinstance(timing, dict) and isinstance(timing.get("report"), dict) else build_timing_report(segments, vad.get("silenceGaps") or [], sync)
+    words = _flatten_word_debug(segments)
+    auto_sync = sync.get("autoGlobalSync") if isinstance(sync, dict) else {}
+    aligned_words = transcript.get("alignedWords") if isinstance(transcript, dict) and isinstance(transcript.get("alignedWords"), list) else canonical_aligned_words_from_segments(segments)
+    aligned_word_debug = _flatten_word_debug([{"id": segment.get("id"), "words": segment.get("words") or []} for segment in segments])
+    speech_segments = vad.get("speechSegments", []) if isinstance(vad, dict) and isinstance(vad.get("speechSegments"), list) else []
+    quality = aligned_word_quality(segments)
+
+    return {
+        "jobId": job_id,
+        "status": row["status"],
+        "languageMode": _stored_language_mode(row["target_lang"]),
+        "timingReport": report,
+        "syncReport": sync or {},
+        "first30Words": words[:30],
+        "last30Words": words[-30:],
+        "first50AlignedWords": aligned_word_debug[:50],
+        "first100AlignedWordsAroundCurrentTime": _words_around_time(aligned_word_debug, current_time, 100),
+        "captionTimingBasis": (sync.get("captionBuild") or {}).get("sourceOfTruth") if isinstance(sync, dict) else "unknown",
+        "alignedWordCount": len(aligned_words),
+        "estimatedWordCount": quality.get("estimatedWordCount", report.get("estimatedWordCount", 0)),
+        "estimatedWordRatio": quality.get("estimatedWordRatio", 0),
+        "timingNeedsReviewCount": quality.get("timingNeedsReviewCount", 0),
+        "highQualityAlignmentLastRun": (sync.get("highQualityAlignment") or {}).get("lastRun") if isinstance(sync, dict) else None,
+        **high_quality_alignment_status(),
+        "autoSyncRejectReason": auto_sync.get("rejectReason") if isinstance(auto_sync, dict) else None,
+        "speechSegments": speech_segments[:120],
+        "captionGaps": classify_caption_gaps(segments, speech_segments),
+        "suspiciousWarnings": report.get("warnings", []),
+        "recommendedManualSync": {
+            "shiftSeconds": auto_sync.get("shiftSeconds", 0) if isinstance(auto_sync, dict) else 0,
+            "skew": auto_sync.get("skew", 1.0) if isinstance(auto_sync, dict) else 1.0,
+            "reason": auto_sync.get("reason", "") if isinstance(auto_sync, dict) else "",
+        },
+        "pauseThresholdUsed": vad.get("thresholdSeconds") or DEFAULT_PAUSE_SPLIT_THRESHOLD if isinstance(vad, dict) else DEFAULT_PAUSE_SPLIT_THRESHOLD,
+    }
+
+
+@router.post("/{job_id}/sync/preview")
+async def preview_sync(job_id: str, request: SyncRequest, db: aiosqlite.Connection = Depends(get_db)):
+    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    segments = _load_json(row["segments_json"], [])
+    before_words = _flatten_word_debug(segments)
+    result = retime_segments(
+        segments,
+        shift_seconds=request.shiftSeconds,
+        skew=request.skew,
+        anchor_seconds=request.anchorSeconds,
+        start_range=request.startRange,
+        end_range=request.endRange,
+    )
+    after_words = _flatten_word_debug(result.segments)
+    return {
+        "jobId": job_id,
+        "segments": result.segments,
+        "beforeFirst10Words": before_words[:10],
+        "afterFirst10Words": after_words[:10],
+        "validationWarnings": result.report.get("warnings", []),
+        "report": result.report,
+    }
+
+
+@router.post("/{job_id}/sync/apply")
+async def apply_sync(job_id: str, request: SyncRequest, db: aiosqlite.Connection = Depends(get_db)):
+    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    segments = _load_json(row["segments_json"], [])
+    result = retime_segments(
+        segments,
+        shift_seconds=request.shiftSeconds,
+        skew=request.skew,
+        anchor_seconds=request.anchorSeconds,
+        start_range=request.startRange,
+        end_range=request.endRange,
+    )
+    transcript = _load_json(row["transcript_json"] if "transcript_json" in row.keys() else None, None)
+    sync = _sync_metadata(transcript)
+    sync["manualSync"] = result.report
+    persisted = await _persist_synced_segments(db, job_id, row, result.segments, sync)
+    return {"jobId": job_id, "applied": True, "report": result.report, **persisted}
+
+
+@router.post("/{job_id}/sync/auto")
+async def auto_sync(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    video_path = _video_path_for_row(job_id, row)
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Original media file not found for auto sync")
+    segments = _load_json(row["segments_json"], [])
+    transcript = _load_json(row["transcript_json"] if "transcript_json" in row.keys() else None, None)
+    duration = ((transcript or {}).get("metadata") or {}).get("audio", {}).get("duration") if isinstance(transcript, dict) else None
+    result = apply_auto_sync_if_confident(segments, video_path, duration_seconds=duration, config={"enabled": True})
+    sync = _sync_metadata(transcript)
+    sync["autoGlobalSync"] = result.report
+    if result.report.get("applied"):
+        persisted = await _persist_synced_segments(db, job_id, row, result.segments, sync)
+        return {"jobId": job_id, "applied": True, "report": result.report, **persisted}
+    return {
+        "jobId": job_id,
+        "applied": False,
+        "autoSyncApplied": False,
+        "rejectReason": result.report.get("rejectReason"),
+        "userMessage": result.report.get("userMessage") or "Auto Sync returned a recommendation but did not apply.",
+        "report": result.report,
+        "segments": segments,
+        "recommendation": result.report.get("recommendation") or {
+            "shiftSeconds": result.report.get("shiftSeconds", 0),
+            "skew": result.report.get("skew", 1.0),
+            "quality": result.report.get("quality", 0),
+            "reason": result.report.get("reason", ""),
+        },
+    }
+
+
+@router.post("/{job_id}/sync/high-quality-align")
+async def high_quality_align(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    video_path = _video_path_for_row(job_id, row)
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Original media file not found for high quality alignment")
+    segments = _load_json(row["segments_json"], [])
+    transcript = _load_json(row["transcript_json"] if "transcript_json" in row.keys() else None, None)
+    language_mode = _stored_language_mode(row["target_lang"])
+    result = run_high_quality_alignment(segments, video_path, language_mode)
+    if not result.report.get("applied"):
+        return JSONResponse(
+            {
+                "jobId": job_id,
+                "applied": False,
+                "report": result.report,
+                "userMessage": result.report.get("userMessage"),
+                "estimatedWordCount": result.report.get("estimatedWordCount"),
+                "timingNeedsReviewCount": result.report.get("timingNeedsReviewCount"),
+            },
+            status_code=503 if result.report.get("reason") == "aligner_unavailable" else 200,
+        )
+    sync = _sync_metadata(transcript)
+    sync["highQualityAlignment"] = {
+        "lastRun": "completed",
+        "engine": result.report.get("engine"),
+        "report": result.report,
+    }
+    sync["captionBuild"] = result.report.get("captionBuild", {"sourceOfTruth": "alignedWords"})
+    persisted = await _persist_synced_segments(db, job_id, row, result.segments, sync)
+    return {
+        "jobId": job_id,
+        "applied": True,
+        "report": result.report,
+        "estimatedWordCount": result.report.get("estimatedWordCount"),
+        "timingNeedsReviewCount": result.report.get("timingNeedsReviewCount"),
+        **persisted,
+    }
+
 
 @router.get("/{job_id}/video")
 async def get_video(job_id: str, db: aiosqlite.Connection = Depends(get_db)):

@@ -75,6 +75,33 @@ export interface ExportJobStatusResponse {
   updatedAt?: string;
 }
 
+export interface SyncRequestPayload {
+  shiftSeconds: number;
+  skew: number;
+  anchorSeconds: number;
+  startRange?: number | null;
+  endRange?: number | null;
+}
+
+export interface SyncResponse {
+  jobId: string;
+  applied?: boolean;
+  segments?: unknown[];
+  transcript?: Record<string, unknown>;
+  srt?: string;
+  vtt?: string;
+  report?: Record<string, unknown>;
+  timingReport?: Record<string, unknown>;
+  userMessage?: string;
+  rejectReason?: string;
+  estimatedWordCount?: number;
+  timingNeedsReviewCount?: number;
+  beforeFirst10Words?: unknown[];
+  afterFirst10Words?: unknown[];
+  validationWarnings?: string[];
+  recommendation?: Record<string, unknown>;
+}
+
 interface HeadlessExportOptions {
   width?: number;
   height?: number;
@@ -257,6 +284,51 @@ export async function getHealth() {
 
 export async function getExportHealth() {
   return apiFetch<Record<string, unknown>>("/api/health/export", {}, 8000);
+}
+
+export async function getTimingDebug(jobId: string, currentTime?: number) {
+  const query = typeof currentTime === "number" && Number.isFinite(currentTime) ? `?currentTime=${encodeURIComponent(currentTime.toFixed(3))}` : "";
+  return apiFetch<Record<string, unknown>>(`/api/jobs/${jobId}/timing-debug${query}`, {}, 30000);
+}
+
+export async function previewCaptionSync(jobId: string, payload: SyncRequestPayload): Promise<SyncResponse> {
+  return apiFetch<SyncResponse>(
+    `/api/jobs/${jobId}/sync/preview`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    30000
+  );
+}
+
+export async function applyCaptionSync(jobId: string, payload: SyncRequestPayload): Promise<SyncResponse> {
+  return apiFetch<SyncResponse>(
+    `/api/jobs/${jobId}/sync/apply`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    60000
+  );
+}
+
+export async function autoFixCaptionSync(jobId: string): Promise<SyncResponse> {
+  return apiFetch<SyncResponse>(`/api/jobs/${jobId}/sync/auto`, { method: "POST" }, 120000);
+}
+
+export async function runHighQualityAlignment(jobId: string): Promise<SyncResponse> {
+  try {
+    return await apiFetch<SyncResponse>(`/api/jobs/${jobId}/sync/high-quality-align`, { method: "POST" }, 10 * 60 * 1000);
+  } catch (error) {
+    if (error instanceof ApiError && error.details && typeof error.details === "object") {
+      const details = error.details as SyncResponse;
+      if (details.userMessage || details.report) return details;
+    }
+    throw error;
+  }
 }
 
 export function createProgressWebSocket(

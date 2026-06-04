@@ -9,8 +9,35 @@ Huygen Caps builds captions from word timestamps, not from already-rendered capt
 5. stable-ts and Silero VAD are optional fallback/diagnostic providers.
 6. Every word is validated and marked with a timing source.
 7. Code-mixed provider timelines that are visibly compressed are projected back over detected speech spans.
-8. Caption chunks are rebuilt from aligned words with pause-aware rules.
-9. Preview and export use the same React renderer.
+8. The Caption Sync Engine can refine stable-ts word timing and auto-correct global shift/skew when enabled.
+9. Caption chunks are rebuilt from aligned words with pause-aware rules.
+10. Preview and export use the same React renderer.
+
+## Caption Sync Engine
+
+The sync engine has three safe layers:
+
+- Source of truth: `transcript.alignedWords[]`. Caption blocks are rebuilt from this ordered word list after alignment/sync. Old caption block boundaries are not trusted as production timing.
+- Manual/global sync applies `new_time = anchor + ((old_time - anchor) * skew) + shift` to segments and words. It supports offset, speed/skew correction, optional ranges, clamping, and monotonic word repair.
+- Auto global sync compares caption activity with FFmpeg speech activity, searches shift/skew candidates, and applies only when quality and improvement thresholds pass.
+- stable-ts refinement is optional. When enabled, Huygen first tries stable-ts `align_words()` against Huygen's own spoken transcript words, then transfers only timestamps. Display text remains the provider/romanized Huygen text.
+
+Estimated or interpolated word timing is marked `timingNeedsReview`. It is allowed so jobs can complete, but the UI warns that sync cannot be guaranteed until High Quality Alignment runs.
+
+Default Render production stays lightweight: `ENABLE_AUTO_GLOBAL_SYNC=false`, `ENABLE_STABLE_TS=false`, `ENABLE_WHISPERX=false`, and `ENABLE_SILERO_VAD=false`. Use a worker or GPU machine for high-quality local alignment.
+
+Sync endpoints:
+
+```text
+GET  /api/jobs/{jobId}/timing-debug
+POST /api/jobs/{jobId}/sync/preview
+POST /api/jobs/{jobId}/sync/apply
+POST /api/jobs/{jobId}/sync/auto
+```
+
+`sync/preview` does not persist. `sync/apply` persists corrected `segments_json`, refreshes `transcript_json.alignedWords`, regenerates SRT/VTT, and stores metadata under `transcript_json.metadata.sync`.
+
+Important: backend timing changes do not repair old jobs already stored in the browser or database. Generate a fresh caption job after deploying timing changes.
 
 ## Timing Sources
 
@@ -57,6 +84,7 @@ The Caption Editor has a Timing & Sync section:
 Use:
 
 ```text
+GET /api/jobs/{jobId}/timing-debug
 GET /api/captions/jobs/{jobId}/timing-debug
 GET /api/health/timing
 ```

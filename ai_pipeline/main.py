@@ -21,6 +21,10 @@ from .logger import PipelineLogger
 from .quality_estimator import adaptive_thresholds, measure_audio_quality
 from .renderer import generate_srt, generate_vtt
 from .sentence_splitter import split_sentences_v2
+from .sync.aligned_words import build_segments_from_aligned_words, canonical_aligned_words_from_segments
+from .sync.auto_sync import apply_auto_sync_if_confident
+from .sync.report import SyncPassResult, build_sync_report
+from .sync.stable_refine import apply_stable_refinement
 from .timing import (
     alignment_provider_status,
     annotate_word_timing_sources,
@@ -268,8 +272,43 @@ def run_pipeline(
                 exc,
             )
 
+        emit_progress("normalizing", 89, "Running caption sync engine.")
+        try:
+            stable_result = apply_stable_refinement(clamped_segments, audio_path, language_mode)
+            clamped_segments = stable_result.segments
+        except Exception as exc:
+            logger.warning("stable-ts sync refinement failed safely: %s", exc)
+            stable_result = SyncPassResult(clamped_segments, {"applied": False, "reason": str(exc), "warnings": [str(exc)]})
+
+        try:
+            auto_sync_result = apply_auto_sync_if_confident(
+                clamped_segments,
+                audio_path,
+                duration_seconds=vad_report.get("audioDuration"),
+            )
+            clamped_segments = auto_sync_result.segments
+        except Exception as exc:
+            logger.warning("auto global sync failed safely: %s", exc)
+            auto_sync_result = SyncPassResult(clamped_segments, {"applied": False, "reason": str(exc), "warnings": [str(exc)]})
+
+        sync_report = build_sync_report(
+            stable_ts=stable_result.report,
+            auto_global_sync=auto_sync_result.report,
+            manual_sync={"applied": False, "reason": "no manual sync applied during pipeline"},
+        )
+        aligned_words = canonical_aligned_words_from_segments(clamped_segments)
+        rebuilt_from_aligned_words = build_segments_from_aligned_words(aligned_words)
+        if rebuilt_from_aligned_words:
+            clamped_segments = rebuilt_from_aligned_words
+            sync_report["captionBuild"] = {
+                "sourceOfTruth": "alignedWords",
+                "alignedWordCount": len(aligned_words),
+                "captionBlockCount": len(clamped_segments),
+                "estimatedWordCount": sum(1 for word in aligned_words if word.get("timingNeedsReview") or word.get("timingReviewRequired")),
+            }
         clamped_segments = annotate_word_timing_sources(clamped_segments)
-        timing_report = build_timing_report(clamped_segments, vad_report.get("silenceGaps") or [])
+        aligned_words = canonical_aligned_words_from_segments(clamped_segments)
+        timing_report = build_timing_report(clamped_segments, vad_report.get("silenceGaps") or [], sync_report)
 
         _stage_log("caption chunks generated", segment_count=len(clamped_segments))
         emit_progress("chunking", 92, "Preparing readable caption chunks.")
@@ -288,6 +327,7 @@ def run_pipeline(
         log_summary = pipeline_logger.get_summary()
         provider_name = ",".join(sorted(transcription_providers)) or "unknown"
         transcript = build_normalized_transcript(clamped_segments, language_mode, provider_name)
+        transcript["alignedWords"] = aligned_words
         transcript["metadata"] = {
             **log_summary,
             "audio": {
@@ -303,6 +343,7 @@ def run_pipeline(
                 "report": timing_report,
                 "chunkAudit": chunk_audit[:80],
             },
+            "sync": sync_report,
         }
         _stage_log(
             "transcript normalized",

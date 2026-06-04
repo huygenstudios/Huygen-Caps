@@ -29,7 +29,7 @@ import {
 import { addMediaSpeechToCoverageReport, validateCaptionCoverage } from "@/lib/captionCoverage";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
 import { AlignedSegment, AlignedWord, Caption, CaptionCoverageReport, CaptionDocument, Language } from "@/lib/types";
-import { getHealth, getJob, uploadVideo } from "@/lib/api";
+import { applyCaptionSync, autoFixCaptionSync, getHealth, getJob, getTimingDebug, previewCaptionSync, resolveBackendUrl, runHighQualityAlignment, uploadVideo } from "@/lib/api";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { openMediaPicker } from "@/lib/mediaImport";
@@ -179,6 +179,7 @@ function resolveCanonicalWords(
   transcriptSegments: AlignedSegment[],
   captions: Caption[]
 ) {
+  if (captionDocument?.transcript?.alignedWords?.length) return captionDocument.transcript.alignedWords;
   if (captionDocument?.originalAlignedWords?.length) return captionDocument.originalAlignedWords;
   const segmentWords = getAlignedWordsFromSegments(transcriptSegments);
   if (segmentWords.length) return segmentWords;
@@ -274,6 +275,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     pipelineStatus,
     pipelinePercent,
     setJobId,
+    jobId,
     setPipelineProgress,
     captionChunkingConfig,
     setCaptionChunkingConfig,
@@ -322,6 +324,14 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
   const [isRebuilding, setIsRebuilding] = useState(false);
   const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null);
   const [coverageNotice, setCoverageNotice] = useState("");
+  const [syncShiftSeconds, setSyncShiftSeconds] = useState(0);
+  const [syncSkew, setSyncSkew] = useState(1);
+  const [syncAnchorSeconds, setSyncAnchorSeconds] = useState(0);
+  const [syncBusy, setSyncBusy] = useState<"" | "preview" | "apply" | "auto" | "debug" | "align">("");
+  const [syncNotice, setSyncNotice] = useState("");
+  const [syncReport, setSyncReport] = useState<Record<string, unknown> | null>(null);
+  const [lastAutoRecommendation, setLastAutoRecommendation] = useState<{ shiftSeconds: number; skew: number } | null>(null);
+  const previewBackupRef = useRef<Caption[] | null>(null);
   const charsPerSubtitle = captionCharsPerSubtitle;
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -355,6 +365,19 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     if (!query) return sortedCaptions;
     return sortedCaptions.filter((caption) => caption.text.toLowerCase().includes(query));
   }, [captionSearch, sortedCaptions]);
+  const estimatedWordCount = useMemo(
+    () =>
+      captions.reduce(
+        (count, caption) =>
+          count +
+          (caption.words || []).filter((word) => {
+            const source = `${word.timing_source || ""} ${word.timingSource || ""}`.toLowerCase();
+            return word.timingNeedsReview || word.timingReviewRequired || /estimated|interpolated|synthetic|fallback/.test(source);
+          }).length,
+        0
+      ),
+    [captions]
+  );
 
   useEffect(() => {
     if (flow !== "list") return;
@@ -528,7 +551,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
                 name: activeMedia.name ? `${activeMedia.name} captions` : "Generated captions",
                 sourceMediaId: activeMedia.id,
                 languageMode: job.languageMode || requestedLanguage,
-                transcript: { segments: sourceSegments, metadata: job.transcript?.metadata },
+                transcript: { segments: sourceSegments, alignedWords: job.transcript?.alignedWords || originalAlignedWords, metadata: job.transcript?.metadata },
                 originalAlignedWords,
                 chunks: newCaptions,
                 style: useEditorStore.getState().captionStyleConfig,
@@ -615,6 +638,211 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     },
     [updateCaption]
   );
+
+  const syncPayload = useCallback(
+    () => ({
+      shiftSeconds: syncShiftSeconds,
+      skew: syncSkew,
+      anchorSeconds: syncAnchorSeconds,
+      startRange: null,
+      endRange: null,
+    }),
+    [syncAnchorSeconds, syncShiftSeconds, syncSkew]
+  );
+
+  const applySyncedSegmentsToEditor = useCallback(
+    (segments: unknown[] | undefined) => {
+      if (!segments?.length) return;
+      const alignedSegments = segments as AlignedSegment[];
+      const nextCaptions = segmentsToCaptions(alignedSegments, language, theme, captionChunkingConfig).map((caption) => ({
+        ...caption,
+        trackId: defaultCaptionTrackId(tracks),
+        sourceMediaId: activeMediaId || undefined,
+      }));
+      setTranscriptSegments(alignedSegments);
+      setCaptions(nextCaptions);
+      setCaptionDocument({
+        id: captionDocument?.id || `caption_document_${Date.now()}`,
+        name: captionDocument?.name || "Synced captions",
+        sourceMediaId: activeMediaId || captionDocument?.sourceMediaId,
+        languageMode: language,
+        transcript: { segments: alignedSegments, alignedWords: alignedSegments.flatMap((segment) => segment.words || []) },
+        originalAlignedWords: alignedSegments.flatMap((segment) => segment.words || []),
+        chunks: nextCaptions,
+        style: captionStyleConfig,
+        chunkingConfig: captionChunkingConfig,
+        timingConfig: captionTimingConfig,
+        coverageReport: captionDocument?.coverageReport,
+      });
+    },
+    [
+      activeMediaId,
+      captionChunkingConfig,
+      captionDocument,
+      captionStyleConfig,
+      captionTimingConfig,
+      language,
+      setCaptionDocument,
+      setCaptions,
+      setTranscriptSegments,
+      theme,
+      tracks,
+    ]
+  );
+
+  const previewSync = useCallback(async () => {
+    if (!jobId) {
+      setSyncNotice("Generate captions before previewing sync.");
+      return;
+    }
+    setSyncBusy("preview");
+    setSyncNotice("");
+    try {
+      if (!previewBackupRef.current) previewBackupRef.current = captions;
+      const response = await previewCaptionSync(jobId, syncPayload());
+      applySyncedSegmentsToEditor(response.segments);
+      setSyncReport(response.report || null);
+      setSyncNotice("Preview applied in editor only.");
+    } catch (error) {
+      setSyncNotice(error instanceof Error ? error.message : "Sync preview failed.");
+    } finally {
+      setSyncBusy("");
+    }
+  }, [applySyncedSegmentsToEditor, captions, jobId, syncPayload]);
+
+  const applyManualSync = useCallback(async () => {
+    if (!jobId) {
+      setSyncNotice("Generate captions before applying sync.");
+      return;
+    }
+    setSyncBusy("apply");
+    setSyncNotice("");
+    try {
+      const response = await applyCaptionSync(jobId, syncPayload());
+      previewBackupRef.current = null;
+      applySyncedSegmentsToEditor(response.segments);
+      setSyncReport(response.report || null);
+      setSyncNotice("Manual sync saved.");
+    } catch (error) {
+      setSyncNotice(error instanceof Error ? error.message : "Apply sync failed.");
+    } finally {
+      setSyncBusy("");
+    }
+  }, [applySyncedSegmentsToEditor, jobId, syncPayload]);
+
+  const applyAutoRecommendationAnyway = useCallback(async () => {
+    if (!jobId || !lastAutoRecommendation) {
+      setSyncNotice("Run Auto Fix Sync first to get a recommendation.");
+      return;
+    }
+    setSyncBusy("apply");
+    setSyncNotice("");
+    try {
+      const response = await applyCaptionSync(jobId, {
+        shiftSeconds: lastAutoRecommendation.shiftSeconds,
+        skew: lastAutoRecommendation.skew,
+        anchorSeconds: syncAnchorSeconds,
+        startRange: null,
+        endRange: null,
+      });
+      previewBackupRef.current = null;
+      applySyncedSegmentsToEditor(response.segments);
+      setSyncReport(response.report || null);
+      setSyncNotice("Unsafe recommendation applied and saved.");
+    } catch (error) {
+      setSyncNotice(error instanceof Error ? error.message : "Applying recommendation failed.");
+    } finally {
+      setSyncBusy("");
+    }
+  }, [applySyncedSegmentsToEditor, jobId, lastAutoRecommendation, syncAnchorSeconds]);
+
+  const autoFixSync = useCallback(async () => {
+    if (!jobId) {
+      setSyncNotice("Generate captions before auto sync.");
+      return;
+    }
+    setSyncBusy("auto");
+    setSyncNotice("");
+    try {
+      const response = await autoFixCaptionSync(jobId);
+      if (response.applied) {
+        previewBackupRef.current = null;
+        applySyncedSegmentsToEditor(response.segments);
+        setLastAutoRecommendation(null);
+        setSyncNotice("Auto sync saved.");
+      } else {
+        const rec = (response.recommendation || response.report?.recommendation) as Record<string, unknown> | undefined;
+        const shift = Number(rec?.shiftSeconds ?? response.report?.shiftSeconds ?? 0);
+        const skew = Number(rec?.skew ?? response.report?.skew ?? 1);
+        setLastAutoRecommendation({ shiftSeconds: shift, skew });
+        setSyncNotice(`${response.userMessage || response.report?.userMessage || "Auto Sync skipped."} Recommended correction: shift ${shift >= 0 ? "+" : ""}${shift.toFixed(3)}s, skew ${skew.toFixed(4)}.`);
+      }
+      setSyncReport(response.report || null);
+    } catch (error) {
+      setSyncNotice(error instanceof Error ? error.message : "Auto sync failed.");
+    } finally {
+      setSyncBusy("");
+    }
+  }, [applySyncedSegmentsToEditor, jobId]);
+
+  const highQualityAlign = useCallback(async () => {
+    if (!jobId) {
+      setSyncNotice("Generate captions before running High Quality Alignment.");
+      return;
+    }
+    setSyncBusy("align");
+    setSyncNotice("");
+    try {
+      const response = await runHighQualityAlignment(jobId);
+      if (!response.applied) {
+        setSyncReport(response.report || null);
+        setSyncNotice(response.userMessage || (response.report?.userMessage as string) || "High Quality Alignment did not apply.");
+        return;
+      }
+      previewBackupRef.current = null;
+      applySyncedSegmentsToEditor(response.segments);
+      setLastAutoRecommendation(null);
+      setSyncReport(response.report || null);
+      const estimated = Number(response.estimatedWordCount ?? response.report?.estimatedWordCount ?? 0);
+      setSyncNotice(estimated > 0 ? `High Quality Alignment saved. ${estimated} estimated word timings remain.` : "High Quality Alignment saved. Word timings look aligned.");
+    } catch (error) {
+      setSyncNotice(error instanceof Error ? error.message : "High Quality Alignment failed.");
+    } finally {
+      setSyncBusy("");
+    }
+  }, [applySyncedSegmentsToEditor, jobId]);
+
+  const resetSyncPreview = useCallback(() => {
+    if (previewBackupRef.current) {
+      setCaptions(previewBackupRef.current);
+      previewBackupRef.current = null;
+    }
+    setSyncShiftSeconds(0);
+    setSyncSkew(1);
+    setSyncAnchorSeconds(0);
+    setSyncNotice("Sync preview reset.");
+    setSyncReport(null);
+    setLastAutoRecommendation(null);
+  }, [setCaptions]);
+
+  const openTimingDebug = useCallback(async () => {
+    if (!jobId) {
+      setSyncNotice("Generate captions before opening timing debug.");
+      return;
+    }
+    setSyncBusy("debug");
+    try {
+      const debugUrl = `/api/jobs/${jobId}/timing-debug?currentTime=${encodeURIComponent(currentTime.toFixed(3))}`;
+      const debug = await getTimingDebug(jobId, currentTime);
+      setSyncReport(debug.syncReport as Record<string, unknown>);
+      setSyncNotice("Timing debug loaded.");
+      window.open(resolveBackendUrl(debugUrl), "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setSyncNotice(error instanceof Error ? error.message : "Timing debug failed.");
+    } finally {
+      setSyncBusy("");
+    }
+  }, [currentTime, jobId]);
 
   const addSubtitleLine = useCallback(() => {
     addCaption({
@@ -884,6 +1112,107 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             <span className="min-w-0 flex-1 truncate">{coverageNotice}</span>
           </div>
         )}
+        {estimatedWordCount > 0 && (
+          <div className="editor-notice error compact flex items-center gap-1.5">
+            <AlertTriangle size={12} className="shrink-0" />
+            <span className="min-w-0 flex-1">
+              {estimatedWordCount} word timing{estimatedWordCount === 1 ? " is" : "s are"} estimated; sync cannot be guaranteed. Use High Quality Alignment.
+            </span>
+          </div>
+        )}
+        <div className="brutal-box grid gap-2 p-2">
+          <div className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase" style={{ color: "var(--text-primary)" }}>
+            <span>Timing & Sync</span>
+            <button className="btn-ghost px-2 py-1 text-[10px]" type="button" disabled={!jobId || syncBusy === "debug"} onClick={openTimingDebug}>
+              Open Timing Debug
+            </button>
+          </div>
+          <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <span>Global offset {syncShiftSeconds.toFixed(2)}s</span>
+            <input
+              type="range"
+              min={-1}
+              max={1}
+              step={0.01}
+              value={syncShiftSeconds}
+              onChange={(event) => setSyncShiftSeconds(Number(event.target.value))}
+              className="w-full accent-[var(--accent)]"
+            />
+          </label>
+          <div className="grid grid-cols-3 gap-1">
+            {[-0.2, -0.1, -0.05, 0.05, 0.1, 0.2].map((delta) => (
+              <button
+                key={delta}
+                className="btn-ghost px-1 py-1 text-[10px]"
+                type="button"
+                onClick={() => setSyncShiftSeconds((value) => Math.max(-1, Math.min(1, Number((value + delta).toFixed(2)))))}
+              >
+                {delta > 0 ? "+" : ""}{delta.toFixed(2)}s
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>Speed/skew</span>
+              <input
+                className="control-input h-8"
+                type="number"
+                min={0.97}
+                max={1.03}
+                step={0.0001}
+                value={syncSkew}
+                onChange={(event) => setSyncSkew(Math.max(0.97, Math.min(1.03, Number(event.target.value) || 1)))}
+              />
+            </label>
+            <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>Anchor</span>
+              <input
+                className="control-input h-8"
+                type="number"
+                min={0}
+                step={0.01}
+                value={syncAnchorSeconds}
+                onChange={(event) => setSyncAnchorSeconds(Math.max(0, Number(event.target.value) || 0))}
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            <button className="btn-primary col-span-2 text-[10px]" type="button" disabled={!captions.length || syncBusy !== ""} onClick={highQualityAlign}>
+              {syncBusy === "align" ? "Aligning..." : "Run High Quality Alignment"}
+            </button>
+            <button className="btn-ghost text-[10px]" type="button" disabled={!captions.length || syncBusy !== ""} onClick={previewSync}>
+              {syncBusy === "preview" ? "Previewing..." : "Preview Sync"}
+            </button>
+            <button className="btn-primary text-[10px]" type="button" disabled={!captions.length || syncBusy !== ""} onClick={applyManualSync}>
+              {syncBusy === "apply" ? "Saving..." : "Apply Manual Sync"}
+            </button>
+            <button className="btn-ghost text-[10px]" type="button" disabled={!captions.length || syncBusy !== ""} onClick={autoFixSync}>
+              {syncBusy === "auto" ? "Checking..." : "Auto Fix Sync"}
+            </button>
+            <button
+              className="btn-ghost text-[10px]"
+              type="button"
+              disabled={!captions.length || syncBusy !== "" || !lastAutoRecommendation}
+              onClick={applyAutoRecommendationAnyway}
+              title="Unsafe when word timings are estimated"
+            >
+              Apply Recommendation Anyway
+            </button>
+            <button className="btn-ghost text-[10px]" type="button" disabled={syncBusy !== ""} onClick={resetSyncPreview}>
+              Reset Sync
+            </button>
+          </div>
+          {(syncNotice || syncReport) && (
+            <div className="editor-notice compact grid gap-1 text-[10px]">
+              {syncNotice && <span>{syncNotice}</span>}
+              {syncReport && (
+                <span>
+                  {Boolean(syncReport.applied) ? "Applied" : "Not applied"} / shift {Number(syncReport.shiftSeconds || 0).toFixed(3)}s / skew {Number(syncReport.skew || 1).toFixed(4)} / quality {Number(syncReport.quality || 0).toFixed(3)}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {generateError && (

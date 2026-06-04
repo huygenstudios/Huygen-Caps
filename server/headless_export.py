@@ -542,6 +542,45 @@ async def export_headless(
             await close_browser_safely()
             raise ExportStageError("composition_load", "Render page loaded flag was set, but no page instance remained available.")
 
+        async def capture_render_frame() -> bytes:
+            try:
+                return await page.screenshot(
+                    type="png",
+                    omit_background=not is_captions_only,
+                    clip={"x": 0, "y": 0, "width": width, "height": height},
+                    timeout=10000,
+                )
+            except Exception as viewport_exc:
+                try:
+                    element = page.locator("#render-frame")
+                    return await element.screenshot(
+                        type="png",
+                        omit_background=not is_captions_only,
+                        timeout=5000,
+                    )
+                except Exception as locator_exc:
+                    try:
+                        page_state = await page.evaluate(
+                            """() => ({
+                                url: window.location.href,
+                                loaded: window.__RENDER_PAGE_LOADED__ === true,
+                                ready: typeof window.isReady === "function" ? window.isReady() : false,
+                                hasFrame: Boolean(document.querySelector("#render-frame")),
+                                bodyText: (document.body?.innerText || "").slice(0, 600)
+                            })"""
+                        )
+                    except Exception as state_exc:
+                        page_state = {"stateError": f"{type(state_exc).__name__}: {state_exc}"}
+                    logs = _tail("\n".join(page_logs), 1400)
+                    detail = (
+                        f"Viewport screenshot failed: {type(viewport_exc).__name__}: {viewport_exc}. "
+                        f"Render frame screenshot failed: {type(locator_exc).__name__}: {locator_exc}. "
+                        f"Render page state: {json.dumps(page_state, default=str)}"
+                    )
+                    if logs:
+                        detail = f"{detail} Render logs: {logs}"
+                    raise ExportStageError("render_frames", detail, locator_exc) from locator_exc
+
         # Inject caption data via proper serialization (avoids string escaping issues)
         try:
             inject_result = await page.evaluate(
@@ -643,12 +682,7 @@ async def export_headless(
                 # after React has committed the frame.
                 await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
 
-                # Capture the #render-frame element as transparent PNG
-                element = page.locator("#render-frame")
-                screenshot_bytes = await element.screenshot(
-                    type="png",
-                    omit_background=not is_captions_only,
-                )
+                screenshot_bytes = await capture_render_frame()
 
                 # Write PNG bytes to FFmpeg stdin
                 if ffmpeg_proc.stdin:

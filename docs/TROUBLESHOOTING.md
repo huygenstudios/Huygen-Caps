@@ -81,6 +81,15 @@ Rows and timeline chunks share the same caption id. If they appear out of sync:
 
 Timeline trimming writes through `updateCaption`, so row start/end fields refresh after the trim completes.
 
+For speaker/caption synchronization mismatch or speed drift, use the Caption Editor `Timing & Sync` panel:
+
+- `Preview Sync` tests global offset/skew without saving.
+- `Apply Manual Sync` persists corrected timings and regenerates SRT/VTT.
+- `Auto Fix Sync` compares captions with FFmpeg speech activity and applies only when confidence is high.
+- `/api/jobs/{jobId}/timing-debug` shows stable-ts coverage, auto-sync quality, suspicious words, first/last word timing, and activity ranges.
+
+Default Render deployment does not install stable-ts, WhisperX, Silero, torch, or torchaudio. This keeps deploys reliable. For high-quality local word refinement, install `requirements-optional-ai.txt` on a stronger worker and set `ENABLE_STABLE_TS=true`.
+
 ## Caption Gap Still Shows After A Timing Fix
 
 Backend timing fixes do not rewrite captions already loaded in the browser or stored under an old job id.
