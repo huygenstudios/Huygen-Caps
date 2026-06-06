@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 import aiosqlite
 import aiofiles
 
@@ -571,7 +572,7 @@ async def high_quality_align(job_id: str, db: aiosqlite.Connection = Depends(get
     segments = _load_json(row["segments_json"], [])
     transcript = _load_json(row["transcript_json"] if "transcript_json" in row.keys() else None, None)
     language_mode = _stored_language_mode(row["target_lang"])
-    result = run_high_quality_alignment(segments, video_path, language_mode)
+    result = await run_in_threadpool(run_high_quality_alignment, segments, video_path, language_mode)
     if not result.report.get("applied"):
         return JSONResponse(
             {

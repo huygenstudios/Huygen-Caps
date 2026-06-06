@@ -17,7 +17,7 @@ import { useTimelineStore } from "@/store/timelineStore";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-2 rounded border p-2" style={{ borderColor: "var(--border)", background: "rgba(0,0,0,0.12)" }}>
+    <div className="space-y-2 rounded border p-2" style={{ borderColor: "var(--border)", background: "var(--bg-panel-raised)" }}>
       <div className="text-[10px] font-semibold uppercase" style={{ color: "var(--text-muted)" }}>
         {title}
       </div>
@@ -55,7 +55,7 @@ function NumberControl({
         disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
         className="rounded border-0 px-2 py-1 text-xs outline-none disabled:opacity-50"
-        style={{ background: "var(--bg-panel-dark)", color: "var(--text-primary)" }}
+        style={{ background: "var(--bg-control)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
       />
     </label>
   );
@@ -283,7 +283,7 @@ export default function EffectControlsPanel() {
             <textarea
               key={selectedCaption.id}
               className="min-h-20 w-full resize-none rounded border-0 px-2 py-1 text-xs outline-none disabled:opacity-50"
-              style={{ background: "var(--bg-panel-dark)", color: "var(--text-primary)" }}
+              style={{ background: "var(--bg-control)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
               defaultValue={selectedCaption.text}
               disabled={locked}
               onBlur={(event) => updateCaption(selectedCaption.id, applyEditedCaptionText(selectedCaption, event.target.value))}

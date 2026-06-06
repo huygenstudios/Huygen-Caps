@@ -39,12 +39,16 @@ export default function Toolbar() {
         <span className="brand-name">Huygen Caps</span>
       </div>
 
-      <button className="btn-ghost inline-flex items-center gap-2" onClick={openImport}>
+      <button
+        className="btn-ghost inline-flex items-center gap-2"
+        style={{ background: "var(--bg-control)", color: "var(--text-muted)", borderColor: "var(--border-strong)" }}
+        onClick={openImport}
+      >
         <UploadCloud size={14} />
         Import Video
       </button>
 
-      <div className="rounded px-2 py-1 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)", background: "var(--bg-panel-dark)", border: "1px solid var(--border)" }}>
+      <div className="rounded px-2 py-1 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)", background: "var(--bg-control)", border: "1px solid var(--border)" }}>
         Caption Generator
       </div>
 

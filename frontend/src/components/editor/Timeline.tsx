@@ -89,7 +89,7 @@ export default function Timeline() {
         <span>Timeline</span>
         <div className="flex items-center gap-1">
           <button
-            className="p-1 rounded hover:bg-white/10"
+            className="p-1 rounded hover:bg-[var(--hover-surface)]"
             onClick={toggleSnap}
             title={`Snap ${snapEnabled ? "ON" : "OFF"}`}
           >
@@ -98,14 +98,14 @@ export default function Timeline() {
               style={{ color: snapEnabled ? "var(--accent)" : "var(--text-muted)" }}
             />
           </button>
-          <button className="p-1 rounded hover:bg-white/10" onClick={zoomOut} title="Zoom Out (-)">
+          <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={zoomOut} title="Zoom Out (-)">
             <ZoomOut size={12} style={{ color: "var(--text-muted)" }} />
           </button>
-          <button className="p-1 rounded hover:bg-white/10" onClick={zoomIn} title="Zoom In (+)">
+          <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={zoomIn} title="Zoom In (+)">
             <ZoomIn size={12} style={{ color: "var(--text-muted)" }} />
           </button>
           <button
-            className="p-1 rounded hover:bg-white/10"
+            className="p-1 rounded hover:bg-[var(--hover-surface)]"
             onClick={clearAll}
             title="Clear All Captions"
           >
@@ -168,7 +168,7 @@ export default function Timeline() {
             className="shrink-0"
             style={{
               width: TRACK_HEADER_WIDTH,
-              background: "var(--bg-panel-dark)",
+              background: "var(--bg-sidebar)",
               borderRight: "1px solid var(--border)",
               borderBottom: "1px solid var(--border)",
               height: 24,
@@ -202,7 +202,7 @@ export default function Timeline() {
 
       <div
         className="h-4 px-2 flex items-center"
-        style={{ background: "var(--bg-panel-dark)", borderTop: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-monitor-controls)", borderTop: "1px solid var(--border)" }}
       >
         <input
           type="range"

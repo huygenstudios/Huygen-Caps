@@ -81,8 +81,8 @@ export default function MediaPanel() {
                   e.dataTransfer.effectAllowed = "copy";
                 }}
                 style={{
-                  background: activeMediaId === f.id ? "rgba(245, 56, 56, 0.16)" : "transparent",
-                  border: activeMediaId === f.id ? "2px solid var(--accent)" : "2px solid transparent",
+                  background: activeMediaId === f.id ? "var(--bg-panel-hover)" : "var(--bg-panel-raised)",
+                  border: activeMediaId === f.id ? "2px solid var(--accent)" : "2px solid var(--border-subtle)",
                 }}
               >
                 <span style={{ color: "var(--accent)" }}>{iconForType(f.type)}</span>
@@ -97,7 +97,7 @@ export default function MediaPanel() {
                   </div>
                 </div>
                 <button
-                  className="p-1 rounded hover:bg-white/10"
+                  className="p-1 rounded hover:bg-[var(--hover-surface)]"
                   onClick={(e) => {
                     e.stopPropagation();
                     const ok = window.confirm(

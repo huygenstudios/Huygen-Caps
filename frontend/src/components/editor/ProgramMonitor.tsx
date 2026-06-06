@@ -150,7 +150,7 @@ export default function ProgramMonitor() {
       <div
         ref={viewportRef}
         className="relative flex flex-1 items-center justify-center overflow-hidden p-3"
-        style={{ background: "#000" }}
+        style={{ background: "var(--bg-program)" }}
         onWheel={handleWheel}
         onMouseDown={handlePanDown}
       >
@@ -283,16 +283,16 @@ export default function ProgramMonitor() {
 
       <div
         className="flex shrink-0 items-center gap-1 px-3 py-1.5"
-        style={{ background: "var(--bg-panel-dark)", borderTop: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-monitor-controls)", borderTop: "1px solid var(--border)" }}
       >
-        <button className="p-1 rounded hover:bg-white/10" onClick={stop} title="Stop">
+        <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={stop} title="Stop">
           <Square size={14} style={{ color: "var(--text-muted)" }} />
         </button>
-        <button className="p-1 rounded hover:bg-white/10" onClick={frameBack} title="Frame Back">
+        <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={frameBack} title="Frame Back">
           <SkipBack size={14} style={{ color: "var(--text-muted)" }} />
         </button>
         <button
-          className="p-1.5 rounded hover:bg-white/10"
+          className="p-1.5 rounded hover:bg-[var(--hover-surface)]"
           onClick={() => {
             if (!hasPlayableVideo) {
               setTimelineNotice("Import a video before playback.");
@@ -304,7 +304,7 @@ export default function ProgramMonitor() {
         >
           {isPlaying ? <Pause size={18} style={{ color: "var(--text-primary)" }} /> : <Play size={18} style={{ color: "var(--text-primary)" }} />}
         </button>
-        <button className="p-1 rounded hover:bg-white/10" onClick={frameForward} title="Frame Forward">
+        <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={frameForward} title="Frame Forward">
           <SkipForward size={14} style={{ color: "var(--text-muted)" }} />
         </button>
 
@@ -320,16 +320,16 @@ export default function ProgramMonitor() {
 
         <div className="flex-1" />
 
-        <button className="p-1 rounded hover:bg-white/10" onClick={toggleCaptionOverlay} title="Toggle Captions">
+        <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={toggleCaptionOverlay} title="Toggle Captions">
           {showCaptionOverlay ? <Eye size={14} style={{ color: "var(--accent)" }} /> : <EyeOff size={14} style={{ color: "var(--text-muted)" }} />}
         </button>
-        <button className="p-1 rounded hover:bg-white/10" onClick={toggleSafeZone} title="Toggle Safe Zone">
+        <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={toggleSafeZone} title="Toggle Safe Zone">
           <Grid3X3 size={14} style={{ color: showSafeZone ? "var(--accent)" : "var(--text-muted)" }} />
         </button>
 
         <select
           className="rounded border-0 px-1 py-0.5 text-[10px] outline-none"
-          style={{ background: "var(--bg-panel)", color: "var(--text-muted)" }}
+          style={{ background: "var(--bg-control)", color: "var(--text-muted)", border: "1px solid var(--border)" }}
           value={zoom}
           onChange={(event) => {
             const nextZoom = Number(event.target.value);
@@ -346,7 +346,7 @@ export default function ProgramMonitor() {
 
         <select
           className="rounded border-0 px-1 py-0.5 text-[10px] outline-none"
-          style={{ background: "var(--bg-panel)", color: "var(--text-muted)" }}
+          style={{ background: "var(--bg-control)", color: "var(--text-muted)", border: "1px solid var(--border)" }}
           value={quality}
           onChange={(event) => setQuality(event.target.value as "full" | "half" | "quarter")}
         >

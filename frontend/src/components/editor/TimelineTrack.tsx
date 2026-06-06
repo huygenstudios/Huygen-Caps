@@ -124,7 +124,7 @@ function MediaClipBlock({ clip, track }: { clip: TimelineClip; track: TrackType 
         width: visibleWidth,
         background: clipColor(clip.type),
         color: "#ffffff",
-        border: selected ? "2px solid var(--accent)" : "2px solid rgba(255,255,255,0.14)",
+        border: selected ? "2px solid var(--accent)" : "2px solid var(--border-subtle)",
         boxShadow: selected ? "0 0 0 2px var(--accent)" : "none",
         opacity: track.visible ? 1 : 0.35,
         cursor: track.locked ? "not-allowed" : "grab",
@@ -141,18 +141,18 @@ function MediaClipBlock({ clip, track }: { clip: TimelineClip; track: TrackType 
       <span
         className="absolute left-0 top-0 bottom-0 z-20 w-1.5 cursor-ew-resize rounded-l"
         onMouseDown={(event) => onTrimMouseDown("start", event)}
-        style={{ background: selected ? "var(--accent)" : "rgba(255,255,255,0.18)" }}
+        style={{ background: selected ? "var(--accent)" : "var(--clip-handle)" }}
       />
       <span
         className="relative z-10 truncate rounded px-1"
-        style={{ background: isAudioClip ? "rgba(12, 20, 32, 0.58)" : "transparent" }}
+        style={{ background: isAudioClip ? "var(--clip-label-bg)" : "transparent" }}
       >
         {media.name}
       </span>
       <span
         className="absolute right-0 top-0 bottom-0 z-20 w-1.5 cursor-ew-resize rounded-r"
         onMouseDown={(event) => onTrimMouseDown("end", event)}
-        style={{ background: selected ? "var(--accent)" : "rgba(255,255,255,0.18)" }}
+        style={{ background: selected ? "var(--accent)" : "var(--clip-handle)" }}
       />
     </div>
   );
@@ -215,7 +215,7 @@ export default function TimelineTrack({ track }: Props) {
         className="flex items-center gap-1 px-2 shrink-0 select-none"
         style={{
           width: TRACK_HEADER_WIDTH,
-          background: "var(--bg-panel-dark)",
+          background: "var(--bg-sidebar)",
           borderRight: "1px solid var(--border)",
           opacity: track.visible ? 1 : 0.55,
         }}
@@ -224,15 +224,15 @@ export default function TimelineTrack({ track }: Props) {
           {track.label}
         </span>
         <div className="flex-1" />
-        <button className="p-0.5 rounded hover:bg-white/10" onClick={() => toggleTrackLock(track.id)}>
+        <button className="p-0.5 rounded hover:bg-[var(--hover-surface)]" onClick={() => toggleTrackLock(track.id)}>
           {track.locked ? <Lock size={10} style={{ color: "var(--accent)" }} /> : <Unlock size={10} style={{ color: "var(--text-muted)" }} />}
         </button>
         {track.type === "audio" ? (
-          <button className="p-0.5 rounded hover:bg-white/10" onClick={() => toggleTrackMute(track.id)}>
+          <button className="p-0.5 rounded hover:bg-[var(--hover-surface)]" onClick={() => toggleTrackMute(track.id)}>
             {track.muted ? <VolumeX size={10} style={{ color: "var(--accent)" }} /> : <Volume2 size={10} style={{ color: "var(--text-muted)" }} />}
           </button>
         ) : (
-          <button className="p-0.5 rounded hover:bg-white/10" onClick={() => toggleTrackVisibility(track.id)}>
+          <button className="p-0.5 rounded hover:bg-[var(--hover-surface)]" onClick={() => toggleTrackVisibility(track.id)}>
             {track.visible ? <Eye size={10} style={{ color: "var(--text-muted)" }} /> : <EyeOff size={10} style={{ color: "var(--accent)" }} />}
           </button>
         )}

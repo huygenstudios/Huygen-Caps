@@ -1018,7 +1018,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
               <span>{pipelineStatus}</span>
               <span>{pipelinePercent}%</span>
             </div>
-            <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--bg-panel-dark)" }}>
+            <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--range-track)" }}>
               <div className="h-full transition-all duration-300" style={{ width: `${pipelinePercent}%`, background: "var(--accent)" }} />
             </div>
           </div>
@@ -1051,7 +1051,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         <button className="icon-button" onClick={() => setFlow("setup")} title="Back">
           <ChevronLeft size={15} />
         </button>
-        <label className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1" style={{ background: "var(--bg-panel-dark)" }}>
+        <label className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1" style={{ background: "var(--bg-control)", border: "1px solid var(--border)" }}>
           <Search size={13} style={{ color: "var(--text-muted)" }} />
           <input
             className="w-full border-0 bg-transparent text-xs outline-none"
@@ -1339,7 +1339,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         )}
       </div>
 
-      <div className="shrink-0 border-t p-3" style={{ borderColor: "var(--border)", background: "var(--bg-panel-dark)" }}>
+      <div className="shrink-0 border-t p-3" style={{ borderColor: "var(--border)", background: "var(--bg-monitor-controls)" }}>
         <button className="btn-ghost flex w-full items-center justify-center gap-2" onClick={addSubtitleLine}>
           <Plus size={14} />
           Add New Subtitle Line

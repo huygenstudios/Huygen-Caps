@@ -65,7 +65,7 @@ export default function CaptionFirstLeftPanel() {
     <div className="panel flex h-full min-h-0">
       <nav
         className="flex w-[86px] shrink-0 flex-col items-center gap-1 border-r py-2"
-        style={{ background: "var(--bg-panel-dark)", borderColor: "var(--border-strong)" }}
+        style={{ background: "var(--bg-sidebar)", borderColor: "var(--border-strong)" }}
       >
         {TOOLS.map((tool) => (
           <button
