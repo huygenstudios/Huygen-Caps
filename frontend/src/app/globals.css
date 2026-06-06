@@ -378,6 +378,15 @@ textarea {
   box-shadow: none;
 }
 
+.btn-danger {
+  background: #F87171;
+  color: #171217;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #FF5C5C;
+}
+
 .btn-ghost {
   background: var(--bg-control);
   color: var(--text-muted);
@@ -404,6 +413,75 @@ textarea {
 .toolbar-shell {
   background: var(--bg-toolbar);
   border-bottom: var(--border-width-normal) solid var(--border-strong);
+}
+
+.toolbar-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.toolbar-button-label,
+.toolbar-export-label {
+  white-space: nowrap;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.confirm-dialog {
+  width: min(420px, 100%);
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: var(--border-width-strong) solid var(--border-strong);
+  border-radius: 3px;
+  box-shadow: var(--shadow-hard);
+}
+
+.confirm-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-panel-header);
+  border-bottom: var(--border-width-normal) solid var(--border-strong);
+}
+
+.confirm-dialog-header h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+}
+
+.confirm-dialog-danger-icon {
+  color: #F87171;
+}
+
+.confirm-dialog-body {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
 }
 
 .editor-shell {
@@ -542,6 +620,30 @@ textarea {
   font-size: 10px;
   font-weight: 800;
   text-align: right;
+}
+
+@media (max-width: 1100px) {
+  .toolbar-badge {
+    display: none !important;
+  }
+
+  .brand-name {
+    max-width: 136px;
+  }
+}
+
+@media (max-width: 900px) {
+  .toolbar-button-label {
+    display: none;
+  }
+
+  .toolbar-import {
+    padding-inline: 8px;
+  }
+
+  .brand-name {
+    max-width: 112px;
+  }
 }
 
 @media (max-width: 767px) {
@@ -1012,6 +1114,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   color: var(--text-primary);
 }
 
@@ -1027,6 +1130,10 @@ textarea {
 }
 
 .brand-name {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 14px;
   font-weight: 900;
   color: var(--text-primary);

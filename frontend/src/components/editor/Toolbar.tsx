@@ -26,8 +26,8 @@ export default function Toolbar() {
   };
 
   return (
-    <div className="toolbar-shell flex h-12 shrink-0 select-none items-center gap-2 px-2">
-      <div className="brand-mark mr-2">
+    <div className="toolbar-shell flex h-12 min-w-0 shrink-0 select-none items-center gap-2 overflow-hidden px-2">
+      <div className="brand-mark mr-1 min-w-0 shrink">
         <img
           className="brand-logo"
           src="/brand/huygen-logo.png"
@@ -36,19 +36,20 @@ export default function Toolbar() {
           height={30}
           style={{ width: 30, height: 30, maxWidth: 30, maxHeight: 30, objectFit: "contain" }}
         />
-        <span className="brand-name">Huygen Caps</span>
+        <span className="brand-name truncate">Huygen Caps</span>
       </div>
 
       <button
-        className="btn-ghost inline-flex items-center gap-2"
+        className="toolbar-import btn-ghost inline-flex shrink-0 items-center gap-2"
         style={{ background: "var(--bg-control)", color: "var(--text-muted)", borderColor: "var(--border-strong)" }}
         onClick={openImport}
+        title="Import Video"
       >
         <UploadCloud size={14} />
-        Import Video
+        <span className="toolbar-button-label">Import Video</span>
       </button>
 
-      <div className="hidden rounded px-2 py-1 text-[10px] font-bold uppercase sm:block" style={{ color: "var(--text-muted)", background: "var(--bg-control)", border: "1px solid var(--border)" }}>
+      <div className="toolbar-badge hidden rounded px-2 py-1 text-[10px] font-bold uppercase sm:block" style={{ color: "var(--text-muted)", background: "var(--bg-control)", border: "1px solid var(--border)" }}>
         Caption Generator
       </div>
 
@@ -61,7 +62,7 @@ export default function Toolbar() {
 
       <div className="flex-1" />
 
-      <span className="hidden text-[11px] md:inline" style={{ color: "var(--text-muted)" }}>
+      <span className="hidden text-[11px] xl:inline" style={{ color: "var(--text-muted)" }}>
         Last edited a few seconds ago
       </span>
 
@@ -75,8 +76,8 @@ export default function Toolbar() {
       >
         {colorMode === "dark" ? <Sun size={15} /> : <Moon size={15} />}
       </button>
-      <button className="btn-primary inline-flex items-center gap-2" onClick={() => setShowExportModal(true)}>
-        Export Project
+      <button className="toolbar-export btn-primary inline-flex shrink-0 items-center gap-2" onClick={() => setShowExportModal(true)} title="Export Project">
+        <span className="toolbar-export-label">Export Project</span>
         <Download size={14} />
       </button>
     </div>
