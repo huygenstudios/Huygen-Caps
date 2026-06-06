@@ -536,30 +536,6 @@ textarea {
   inset: -6px;
 }
 
-.editor-layout-reset {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  z-index: 80;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 28px;
-  padding: 4px 8px;
-  color: var(--text-muted);
-  background: var(--bg-control);
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  font-size: 10px;
-  font-weight: 800;
-  box-shadow: var(--shadow-hard-small);
-}
-
-.editor-layout-reset:hover {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-
 .editor-workspace-mobile {
   display: flex;
   min-height: 0;
