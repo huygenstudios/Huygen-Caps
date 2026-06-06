@@ -49,7 +49,7 @@ interface EditorState {
   applyCaptionStylePreset: (presetId: CaptionStylePresetId) => void;
   captionStyleConfig: CaptionStyleConfig;
   setCaptionStyleConfig: (config: Partial<CaptionStyleConfig>) => void;
-  resetCaptionStyleConfig: () => void;
+  resetCaptionStyleConfig: (presetId?: CaptionStylePresetId) => void;
   savedCaptionPresets: CaptionStyleConfig[];
   saveCaptionPreset: (name?: string) => void;
   captionChunkingConfig: CaptionChunkingConfig;
@@ -165,18 +165,20 @@ export const useEditorStore = create<EditorState>((set) => ({
         },
       };
     }),
-  resetCaptionStyleConfig: () =>
-    set(() => {
+  resetCaptionStyleConfig: (presetId) =>
+    set((state) => {
       recordProjectHistory("Reset caption style");
+      const preset = getCaptionPreset(presetId || (state.theme as CaptionStylePresetId) || "word_highlight_box");
+      const captionStyleConfig = normalizeCaptionStyleConfig(preset.defaultStyleConfig);
       return {
-        captionStyleConfig: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG,
-        theme: "word_highlight_box",
+        captionStyleConfig,
+        theme: preset.id,
         captionLayerTransform: {
-          xPercent: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.positionX,
-          yPercent: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.positionY,
-          scale: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.scale,
-          rotation: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.rotation,
-          opacity: DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.opacity,
+          xPercent: captionStyleConfig.positionX,
+          yPercent: captionStyleConfig.positionY,
+          scale: captionStyleConfig.scale,
+          rotation: captionStyleConfig.rotation,
+          opacity: captionStyleConfig.opacity,
           anchor: "center",
         },
       };

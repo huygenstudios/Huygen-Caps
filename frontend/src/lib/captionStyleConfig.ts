@@ -7,8 +7,16 @@ export const CREATOR_FONTS = [
   "Poppins",
   "Inter",
   "SF Pro Display",
+  "Helvetica",
   "Helvetica Neue",
   "Montserrat",
+  "LostaMasta",
+  "Made Avenue",
+  "Tactic",
+  "8-BIT WONDER",
+  "BlackChancery",
+  "Brushstrike",
+  "Deltha",
   "Roboto",
   "Oswald",
   "Anton",
@@ -26,8 +34,16 @@ export const FONT_STACKS: Record<string, string> = {
   Poppins: "'Poppins', 'Inter', Arial, sans-serif",
   Inter: "'Inter', Arial, sans-serif",
   "SF Pro Display": "'SF Pro Display', 'Inter', 'Helvetica Neue', Arial, sans-serif",
+  Helvetica: "'Helvetica Local', 'Helvetica Neue', Helvetica, Inter, Arial, sans-serif",
   "Helvetica Neue": "'Helvetica Neue', Inter, Arial, sans-serif",
-  Montserrat: "'Montserrat', 'Inter', Arial, sans-serif",
+  Montserrat: "'Montserrat Local', 'Montserrat', 'Inter', Arial, sans-serif",
+  LostaMasta: "'LostaMasta', 'Poppins', Impact, sans-serif",
+  "Made Avenue": "'Made Avenue', 'Georgia', serif",
+  Tactic: "'Tactic', 'Inter', Arial, sans-serif",
+  "8-BIT WONDER": "'8-BIT WONDER', Impact, sans-serif",
+  BlackChancery: "'BlackChancery', Georgia, serif",
+  Brushstrike: "'Brushstrike', Impact, sans-serif",
+  Deltha: "'Deltha', Impact, sans-serif",
   Roboto: "'Roboto', Arial, sans-serif",
   Oswald: "'Oswald', 'Arial Narrow', Arial, sans-serif",
   Anton: "'Anton', Impact, Arial, sans-serif",
@@ -44,13 +60,15 @@ export const BUILD_SMALL_FONT_SIZE_PX = 104;
 export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   presetName: "Word Highlight Box",
   fontFamily: "Poppins",
+  bigFontFamily: "Poppins",
+  smallFontFamily: "Poppins",
   fontSize: 54,
   fontWeight: 900,
   textColor: "#FFFFFF",
   activeWordColor: "#FFD43B",
   backgroundEnabled: true,
   backgroundColor: "#000000",
-  backgroundOpacity: 0.78,
+  backgroundOpacity: 1,
   backgroundFit: "wrap",
   borderRadius: 16,
   paddingX: 24,
@@ -127,6 +145,8 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   ...DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG,
   presetName: "Editorial Lockup",
   fontFamily: "Inter",
+  bigFontFamily: "Inter",
+  smallFontFamily: "Inter",
   fontSize: 112,
   fontWeight: 900,
   textColor: "#FFFFFF",
@@ -150,7 +170,7 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   animationStrength: 0,
   animationSpeed: 1,
   animationSmoothness: 0,
-  entranceAnimation: "slide_up",
+  entranceAnimation: "slide",
   safeAreaEnabled: true,
   positionX: 50,
   positionY: 50,
@@ -233,6 +253,15 @@ export function resolveFontFamily(fontFamily: string) {
   return FONT_STACKS[fontFamily] || FONT_STACKS[DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.fontFamily];
 }
 
+function safeEntranceAnimation(value: unknown): CaptionStyleConfig["entranceAnimation"] {
+  if (value === "slide_up") return "slide";
+  if (value === "blur_fade") return "flip";
+  if (value === "hard_cut") return "none";
+  return value === "none" || value === "fade" || value === "flip" || value === "pop" || value === "slide"
+    ? value
+    : DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.entranceAnimation;
+}
+
 export function backgroundRgba(config: CaptionStyleConfig) {
   const hex = safeColor(config.backgroundColor, DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.backgroundColor).replace("#", "");
   const fullHex = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
@@ -286,8 +315,10 @@ export function normalizeCaptionStyleConfig(
   return {
     presetName: typeof merged.presetName === "string" && merged.presetName.trim() ? merged.presetName : defaults.presetName,
     fontFamily: safeFont(merged.fontFamily),
+    bigFontFamily: safeFont(merged.bigFontFamily || merged.fontFamily),
+    smallFontFamily: safeFont(merged.smallFontFamily || merged.fontFamily),
     fontSize: clamp(merged.fontSize, 0, 180, defaults.fontSize),
-    fontWeight: [400, 500, 600, 700, 800, 900].includes(Number(merged.fontWeight)) ? Number(merged.fontWeight) : defaults.fontWeight,
+    fontWeight: Math.round(clamp(merged.fontWeight, 100, 1000, Number(defaults.fontWeight) || 900) / 50) * 50,
     textColor: safeColor(merged.textColor, defaults.textColor),
     activeWordColor,
     backgroundEnabled: Boolean(merged.backgroundEnabled),
@@ -322,14 +353,7 @@ export function normalizeCaptionStyleConfig(
     animationStrength: clamp(merged.animationStrength, 0, 1.4, defaults.animationStrength),
     animationSpeed: clamp(merged.animationSpeed, 0.4, 2, defaults.animationSpeed),
     animationSmoothness: clamp(merged.animationSmoothness, 0, 1, defaults.animationSmoothness),
-    entranceAnimation:
-      merged.entranceAnimation === "hard_cut" ||
-      merged.entranceAnimation === "fade" ||
-      merged.entranceAnimation === "pop" ||
-      merged.entranceAnimation === "slide_up" ||
-      merged.entranceAnimation === "blur_fade"
-        ? merged.entranceAnimation
-        : "none",
+    entranceAnimation: safeEntranceAnimation(merged.entranceAnimation),
     backgroundShadow: Boolean(merged.backgroundShadow),
     backgroundBorderEnabled: Boolean(merged.backgroundBorderEnabled),
     backgroundBorderColor: safeColor(merged.backgroundBorderColor, defaults.backgroundBorderColor),
@@ -369,9 +393,9 @@ export function normalizeCaptionStyleConfig(
     layoutMode: safeLayoutMode(merged.layoutMode),
     layoutAsymmetry: clamp(merged.layoutAsymmetry, 0, 1, defaults.layoutAsymmetry || 0.45),
     layoutSafeMarginPercent: clamp(merged.layoutSafeMarginPercent, 0, 20, defaults.layoutSafeMarginPercent || 8),
-    collisionPadding: clamp(merged.collisionPadding, 4, 16, defaults.collisionPadding || 8),
+    collisionPadding: clamp(merged.collisionPadding, 0, 120, defaults.collisionPadding || 8),
     showBuildWordBounds: Boolean(merged.showBuildWordBounds),
-    tightness: clamp(merged.tightness, 0, 1, defaults.tightness || 0.75),
+    tightness: clamp(merged.tightness, 0, 10, defaults.tightness || 0.75),
     hardCutReveal: merged.hardCutReveal !== false,
   };
 }

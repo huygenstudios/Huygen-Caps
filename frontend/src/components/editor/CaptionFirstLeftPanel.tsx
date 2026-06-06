@@ -62,7 +62,7 @@ export default function CaptionFirstLeftPanel() {
   };
 
   return (
-    <div className="panel flex h-full">
+    <div className="panel flex h-full min-h-0">
       <nav
         className="flex w-[86px] shrink-0 flex-col items-center gap-1 border-r py-2"
         style={{ background: "var(--bg-panel-dark)", borderColor: "var(--border-strong)" }}
@@ -96,7 +96,7 @@ export default function CaptionFirstLeftPanel() {
         ))}
       </nav>
 
-      <div className="min-w-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         {renderPanel()}
       </div>
     </div>

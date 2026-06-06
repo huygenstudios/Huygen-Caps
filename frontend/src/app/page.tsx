@@ -50,13 +50,12 @@ export default function EditorPage() {
         className="grid min-h-0 flex-1 gap-1 p-1"
         style={{ gridTemplateRows: "minmax(0, 1fr) 236px" }}
       >
-        <section className="min-h-0 min-w-0 overflow-auto">
+        <section className="min-h-0 min-w-0 overflow-hidden">
           <div
-            className="grid h-full min-h-[420px] gap-1"
+            className="grid h-full min-h-0 gap-1"
             style={{
-              minWidth: "1080px",
               gridTemplateColumns:
-                "minmax(340px, 420px) minmax(420px, 1fr) minmax(320px, 370px)",
+                "clamp(280px, 26vw, 420px) minmax(320px, 1fr) clamp(300px, 24vw, 390px)",
             }}
           >
             <div className="min-h-0 min-w-0 overflow-hidden">

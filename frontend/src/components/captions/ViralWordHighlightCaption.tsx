@@ -84,11 +84,14 @@ function wordEntranceStyle(wordStart: number, currentTime: number, fps: number, 
     return { opacity: progress, transform: "translateY(0) scale(1)" };
   }
   if (config.entranceAnimation === "pop") {
-    const boxScale = 0.9 + 0.1 * progress;
+    const boxScale = progress < 0.72 ? 0.85 + 0.2 * (progress / 0.72) : 1.05 - 0.05 * ((progress - 0.72) / 0.28);
     return { opacity: progress, transform: `translateY(0) scale(${boxScale})` };
   }
-  if (config.entranceAnimation === "slide_up") {
+  if (config.entranceAnimation === "slide") {
     return { opacity: progress, transform: `translateY(${(1 - progress) * 12}px) scale(1)` };
+  }
+  if (config.entranceAnimation === "flip") {
+    return { opacity: progress, transform: `perspective(320px) rotateX(${(1 - progress) * -70}deg) scale(1)` };
   }
   return { opacity: 1, transform: "translateY(0) scale(1)" };
 }
@@ -148,7 +151,7 @@ export default function ViralWordHighlightCaption({
                 display: "inline-block",
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontSize,
-                fontWeight: 900,
+                fontWeight: config.fontWeight,
                 letterSpacing: 0,
                 textTransform: "uppercase",
                 color: isActive ? "#22f4b8" : isVisible ? "#ffffff" : "transparent",

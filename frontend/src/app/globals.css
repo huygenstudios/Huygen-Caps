@@ -4,6 +4,115 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: "Poppins";
+  src: url("/fonts/Poppins-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Poppins";
+  src: url("/fonts/Poppins-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Poppins";
+  src: url("/fonts/Poppins-Black.ttf") format("truetype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Montserrat Local";
+  src: url("/fonts/Montserrat-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Montserrat Local";
+  src: url("/fonts/Montserrat-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Montserrat Local";
+  src: url("/fonts/Montserrat-Black.ttf") format("truetype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Helvetica Local";
+  src: url("/fonts/Helvetica-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Helvetica Local";
+  src: url("/fonts/Helvetica-Bold.otf") format("opentype");
+  font-weight: 700 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "LostaMasta";
+  src: url("/fonts/LostaMasta-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "LostaMasta";
+  src: url("/fonts/LostaMasta-Black.ttf") format("truetype");
+  font-weight: 800 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Made Avenue";
+  src: url("/fonts/MadeAvenue-Regular.otf") format("opentype");
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Tactic";
+  src: url("/fonts/TacticSans-Regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Tactic";
+  src: url("/fonts/TacticSans-Bold.otf") format("opentype");
+  font-weight: 700 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face { font-family: "8-BIT WONDER"; src: url("/fonts/8-BIT-WONDER.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "BlackChancery"; src: url("/fonts/BlackChancery.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Brushstrike"; src: url("/fonts/Brushstrike.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Deltha"; src: url("/fonts/Deltha.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+
 :root,
 :root[data-theme="dark"] {
   --huygen-red: #F53838;

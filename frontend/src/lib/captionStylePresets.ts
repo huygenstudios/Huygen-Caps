@@ -18,6 +18,80 @@ export interface CaptionPresetDefinition {
   supportedControls: string[];
 }
 
+export type CaptionPresetCapability = {
+  background: boolean;
+  backgroundBorder: boolean;
+  textOutline: boolean;
+  textShadow: boolean;
+  transitions: boolean;
+  maxLines: boolean;
+  asymmetricScale: boolean;
+  editorialFonts: boolean;
+};
+
+export const PRESET_CAPABILITIES: Record<CaptionStylePresetId, CaptionPresetCapability> = {
+  word_highlight_box: {
+    background: true,
+    backgroundBorder: true,
+    textOutline: true,
+    textShadow: true,
+    transitions: true,
+    maxLines: true,
+    asymmetricScale: true,
+    editorialFonts: false,
+  },
+  kinetic_fade: {
+    background: false,
+    backgroundBorder: false,
+    textOutline: true,
+    textShadow: true,
+    transitions: true,
+    maxLines: true,
+    asymmetricScale: true,
+    editorialFonts: false,
+  },
+  attention_punch: {
+    background: false,
+    backgroundBorder: false,
+    textOutline: true,
+    textShadow: true,
+    transitions: true,
+    maxLines: true,
+    asymmetricScale: true,
+    editorialFonts: false,
+  },
+  mrbeast_style: {
+    background: false,
+    backgroundBorder: false,
+    textOutline: true,
+    textShadow: true,
+    transitions: true,
+    maxLines: true,
+    asymmetricScale: true,
+    editorialFonts: false,
+  },
+  apple_cinematic: {
+    background: false,
+    backgroundBorder: false,
+    textOutline: true,
+    textShadow: true,
+    transitions: true,
+    maxLines: true,
+    asymmetricScale: false,
+    editorialFonts: false,
+  },
+  modern_minimalist_lockup: {
+    background: false,
+    backgroundBorder: false,
+    textOutline: true,
+    textShadow: true,
+    transitions: true,
+    maxLines: false,
+    asymmetricScale: false,
+    editorialFonts: true,
+  },
+};
+
 function chunkingConfig(overrides: Partial<CaptionChunkingConfig>): CaptionChunkingConfig {
   return {
     ...DEFAULT_CAPTION_CHUNKING_CONFIG,
@@ -45,6 +119,8 @@ export const CAPTION_PRESET_REGISTRY: Record<CaptionStylePresetId, CaptionPreset
     defaultStyleConfig: normalizeCaptionStyleConfig({
       presetName: "Kinetic Fade",
       fontFamily: "Poppins",
+      bigFontFamily: "Poppins",
+      smallFontFamily: "Poppins",
       fontSize: 56,
       fontWeight: 800,
       textColor: "#FFFFFF",
@@ -93,6 +169,8 @@ export const CAPTION_PRESET_REGISTRY: Record<CaptionStylePresetId, CaptionPreset
     defaultStyleConfig: normalizeCaptionStyleConfig({
       presetName: "Attention Punch",
       fontFamily: "Anton",
+      bigFontFamily: "Anton",
+      smallFontFamily: "Anton",
       fontSize: 64,
       fontWeight: 900,
       textColor: "#FFFFFF",
@@ -143,6 +221,8 @@ export const CAPTION_PRESET_REGISTRY: Record<CaptionStylePresetId, CaptionPreset
     defaultStyleConfig: normalizeCaptionStyleConfig({
       presetName: "MrBeast Style",
       fontFamily: "Komika Axis",
+      bigFontFamily: "Komika Axis",
+      smallFontFamily: "Komika Axis",
       fontSize: 76,
       fontWeight: 900,
       textColor: "#FFFFFF",
@@ -168,7 +248,7 @@ export const CAPTION_PRESET_REGISTRY: Record<CaptionStylePresetId, CaptionPreset
       animationStrength: 1.35,
       animationSpeed: 1.4,
       animationSmoothness: 0,
-      entranceAnimation: "none",
+      entranceAnimation: "pop",
       positionX: 50,
       positionY: 70,
       scale: 1,
@@ -209,6 +289,8 @@ export const CAPTION_PRESET_REGISTRY: Record<CaptionStylePresetId, CaptionPreset
     defaultStyleConfig: normalizeCaptionStyleConfig({
       presetName: "Apple Cinematic",
       fontFamily: "SF Pro Display",
+      bigFontFamily: "SF Pro Display",
+      smallFontFamily: "SF Pro Display",
       fontSize: 68,
       fontWeight: 600,
       textColor: "#FFFFFF",
@@ -268,7 +350,7 @@ export const CAPTION_PRESET_REGISTRY: Record<CaptionStylePresetId, CaptionPreset
     description: "Editorial lockup captions with one anchor word and fixed reveal positions.",
     previewText: "change your life",
     renderer: "modern_minimalist_lockup",
-    defaultStyleConfig: normalizeModernMinimalistStyleConfig(MODERN_MINIMALIST_BASE_CONFIG),
+      defaultStyleConfig: normalizeModernMinimalistStyleConfig(MODERN_MINIMALIST_BASE_CONFIG),
     defaultChunkingConfig: chunkingConfig({
       targetWordsPerCaption: 3,
       maxWordsPerCaption: 4,

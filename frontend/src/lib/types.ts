@@ -404,7 +404,7 @@ export interface ExportSettings {
 }
 
 export type CaptionAlignment = "left" | "center" | "right";
-export type CaptionEntranceAnimation = "none" | "hard_cut" | "fade" | "pop" | "slide_up" | "blur_fade";
+export type CaptionEntranceAnimation = "none" | "hard_cut" | "fade" | "flip" | "pop" | "slide";
 export type CaptionWordAnimation = "none" | "pop" | "bounce";
 export type CaptionWordEffect = "none" | "reveal" | "highlight" | "bounce" | "paint" | "pop" | "fade";
 export type CaptionMaxLines = "auto" | 1 | 2 | 3;
@@ -418,6 +418,8 @@ export interface BuildPresetFontSizeConfig {
 export interface CaptionStyleConfig {
   presetName: string;
   fontFamily: string;
+  bigFontFamily?: string;
+  smallFontFamily?: string;
   fontSize: number;
   fontWeight: number | string;
   textColor: string;

@@ -63,14 +63,16 @@ function activeWordTransform(
     const startScale = interpolate(config.animationStrength, 0, 1.4, 1, 0.98);
     const scale = interpolate(ageFrames, 0, peakFrame, startScale, maxScale);
     const y = interpolate(ageFrames, 0, peakFrame, 5 * config.animationStrength, lift);
-    return `translateY(${y}px) scale(${scale})`;
+    const squash = config.asymmetricScaleEnabled ? Math.sin(Math.min(1, ageFrames / peakFrame) * Math.PI) * (config.asymmetricScaleStrength || 0) : 0;
+    return `translateY(${y}px) scale(${scale}) scaleX(${1 + squash * 0.08}) scaleY(${1 - squash * 0.045})`;
   }
 
   if (ageFrames <= settleFrame) {
     const settle = config.animationType === "bounce" && ageFrames < settleFrame - 2 ? 0.98 : 1;
     const scale = interpolate(ageFrames, peakFrame, settleFrame, maxScale, settle);
     const y = interpolate(ageFrames, peakFrame, settleFrame, lift, 0);
-    return `translateY(${y}px) scale(${scale})`;
+    const squash = config.asymmetricScaleEnabled ? Math.sin(Math.max(0, 1 - (ageFrames - peakFrame) / Math.max(0.001, settleFrame - peakFrame)) * Math.PI) * (config.asymmetricScaleStrength || 0) : 0;
+    return `translateY(${y}px) scale(${scale}) scaleX(${1 + squash * 0.08}) scaleY(${1 - squash * 0.045})`;
   }
 
   return "translateY(0) scale(1)";
@@ -85,11 +87,14 @@ function entranceTransform(currentTime: number, captionStart: number, config: Ca
   if (config.entranceAnimation === "fade") {
     return { opacity: progress, transform: "translate(-50%, -50%) scale(1)" };
   }
+  if (config.entranceAnimation === "flip") {
+    return { opacity: progress, transform: `translate(-50%, -50%) perspective(420px) rotateX(${(1 - progress) * -70}deg) scale(1)` };
+  }
   if (config.entranceAnimation === "pop") {
-    const boxScale = interpolate(progress, 0, 1, 0.92, 1);
+    const boxScale = progress < 0.72 ? interpolate(progress, 0, 0.72, 0.85, 1.05) : interpolate(progress, 0.72, 1, 1.05, 1);
     return { opacity: progress, transform: `translate(-50%, -50%) scale(${boxScale})` };
   }
-  if (config.entranceAnimation === "slide_up") {
+  if (config.entranceAnimation === "slide") {
     const y = interpolate(progress, 0, 1, 12, 0);
     return { opacity: progress, transform: `translate(-50%, calc(-50% + ${y}px)) scale(1)` };
   }

@@ -161,6 +161,15 @@ function combineTransforms(...parts: string[]) {
   return parts.filter(Boolean).join(" ").trim() || "translateY(0) scale(1)";
 }
 
+function asymmetricScaleTransform(config: CaptionStyleConfig, progress: number) {
+  if (!config.asymmetricScaleEnabled || !config.asymmetricScaleStrength) return "";
+  const strength = clamp(config.asymmetricScaleStrength, 0, 1);
+  const squash = Math.sin(clamp(progress, 0, 1) * Math.PI);
+  const x = 1 + strength * squash * 0.08;
+  const y = 1 - strength * squash * 0.045;
+  return `scaleX(${x.toFixed(3)}) scaleY(${y.toFixed(3)})`;
+}
+
 function wordMotionTransform(ageFrames: number, config: CaptionStyleConfig, isAnchor = false) {
   if (config.animationType === "none" || config.animationStrength <= 0 || ageFrames < 0) {
     return "translateY(0) scale(1)";
@@ -177,14 +186,14 @@ function wordMotionTransform(ageFrames: number, config: CaptionStyleConfig, isAn
     const startScale = interpolate(config.animationStrength, 0, 1.4, 1, 0.98);
     const scale = interpolate(ageFrames, 0, peakFrame, startScale, maxScale);
     const y = interpolate(ageFrames, 0, peakFrame, 5 * config.animationStrength, lift);
-    return `translateY(${y}px) scale(${scale})`;
+    return combineTransforms(`translateY(${y}px) scale(${scale})`, asymmetricScaleTransform(config, ageFrames / peakFrame));
   }
 
   if (ageFrames <= settleFrame) {
     const settle = config.animationType === "bounce" && ageFrames < settleFrame - 2 ? 0.98 : 1;
     const scale = interpolate(ageFrames, peakFrame, settleFrame, maxScale, settle);
     const y = interpolate(ageFrames, peakFrame, settleFrame, lift, 0);
-    return `translateY(${y}px) scale(${scale})`;
+    return combineTransforms(`translateY(${y}px) scale(${scale})`, asymmetricScaleTransform(config, 1 - (ageFrames - peakFrame) / Math.max(0.001, settleFrame - peakFrame)));
   }
 
   return "translateY(0) scale(1)";
@@ -204,17 +213,19 @@ function wordEntranceStyle(wordStart: number, currentTime: number, fps: number, 
     return { opacity: progress, transform: "translateY(0) scale(1)", filter: "none" };
   }
   if (config.entranceAnimation === "pop") {
-    const start = 0.9;
-    return { opacity: progress, transform: `translateY(0) scale(${interpolate(progress, 0, 1, start, 1)})`, filter: "none" };
+    const scale = progress < 0.72
+      ? interpolate(progress, 0, 0.72, 0.85, 1.05)
+      : interpolate(progress, 0.72, 1, 1.05, 1);
+    return { opacity: progress, transform: combineTransforms(`translateY(0) scale(${scale})`, asymmetricScaleTransform(config, progress)), filter: "none" };
   }
-  if (config.entranceAnimation === "slide_up") {
+  if (config.entranceAnimation === "slide") {
     return { opacity: progress, transform: `translateY(${(1 - progress) * 16}px) scale(1)`, filter: "none" };
   }
-  if (config.entranceAnimation === "blur_fade") {
+  if (config.entranceAnimation === "flip") {
     return {
       opacity: progress,
-      transform: `translateY(${(1 - progress) * 8}px) scale(1)`,
-      filter: `blur(${(1 - progress) * 8}px)`,
+      transform: `perspective(360px) rotateX(${(1 - progress) * -72}deg) scale(${interpolate(progress, 0, 1, 0.96, 1)})`,
+      filter: "none",
     };
   }
 
@@ -277,7 +288,7 @@ function renderMrBeastStyle(
   const layout = resolveSafeCaptionLayout(config, { canvas: canvasSize, previewScale: scale, words });
   const fontSize = layout.fontSize;
   const positionStyle = buildConfigPositionStyle(config, layout);
-  const strokeWidth = Math.max(1, config.textStrokeWidth * scale);
+  const strokeWidth = config.textStrokeEnabled ? Math.max(0.5, config.textStrokeWidth * scale) : 0;
   const shadow = buildConfigTextShadow(config);
 
   return (
@@ -309,12 +320,12 @@ function renderMrBeastStyle(
                 display: "inline-block",
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontSize,
-                fontWeight: 900,
+                fontWeight: config.fontWeight,
                 letterSpacing: `${config.letterSpacing}px`,
                 color: classifyMrBeastWord(word.word, config),
                 textTransform: "uppercase",
-                WebkitTextStroke: `${strokeWidth}px ${config.textStrokeColor}`,
-                paintOrder: "stroke fill",
+                WebkitTextStroke: strokeWidth ? `${strokeWidth}px ${config.textStrokeColor}` : undefined,
+                paintOrder: strokeWidth ? "stroke fill" : undefined,
                 textShadow: shadow,
                 opacity: visible ? entrance.opacity ?? 1 : 0,
                 transform: combineTransforms(`rotate(${tilt}deg)`, entrance.transform || "", `scale(${popScale})`),
@@ -334,6 +345,7 @@ function renderMrBeastStyle(
 function renderAppleCinematic(
   activeCaption: Caption,
   currentTime: number,
+  fps: number,
   scale: number,
   styleConfig?: Partial<CaptionStyleConfig> | null,
   canvasSize?: CaptionCanvasSize
@@ -346,6 +358,7 @@ function renderAppleCinematic(
   const revealDuration = config.revealDuration || 0.32;
   const yOffset = (config.revealYOffset || 30) * scale;
   const blur = config.revealBlur || 25;
+  const stroke = config.textStrokeEnabled ? `${Math.max(0.5, config.textStrokeWidth * scale)}px ${config.textStrokeColor}` : undefined;
 
   return (
     <div style={positionStyle} data-caption-theme="apple_cinematic">
@@ -365,15 +378,18 @@ function renderAppleCinematic(
       >
         {words.map((word, index) => {
           const progress = easeOutExpo((currentTime - word.start) / revealDuration);
+          const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
           return (
             <span
               key={`${activeCaption.id}-apple-${index}-${word.start}`}
               style={{
                 display: "inline-block",
                 marginRight: "0.28em",
-                opacity: progress,
-                transform: `translateY(${(1 - progress) * yOffset}px)`,
-                filter: `blur(${(1 - progress) * blur}px)`,
+                opacity: Number(entrance.opacity ?? 1) * progress,
+                transform: combineTransforms(entrance.transform || "", `translateY(${(1 - progress) * yOffset}px)`),
+                filter: config.entranceAnimation === "flip" ? entrance.filter || "none" : `blur(${(1 - progress) * blur}px)`,
+                WebkitTextStroke: stroke,
+                paintOrder: stroke ? "stroke fill" : undefined,
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
@@ -709,7 +725,7 @@ function supportSlotCenters(
   const anchorRect = placementRect(anchor);
   const safeWidth = bounds.right - bounds.left;
   const safeHeight = bounds.bottom - bounds.top;
-  const gap = Math.max(padding, interpolate(tightness, 0, 1, 14, 6));
+  const gap = Math.max(padding, interpolate(clamp(tightness, 0, 10), 0, 10, 22, 3));
   const nudgeX = Math.min(safeWidth * 0.035, gap * 1.8);
   const nudgeY = Math.min(safeHeight * 0.045, gap * 1.6);
   const centerX = (bounds.left + bounds.right) / 2;
@@ -766,7 +782,7 @@ function buildFallbackStackLayout(
   const centerY = (bounds.top + bounds.bottom) / 2;
   const availableWidth = Math.max(1, bounds.right - bounds.left);
   const availableHeight = Math.max(1, bounds.bottom - bounds.top);
-  const rowGap = Math.max(collisionPadding, smallFontSize * 0.12);
+  const rowGap = Math.max(collisionPadding, smallFontSize * 0.08);
   const supportIndexes = words.map((_, index) => index).filter((index) => index !== anchorIndex);
   const split = Math.ceil(supportIndexes.length / 2);
   const rows = [
@@ -850,7 +866,7 @@ function buildEditorialLockupLayout(
     bottom: height - (height * safeMarginPercent) / 100,
   };
 
-  const collisionPadding = Math.max(1, (config.collisionPadding ?? 8) * scale);
+  const collisionPadding = Math.max(0, (config.collisionPadding ?? 8) * scale);
   const safeWidth = Math.max(1, bounds.right - bounds.left);
   const safeHeight = Math.max(1, bounds.bottom - bounds.top);
   const configuredBigFontSize = clamp(config.bigFontSizePx ?? BUILD_BIG_FONT_SIZE_PX, 80, 400) * scale;
@@ -861,7 +877,7 @@ function buildEditorialLockupLayout(
       clamp(config.smallFontSizePx ?? BUILD_SMALL_FONT_SIZE_PX, 20, 160) * scale
     )
   );
-  const tightness = clamp(config.tightness ?? 0.75, 0, 1);
+  const tightness = clamp(config.tightness ?? 0.75, 0, 10);
   const modeInput = normalizeBuildLayoutMode(config.layoutMode);
   const mode = modeInput === "auto" ? autoBuildLayoutMode(activeCaption.id, groupIndex) : modeInput;
   const anchorIndex = chooseAnchorIndex(words);
@@ -1089,9 +1105,9 @@ function renderModernMinimalistLockup(
                 left: `${(placement.x / lockup.width) * 100}%`,
                 top: `${(placement.y / lockup.height) * 100}%`,
                 display: "inline-block",
-                fontFamily: resolveFontFamily(config.fontFamily),
+                fontFamily: resolveFontFamily(placement.isAnchor ? (config.bigFontFamily || config.fontFamily) : (config.smallFontFamily || config.fontFamily)),
                 fontSize: placement.fontSize,
-                fontWeight: placement.isAnchor ? 900 : Math.max(800, Number(config.fontWeight) || 900),
+                fontWeight: Number(config.fontWeight) || 900,
                 color: isActive ? config.activeWordColor : config.textColor,
                 letterSpacing: `${config.letterSpacing}px`,
                 lineHeight,
@@ -1178,14 +1194,12 @@ function renderKineticWords(
                 fontWeight: config.fontWeight,
                 color: config.textColor || "#fff",
                 textShadow,
+                WebkitTextStroke: config.textStrokeEnabled ? `${config.textStrokeWidth * scale}px ${config.textStrokeColor}` : undefined,
+                paintOrder: config.textStrokeEnabled ? "stroke fill" : undefined,
                 letterSpacing: `${config.letterSpacing}px`,
                 textTransform: config.textTransform,
                 opacity: Number(entrance.opacity ?? 1) * progress,
-                transform: combineTransforms(
-                  entrance.transform || "",
-                  `translateY(${(1 - progress) * 10}px) scale(${0.92 + progress * 0.08})`,
-                  motion
-                ),
+                transform: combineTransforms(entrance.transform || "", `translateY(${(1 - progress) * 10}px) scale(${0.92 + progress * 0.08})`, motion),
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
@@ -1302,7 +1316,7 @@ export default function CaptionRenderer({
   }
 
   if (activeCaption.theme === "apple_cinematic") {
-    return renderAppleCinematic(activeCaption, currentTime, scale, styleConfig, canvasSize);
+    return renderAppleCinematic(activeCaption, currentTime, fps, scale, styleConfig, canvasSize);
   }
 
   if (activeCaption.theme === "modern_minimalist_lockup") {

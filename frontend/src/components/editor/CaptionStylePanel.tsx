@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useCallback, useState } from "react";
-import { Palette, RotateCcw, Type } from "lucide-react";
+import React, { useCallback, useEffect, useState } from "react";
+import { Palette, RotateCcw } from "lucide-react";
 import { alignedWordsToCaptions, captionsToTranscriptSegments, getAlignedWordsFromSegments, segmentsToCaptions } from "@/lib/captionUtils";
 import { validateCaptionCoverage } from "@/lib/captionCoverage";
 import { BUILD_BIG_FONT_SIZE_PX, BUILD_SMALL_FONT_SIZE_PX, CREATOR_FONTS, DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG } from "@/lib/captionStyleConfig";
-import { CAPTION_PRESET_LIST } from "@/lib/captionStylePresets";
+import { CAPTION_PRESET_LIST, PRESET_CAPABILITIES, getCaptionStylePreset } from "@/lib/captionStylePresets";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
 import { CaptionAlignment, CaptionEntranceAnimation, CaptionStyleConfig, CaptionStylePresetId, CaptionWordAnimation } from "@/lib/types";
 import { useCaptionStore } from "@/store/captionStore";
@@ -40,9 +40,9 @@ const TRANSITION_CARDS: {
 }[] = [
   { label: "None", value: "none", preview: "none" },
   { label: "Fade", value: "fade", preview: "fade" },
-  { label: "Flip", value: "blur_fade", preview: "flip" },
+  { label: "Flip", value: "flip", preview: "flip" },
   { label: "Pop", value: "pop", preview: "pop" },
-  { label: "Slide", value: "slide_up", preview: "slide" },
+  { label: "Slide", value: "slide", preview: "slide" },
 ];
 const MAX_LINE_OPTIONS: { label: string; value: CaptionStyleConfig["maxLines"] }[] = [
   { label: "Auto", value: "auto" },
@@ -154,20 +154,55 @@ function ColorInput({
   disabled?: boolean;
   onChange: (value: string) => void;
 }) {
+  const [draft, setDraft] = useState(value || "#000000");
+  const validHex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+  const partialHex = /^#?[0-9a-f]{0,6}$/i;
+
+  useEffect(() => {
+    setDraft(value || "#000000");
+  }, [value]);
+
+  const normalizeHex = (raw: string) => {
+    const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+    if (!validHex.test(withHash)) return value;
+    const hex = withHash.slice(1);
+    const expanded = hex.length === 3 ? hex.split("").map((char) => `${char}${char}`).join("") : hex;
+    return `#${expanded.toUpperCase()}`;
+  };
+
+  const commitIfValid = (raw: string) => {
+    const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+    if (validHex.test(withHash)) onChange(normalizeHex(withHash));
+  };
+
   return (
     <div className="grid gap-2">
       <div className="flex items-center gap-2">
         <input
           type="color"
-          value={value}
+          value={validHex.test(value) ? normalizeHex(value) : "#000000"}
           disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            const next = normalizeHex(event.target.value);
+            setDraft(next);
+            onChange(next);
+          }}
           className="h-8 w-10 rounded border-0 bg-transparent"
         />
         <input
-          value={value}
+          value={draft}
           disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value.startsWith("#") ? event.target.value : `#${event.target.value}`;
+            if (!partialHex.test(next)) return;
+            setDraft(next);
+            commitIfValid(next);
+          }}
+          onBlur={() => {
+            const normalized = normalizeHex(draft);
+            setDraft(normalized);
+            if (validHex.test(normalized)) onChange(normalized);
+          }}
           className="control-input h-8 min-h-0 flex-1 py-1 text-xs"
         />
       </div>
@@ -184,6 +219,14 @@ function ColorInput({
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+function UnavailableNotice({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="editor-notice compact" style={{ background: "var(--bg-panel-raised)", color: "var(--text-muted)" }}>
+      {children}
     </div>
   );
 }
@@ -263,7 +306,6 @@ export default function CaptionStylePanel() {
     captionCharsPerSubtitle,
     captionTimingConfig,
     setCaptionNeedsRebuild,
-    setLeftSidebarTab,
     activeMediaId,
     language,
     transcriptSegments,
@@ -279,10 +321,15 @@ export default function CaptionStylePanel() {
   const tracks = useTimelineStore((s) => s.tracks);
   const [maxLinesNotice, setMaxLinesNotice] = useState("");
   const isBuildPreset = theme === "modern_minimalist_lockup";
+  const activePresetId = theme as CaptionStylePresetId;
+  const capabilities = PRESET_CAPABILITIES[activePresetId] || PRESET_CAPABILITIES.word_highlight_box;
 
   const locked =
     captions.some((caption) => selectedIds.has(caption.id) && isCaptionLocked(caption, tracks)) ||
     Boolean(captions.length && tracks.find((track) => track.type === "caption")?.locked);
+  const backgroundUnavailable = !capabilities.background;
+  const backgroundControlsDisabled = locked || backgroundUnavailable || !captionStyleConfig.backgroundEnabled;
+  const backgroundBorderDisabled = locked || !capabilities.backgroundBorder || backgroundUnavailable || !captionStyleConfig.backgroundEnabled;
 
   const update = useCallback(
     (patch: Partial<CaptionStyleConfig>) => {
@@ -324,9 +371,8 @@ export default function CaptionStylePanel() {
       : getAlignedWordsFromSegments(sourceSegments).length
       ? getAlignedWordsFromSegments(sourceSegments)
       : getAlignedWordsFromSegments(captionsToTranscriptSegments(captions));
-    if (!sourceSegments.length && !originalAlignedWords.length) {
+      if (!sourceSegments.length && !originalAlignedWords.length) {
       setMaxLinesNotice("Generate subtitles first before rebuilding.");
-      setLeftSidebarTab("subtitles");
       return;
     }
 
@@ -338,6 +384,7 @@ export default function CaptionStylePanel() {
     if (!transcriptSegments.length) {
       setTranscriptSegments(sourceSegments);
     }
+    const beforeSignature = captions.map((caption) => `${caption.start.toFixed(3)}-${caption.end.toFixed(3)}:${caption.text}`).join("|");
     const rebuilt = (originalAlignedWords.length
       ? alignedWordsToCaptions(originalAlignedWords, language, theme, config)
       : segmentsToCaptions(sourceSegments, language, theme, config)
@@ -346,6 +393,12 @@ export default function CaptionStylePanel() {
         trackId: defaultCaptionTrackId(tracks),
         sourceMediaId: activeMediaId || undefined,
       }));
+    const afterSignature = rebuilt.map((caption) => `${caption.start.toFixed(3)}-${caption.end.toFixed(3)}:${caption.text}`).join("|");
+    if (beforeSignature === afterSignature) {
+      setMaxLinesNotice("No rebuild needed for current captions.");
+      setCaptionNeedsRebuild(false);
+      return;
+    }
     const coverageReport = validateCaptionCoverage(rebuilt, originalAlignedWords);
     setCaptions(rebuilt);
     setCaptionDocument({
@@ -353,7 +406,7 @@ export default function CaptionStylePanel() {
       name: captionDocument?.name || "Generated captions",
       sourceMediaId: activeMediaId || captionDocument?.sourceMediaId,
       languageMode: language,
-      transcript: { segments: sourceSegments, metadata: captionDocument?.transcript?.metadata },
+      transcript: { segments: sourceSegments, alignedWords: captionDocument?.transcript?.alignedWords, metadata: captionDocument?.transcript?.metadata },
       originalAlignedWords,
       chunks: rebuilt,
       style: captionStyleConfig,
@@ -363,8 +416,7 @@ export default function CaptionStylePanel() {
     });
     setCaptionCoverageReport(coverageReport);
     setCaptionNeedsRebuild(false);
-    setMaxLinesNotice("");
-    setLeftSidebarTab("subtitles");
+    setMaxLinesNotice(`Subtitles rebuilt for ${captionStyleConfig.maxLines === "auto" ? "auto" : captionStyleConfig.maxLines} line layout.`);
   }, [
     activeMediaId,
     captionChunkingConfig,
@@ -379,7 +431,6 @@ export default function CaptionStylePanel() {
     setCaptionDocument,
     setCaptionNeedsRebuild,
     setCaptions,
-    setLeftSidebarTab,
     setTranscriptSegments,
     theme,
     tracks,
@@ -400,8 +451,8 @@ export default function CaptionStylePanel() {
           title="Reset style"
           disabled={locked}
           onClick={() => {
-            resetCaptionStyleConfig();
-            setThemeForAll("word_highlight_box");
+            resetCaptionStyleConfig(activePresetId);
+            setThemeForAll(activePresetId);
           }}
         >
           <RotateCcw size={14} />
@@ -446,19 +497,7 @@ export default function CaptionStylePanel() {
             </select>
           </label>
 
-          <div className="grid grid-cols-3 gap-2">
-            {[600, 800, 900].map((weight) => (
-              <button
-                key={weight}
-                className={Number(captionStyleConfig.fontWeight) === weight ? "btn-primary" : "btn-ghost"}
-                disabled={locked}
-                onClick={() => update({ fontWeight: weight })}
-              >
-                <Type size={13} />
-                {weight}
-              </button>
-            ))}
-          </div>
+          <SliderControl disabled={locked} label="Font weight" value={Number(captionStyleConfig.fontWeight) || 900} min={100} max={1000} step={50} onChange={(fontWeight) => update({ fontWeight })} />
 
           <div className="grid grid-cols-3 gap-2">
             {(["left", "center", "right"] as CaptionAlignment[]).map((alignment) => (
@@ -473,7 +512,7 @@ export default function CaptionStylePanel() {
             ))}
           </div>
 
-          {!isBuildPreset && (
+          {capabilities.maxLines && (
             <>
               <SliderControl disabled={locked} label="Font size" value={captionStyleConfig.fontSize} min={8} max={120} onChange={(fontSize) => update({ fontSize })} />
               <SliderControl disabled={locked} label="Line height" value={captionStyleConfig.lineHeight} min={0.9} max={1.6} step={0.05} suffix="x" onChange={(lineHeight) => update({ lineHeight })} />
@@ -512,19 +551,20 @@ export default function CaptionStylePanel() {
         </Section>
 
         <Section title="Background">
+          {backgroundUnavailable && <UnavailableNotice>Background is not available for this preset.</UnavailableNotice>}
           <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }} title="Adds a box behind subtitles to improve readability.">
             <span>Enabled</span>
             <input
               type="checkbox"
-              checked={captionStyleConfig.backgroundEnabled}
-              disabled={locked}
+              checked={capabilities.background && captionStyleConfig.backgroundEnabled}
+              disabled={locked || backgroundUnavailable}
               onChange={(event) => update({ backgroundEnabled: event.target.checked })}
             />
           </label>
-          <ColorInput disabled={locked || !captionStyleConfig.backgroundEnabled} value={captionStyleConfig.backgroundColor} onChange={(backgroundColor) => update({ backgroundColor })} />
+          <ColorInput disabled={backgroundControlsDisabled} value={captionStyleConfig.backgroundColor} onChange={(backgroundColor) => update({ backgroundColor })} />
           <button
             className="btn-ghost w-full"
-            disabled={locked}
+            disabled={locked || backgroundUnavailable}
             onClick={() => update({ backgroundEnabled: false, backgroundOpacity: 0 })}
           >
             Transparent / No Background
@@ -534,7 +574,7 @@ export default function CaptionStylePanel() {
               <button
                 key={fit}
                 className={captionStyleConfig.backgroundFit === fit ? "btn-primary" : "btn-ghost"}
-                disabled={locked || !captionStyleConfig.backgroundEnabled}
+                disabled={backgroundControlsDisabled}
                 onClick={() => update({ backgroundFit: fit })}
                 title={fit === "wrap" ? "Background fits tightly around the subtitle text." : "Background stretches wider behind the subtitle block."}
               >
@@ -542,31 +582,33 @@ export default function CaptionStylePanel() {
               </button>
             ))}
           </div>
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundEnabled} label="Opacity" value={captionStyleConfig.backgroundOpacity} min={0} max={1} step={0.05} suffix="" onChange={(backgroundOpacity) => update({ backgroundOpacity })} />
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundEnabled} label="Corners" value={captionStyleConfig.borderRadius} min={0} max={36} suffix="px" onChange={(borderRadius) => update({ borderRadius })} />
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundEnabled} label="Padding" value={captionStyleConfig.paddingX} min={0} max={48} suffix="px" onChange={(padding) => update({ paddingX: padding, paddingY: Math.max(0, Math.round(padding * 0.58)) })} />
+          <SliderControl disabled={backgroundControlsDisabled} label="Opacity" value={captionStyleConfig.backgroundOpacity} min={0} max={1} step={0.05} suffix="" onChange={(backgroundOpacity) => update({ backgroundOpacity })} />
+          <SliderControl disabled={backgroundControlsDisabled} label="Corners" value={captionStyleConfig.borderRadius} min={0} max={36} suffix="px" onChange={(borderRadius) => update({ borderRadius })} />
+          <SliderControl disabled={backgroundControlsDisabled} label="Padding" value={captionStyleConfig.paddingX} min={0} max={48} suffix="px" onChange={(padding) => update({ paddingX: padding, paddingY: Math.max(0, Math.round(padding * 0.58)) })} />
         </Section>
 
         <Section title="Border">
+          {!capabilities.backgroundBorder && <UnavailableNotice>Background border is not available for this preset.</UnavailableNotice>}
           <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }} title="Adds an outline around the subtitle background box.">
             <span>Background Border</span>
             <input
               type="checkbox"
-              checked={captionStyleConfig.backgroundBorderEnabled}
-              disabled={locked || !captionStyleConfig.backgroundEnabled}
+              checked={capabilities.backgroundBorder && captionStyleConfig.backgroundBorderEnabled}
+              disabled={backgroundBorderDisabled}
               onChange={(event) => update({ backgroundBorderEnabled: event.target.checked, backgroundBorderWidth: event.target.checked ? 2 : 0 })}
             />
           </label>
-          <ColorInput disabled={locked || !captionStyleConfig.backgroundBorderEnabled} value={captionStyleConfig.backgroundBorderColor} onChange={(backgroundBorderColor) => update({ backgroundBorderColor })} />
+          <ColorInput disabled={backgroundBorderDisabled || !captionStyleConfig.backgroundBorderEnabled} value={captionStyleConfig.backgroundBorderColor} onChange={(backgroundBorderColor) => update({ backgroundBorderColor })} />
         </Section>
 
         <Section title="Text Outline">
+          {!capabilities.textOutline && <UnavailableNotice>Text outline is not available for this preset.</UnavailableNotice>}
           <div className="grid grid-cols-2 gap-2">
             {OUTLINE_OPTIONS.map((option) => (
               <button
                 key={option.label}
                 className={outlineLabel === option.label ? "btn-primary" : "btn-ghost"}
-                disabled={locked}
+                disabled={locked || !capabilities.textOutline}
                 onClick={() => update({ textStrokeEnabled: option.width > 0, textStrokeWidth: option.width })}
                 title="Adds an outline around subtitle letters to make text readable on any video."
               >
@@ -574,7 +616,7 @@ export default function CaptionStylePanel() {
               </button>
             ))}
           </div>
-          <ColorInput disabled={locked || !captionStyleConfig.textStrokeEnabled} value={captionStyleConfig.textStrokeColor} onChange={(textStrokeColor) => update({ textStrokeColor })} />
+          <ColorInput disabled={locked || !capabilities.textOutline || !captionStyleConfig.textStrokeEnabled} value={captionStyleConfig.textStrokeColor} onChange={(textStrokeColor) => update({ textStrokeColor })} />
         </Section>
 
         <Section title="Shadow">
@@ -583,35 +625,35 @@ export default function CaptionStylePanel() {
             <input
               type="checkbox"
               checked={captionStyleConfig.textShadowEnabled}
-              disabled={locked}
+              disabled={locked || !capabilities.textShadow}
               onChange={(event) => update({ textShadowEnabled: event.target.checked })}
             />
           </label>
-          <ColorInput disabled={locked || !captionStyleConfig.textShadowEnabled} value={captionStyleConfig.textShadowColor} onChange={(textShadowColor) => update({ textShadowColor })} />
-          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text opacity" value={captionStyleConfig.textShadowOpacity} min={0} max={1} step={0.05} suffix="" onChange={(textShadowOpacity) => update({ textShadowOpacity })} />
-          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text blur" value={captionStyleConfig.textShadowBlur} min={0} max={24} suffix="px" onChange={(textShadowBlur) => update({ textShadowBlur })} />
-          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text distance" value={captionStyleConfig.textShadowDistance} min={0} max={24} suffix="px" onChange={(textShadowDistance) => update({ textShadowDistance })} />
-          <SliderControl disabled={locked || !captionStyleConfig.textShadowEnabled} label="Text angle" value={captionStyleConfig.textShadowAngle} min={0} max={360} suffix="deg" onChange={(textShadowAngle) => update({ textShadowAngle })} />
+          <ColorInput disabled={locked || !capabilities.textShadow || !captionStyleConfig.textShadowEnabled} value={captionStyleConfig.textShadowColor} onChange={(textShadowColor) => update({ textShadowColor })} />
+          <SliderControl disabled={locked || !capabilities.textShadow || !captionStyleConfig.textShadowEnabled} label="Text opacity" value={captionStyleConfig.textShadowOpacity} min={0} max={1} step={0.05} suffix="" onChange={(textShadowOpacity) => update({ textShadowOpacity })} />
+          <SliderControl disabled={locked || !capabilities.textShadow || !captionStyleConfig.textShadowEnabled} label="Text blur" value={captionStyleConfig.textShadowBlur} min={0} max={24} suffix="px" onChange={(textShadowBlur) => update({ textShadowBlur })} />
+          <SliderControl disabled={locked || !capabilities.textShadow || !captionStyleConfig.textShadowEnabled} label="Text distance" value={captionStyleConfig.textShadowDistance} min={0} max={24} suffix="px" onChange={(textShadowDistance) => update({ textShadowDistance })} />
+          <SliderControl disabled={locked || !capabilities.textShadow || !captionStyleConfig.textShadowEnabled} label="Text angle" value={captionStyleConfig.textShadowAngle} min={0} max={360} suffix="deg" onChange={(textShadowAngle) => update({ textShadowAngle })} />
 
           <label className="mt-1 flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }}>
             <span>Background Shadow</span>
             <input
               type="checkbox"
-              checked={captionStyleConfig.backgroundShadow}
-              disabled={locked}
+              checked={capabilities.background && captionStyleConfig.backgroundEnabled && captionStyleConfig.backgroundShadow}
+              disabled={locked || backgroundUnavailable || !captionStyleConfig.backgroundEnabled}
               onChange={(event) => update({ backgroundShadow: event.target.checked })}
             />
           </label>
-          {!captionStyleConfig.backgroundEnabled && (
+          {(backgroundUnavailable || !captionStyleConfig.backgroundEnabled) && (
             <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-              Background shadow is visible only when Background is enabled.
+              Background shadow is visible only when this preset supports Background and Background is enabled.
             </div>
           )}
-          <ColorInput disabled={locked || !captionStyleConfig.backgroundShadow} value={captionStyleConfig.backgroundShadowColor} onChange={(backgroundShadowColor) => update({ backgroundShadowColor })} />
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background opacity" value={captionStyleConfig.backgroundShadowOpacity} min={0} max={1} step={0.05} suffix="" onChange={(backgroundShadowOpacity) => update({ backgroundShadowOpacity })} />
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background blur" value={captionStyleConfig.backgroundShadowBlur} min={0} max={60} suffix="px" onChange={(backgroundShadowBlur) => update({ backgroundShadowBlur })} />
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background distance" value={captionStyleConfig.backgroundShadowDistance} min={0} max={36} suffix="px" onChange={(backgroundShadowDistance) => update({ backgroundShadowDistance })} />
-          <SliderControl disabled={locked || !captionStyleConfig.backgroundShadow} label="Background angle" value={captionStyleConfig.backgroundShadowAngle} min={0} max={360} suffix="deg" onChange={(backgroundShadowAngle) => update({ backgroundShadowAngle })} />
+          <ColorInput disabled={backgroundControlsDisabled || !captionStyleConfig.backgroundShadow} value={captionStyleConfig.backgroundShadowColor} onChange={(backgroundShadowColor) => update({ backgroundShadowColor })} />
+          <SliderControl disabled={backgroundControlsDisabled || !captionStyleConfig.backgroundShadow} label="Background opacity" value={captionStyleConfig.backgroundShadowOpacity} min={0} max={1} step={0.05} suffix="" onChange={(backgroundShadowOpacity) => update({ backgroundShadowOpacity })} />
+          <SliderControl disabled={backgroundControlsDisabled || !captionStyleConfig.backgroundShadow} label="Background blur" value={captionStyleConfig.backgroundShadowBlur} min={0} max={60} suffix="px" onChange={(backgroundShadowBlur) => update({ backgroundShadowBlur })} />
+          <SliderControl disabled={backgroundControlsDisabled || !captionStyleConfig.backgroundShadow} label="Background distance" value={captionStyleConfig.backgroundShadowDistance} min={0} max={36} suffix="px" onChange={(backgroundShadowDistance) => update({ backgroundShadowDistance })} />
+          <SliderControl disabled={backgroundControlsDisabled || !captionStyleConfig.backgroundShadow} label="Background angle" value={captionStyleConfig.backgroundShadowAngle} min={0} max={360} suffix="deg" onChange={(backgroundShadowAngle) => update({ backgroundShadowAngle })} />
         </Section>
 
         {!isBuildPreset && (
@@ -651,6 +693,21 @@ export default function CaptionStylePanel() {
 
         {isBuildPreset && (
           <>
+            <Section title="Editorial Fonts">
+              <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span>Big word font</span>
+                <select className="control-input" value={captionStyleConfig.bigFontFamily || captionStyleConfig.fontFamily} disabled={locked} onChange={(event) => update({ bigFontFamily: event.target.value })}>
+                  {CREATOR_FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span>Small word font</span>
+                <select className="control-input" value={captionStyleConfig.smallFontFamily || captionStyleConfig.fontFamily} disabled={locked} onChange={(event) => update({ smallFontFamily: event.target.value })}>
+                  {CREATOR_FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
+                </select>
+              </label>
+            </Section>
+
             <Section title="Build Font Sizes">
               <SliderControl disabled={locked} label="Big word size" value={captionStyleConfig.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX} min={80} max={400} step={1} suffix="px" onChange={(bigFontSizePx) => update({ bigFontSizePx })} />
               <SliderControl disabled={locked} label="Small word size" value={captionStyleConfig.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX} min={20} max={160} step={1} suffix="px" onChange={(smallFontSizePx) => update({ smallFontSizePx })} />
@@ -671,14 +728,14 @@ export default function CaptionStylePanel() {
                 </select>
               </label>
 
-              <SliderControl disabled={locked} label="Tightness" value={captionStyleConfig.tightness || 0.75} min={0} max={1} step={0.01} onChange={(tightness) => update({ tightness })} />
+              <SliderControl disabled={locked} label="Tightness" value={captionStyleConfig.tightness || 0.75} min={0} max={10} step={0.1} onChange={(tightness) => update({ tightness })} />
               <SliderControl disabled={locked} label="Safe margin" value={captionStyleConfig.layoutSafeMarginPercent || 8} min={0} max={20} step={1} suffix="%" onChange={(layoutSafeMarginPercent) => update({ layoutSafeMarginPercent })} />
-              <SliderControl disabled={locked} label="Collision padding" value={captionStyleConfig.collisionPadding || 8} min={4} max={16} step={1} suffix="px" onChange={(collisionPadding) => update({ collisionPadding })} />
+              <SliderControl disabled={locked} label="Collision padding" value={captionStyleConfig.collisionPadding || 8} min={0} max={120} step={1} suffix="px" onChange={(collisionPadding) => update({ collisionPadding })} />
             </Section>
           </>
         )}
 
-        {!isBuildPreset && (
+        {capabilities.transitions && (
           <Section title="Transitions">
             <div className="grid grid-cols-2 gap-3">
               {TRANSITION_CARDS.map((card) => (
@@ -706,10 +763,10 @@ export default function CaptionStylePanel() {
             <SliderControl disabled={locked} label="Max width" value={captionStyleConfig.maxWidth} min={45} max={96} suffix="%" onChange={(maxWidth) => update({ maxWidth })} />
             <SliderControl disabled={locked} label="Caption scale" value={captionStyleConfig.scale} min={0} max={3} step={0.01} onChange={(scale) => update({ scale })} />
             <SliderControl disabled={locked} label="Layer opacity" value={captionStyleConfig.opacity} min={0} max={1} step={0.05} onChange={(opacity) => update({ opacity })} />
-            {!isBuildPreset && (
+            {capabilities.asymmetricScale && (
               <>
                 <label className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  <span>Asymmetric scale</span>
+                  <span title="Adds slight non-uniform squash/stretch to active word motion.">Asymmetric scale</span>
                   <input
                     type="checkbox"
                     checked={Boolean(captionStyleConfig.asymmetricScaleEnabled)}
@@ -723,7 +780,7 @@ export default function CaptionStylePanel() {
           </div>
         </details>
 
-        <button className="btn-ghost w-full" disabled={locked} onClick={() => update(DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG)}>
+        <button className="btn-ghost w-full" disabled={locked} onClick={() => update(getCaptionStylePreset(activePresetId) || DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG)}>
           Reset Defaults
         </button>
       </div>
