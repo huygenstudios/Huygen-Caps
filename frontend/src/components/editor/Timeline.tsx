@@ -2,8 +2,8 @@
 
 "use client";
 
-import React, { useRef, useCallback, useEffect, useState } from "react";
-import { Magnet, Plus, ZoomIn, ZoomOut, Trash2 } from "lucide-react";
+import React, { useRef, useCallback, useEffect, useMemo, useState } from "react";
+import { Magnet, Maximize2, Plus, ZoomIn, ZoomOut, Trash2 } from "lucide-react";
 import { useTimelineStore } from "@/store/timelineStore";
 import { useCaptionStore } from "@/store/captionStore";
 import { usePlaybackStore } from "@/store/playbackStore";
@@ -20,11 +20,14 @@ export default function Timeline() {
     tracks,
     scrollLeft,
     pixelsPerSecond,
+    setPixelsPerSecond,
     setScrollLeft,
+    setTimelineView,
     snapEnabled,
     toggleSnap,
     zoomIn,
     zoomOut,
+    fitZoom,
     addTrackByType,
     notice,
     clearNotice,
@@ -34,8 +37,21 @@ export default function Timeline() {
   const duration = usePlaybackStore((s) => s.duration);
   const mediaFiles = useEditorStore((s) => s.mediaFiles);
   const [layerMenuOpen, setLayerMenuOpen] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(900);
+  const wheelFrameRef = useRef<number | null>(null);
+  const pendingViewRef = useRef<{ pixelsPerSecond: number; scrollLeft: number } | null>(null);
 
   const { handleTimelineSeek } = useTimelineSync();
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const update = () => setContainerWidth(element.clientWidth || 900);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!notice) return;
@@ -43,20 +59,63 @@ export default function Timeline() {
     return () => window.clearTimeout(timer);
   }, [clearNotice, notice]);
 
-  // Horizontal scroll
+  const projectDuration = useMemo(
+    () =>
+      Math.max(
+        30,
+        duration,
+        ...tracks.flatMap((track) => (track.clips || []).map((clip) => clip.end))
+      ),
+    [duration, tracks]
+  );
+  const contentViewportWidth = Math.max(1, containerWidth - TRACK_HEADER_WIDTH);
+  const maxScrollLeft = Math.max(0, projectDuration * pixelsPerSecond - contentViewportWidth);
+
+  useEffect(() => {
+    if (scrollLeft > maxScrollLeft) setScrollLeft(maxScrollLeft);
+  }, [maxScrollLeft, scrollLeft, setScrollLeft]);
+
+  const commitTimelineView = useCallback(
+    (nextPixelsPerSecond: number, nextScrollLeft: number) => {
+      pendingViewRef.current = { pixelsPerSecond: nextPixelsPerSecond, scrollLeft: nextScrollLeft };
+      if (wheelFrameRef.current !== null) return;
+      wheelFrameRef.current = window.requestAnimationFrame(() => {
+        wheelFrameRef.current = null;
+        const pending = pendingViewRef.current;
+        pendingViewRef.current = null;
+        if (!pending) return;
+        setTimelineView(pending.pixelsPerSecond, pending.scrollLeft);
+      });
+    },
+    [setTimelineView]
+  );
+
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
+      const element = containerRef.current;
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      const mouseX = Math.max(0, Math.min(contentViewportWidth, e.clientX - rect.left - TRACK_HEADER_WIDTH));
+
       if (e.ctrlKey || e.metaKey) {
-        // Ctrl+Wheel = zoom
         e.preventDefault();
-        if (e.deltaY < 0) zoomIn();
-        else zoomOut();
-      } else {
-        // Normal scroll = horizontal pan
-        setScrollLeft(scrollLeft + e.deltaY);
+        const oldPixelsPerSecond = useTimelineStore.getState().pixelsPerSecond;
+        const oldScrollLeft = useTimelineStore.getState().scrollLeft;
+        const factor = Math.exp(-e.deltaY * 0.002);
+        const nextPixelsPerSecond = Math.max(5, Math.min(220, oldPixelsPerSecond * factor));
+        const timeUnderCursor = (oldScrollLeft + mouseX) / oldPixelsPerSecond;
+        const nextMaxScrollLeft = Math.max(0, projectDuration * nextPixelsPerSecond - contentViewportWidth);
+        const nextScrollLeft = Math.max(0, Math.min(nextMaxScrollLeft, timeUnderCursor * nextPixelsPerSecond - mouseX));
+        commitTimelineView(nextPixelsPerSecond, nextScrollLeft);
+        return;
       }
+
+      e.preventDefault();
+      const currentScrollLeft = useTimelineStore.getState().scrollLeft;
+      const panDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      setScrollLeft(Math.max(0, Math.min(maxScrollLeft, currentScrollLeft + panDelta)));
     },
-    [scrollLeft, setScrollLeft, zoomIn, zoomOut]
+    [commitTimelineView, contentViewportWidth, maxScrollLeft, projectDuration, setScrollLeft]
   );
 
   // Click on ruler area to seek
@@ -69,18 +128,9 @@ export default function Timeline() {
     [handleTimelineSeek]
   );
 
-  const containerWidth = containerRef.current?.clientWidth || 800;
-  const projectDuration = Math.max(
-    30,
-    duration,
-    ...tracks.flatMap((track) => (track.clips || []).map((clip) => clip.end))
-  );
-  const maxScrollLeft = Math.max(
-    0,
-    projectDuration * pixelsPerSecond - (containerWidth - TRACK_HEADER_WIDTH)
-  );
   const hasTimelineClips = tracks.some((track) => (track.clips || []).length > 0);
   const hasImportedMedia = mediaFiles.length > 0;
+  const zoomPercent = Math.round((pixelsPerSecond / 40) * 100);
 
   return (
     <div className="panel flex flex-col h-full">
@@ -101,8 +151,22 @@ export default function Timeline() {
           <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={zoomOut} title="Zoom Out (-)">
             <ZoomOut size={12} style={{ color: "var(--text-muted)" }} />
           </button>
+          <input
+            type="range"
+            min={5}
+            max={220}
+            step={1}
+            value={Math.round(pixelsPerSecond)}
+            onChange={(event) => setPixelsPerSecond(Number(event.target.value))}
+            className="timeline-zoom-slider"
+            aria-label="Timeline zoom"
+          />
+          <span className="timeline-zoom-readout">{zoomPercent}%</span>
           <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={zoomIn} title="Zoom In (+)">
             <ZoomIn size={12} style={{ color: "var(--text-muted)" }} />
+          </button>
+          <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={() => fitZoom(projectDuration, contentViewportWidth)} title="Fit timeline">
+            <Maximize2 size={12} style={{ color: "var(--text-muted)" }} />
           </button>
           <button
             className="p-1 rounded hover:bg-[var(--hover-surface)]"
@@ -157,7 +221,7 @@ export default function Timeline() {
       {/* Timeline body */}
       <div
         ref={containerRef}
-        className="relative flex-1 overflow-auto"
+        className="relative flex-1 overflow-y-auto overflow-x-hidden"
         onWheel={handleWheel}
         data-timeline-area
       >
@@ -176,7 +240,7 @@ export default function Timeline() {
           />
           {/* Ruler */}
           <div className="flex-1 overflow-hidden cursor-pointer" onClick={handleRulerClick}>
-            <TimelineRuler width={containerWidth - TRACK_HEADER_WIDTH} />
+            <TimelineRuler width={contentViewportWidth} />
           </div>
         </div>
 

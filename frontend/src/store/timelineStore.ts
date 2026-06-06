@@ -22,6 +22,7 @@ interface TimelineState {
 
   setPixelsPerSecond: (pps: number) => void;
   setScrollLeft: (sl: number) => void;
+  setTimelineView: (pps: number, sl: number) => void;
   toggleSnap: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -46,12 +47,20 @@ interface TimelineState {
   initDefaultTracks: () => void;
 }
 
-const DEFAULT_PPS = 40; // pixels per second
-const MIN_PPS = 5;
-const MAX_PPS = 200;
+export const DEFAULT_TIMELINE_PPS = 40;
+export const MIN_TIMELINE_PPS = 5;
+export const MAX_TIMELINE_PPS = 220;
+
+function clampPixelsPerSecond(value: number) {
+  return Math.max(MIN_TIMELINE_PPS, Math.min(MAX_TIMELINE_PPS, Number.isFinite(value) ? value : DEFAULT_TIMELINE_PPS));
+}
+
+function clampScrollLeft(value: number) {
+  return Math.max(0, Number.isFinite(value) ? value : 0);
+}
 
 export const useTimelineStore = create<TimelineState>((set) => ({
-  pixelsPerSecond: DEFAULT_PPS,
+  pixelsPerSecond: DEFAULT_TIMELINE_PPS,
   scrollLeft: 0,
   snapEnabled: true,
 
@@ -61,24 +70,30 @@ export const useTimelineStore = create<TimelineState>((set) => ({
   notice: null,
 
   setPixelsPerSecond: (pps) =>
-    set({ pixelsPerSecond: Math.max(MIN_PPS, Math.min(MAX_PPS, pps)) }),
+    set({ pixelsPerSecond: clampPixelsPerSecond(pps) }),
 
-  setScrollLeft: (sl) => set({ scrollLeft: Math.max(0, sl) }),
+  setScrollLeft: (sl) => set({ scrollLeft: clampScrollLeft(sl) }),
+
+  setTimelineView: (pps, sl) =>
+    set({
+      pixelsPerSecond: clampPixelsPerSecond(pps),
+      scrollLeft: clampScrollLeft(sl),
+    }),
 
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
 
   zoomIn: () =>
     set((s) => ({
-      pixelsPerSecond: Math.min(MAX_PPS, s.pixelsPerSecond * 1.3),
+      pixelsPerSecond: clampPixelsPerSecond(s.pixelsPerSecond * 1.12),
     })),
 
   zoomOut: () =>
     set((s) => ({
-      pixelsPerSecond: Math.max(MIN_PPS, s.pixelsPerSecond / 1.3),
+      pixelsPerSecond: clampPixelsPerSecond(s.pixelsPerSecond / 1.12),
     })),
   fitZoom: (duration, viewportWidth) =>
     set({
-      pixelsPerSecond: Math.max(MIN_PPS, Math.min(MAX_PPS, (viewportWidth - 120) / Math.max(1, duration))),
+      pixelsPerSecond: clampPixelsPerSecond(Math.max(1, viewportWidth - 12) / Math.max(1, duration)),
       scrollLeft: 0,
     }),
 

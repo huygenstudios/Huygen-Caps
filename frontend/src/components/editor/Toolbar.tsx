@@ -48,14 +48,14 @@ export default function Toolbar() {
         Import Video
       </button>
 
-      <div className="rounded px-2 py-1 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)", background: "var(--bg-control)", border: "1px solid var(--border)" }}>
+      <div className="hidden rounded px-2 py-1 text-[10px] font-bold uppercase sm:block" style={{ color: "var(--text-muted)", background: "var(--bg-control)", border: "1px solid var(--border)" }}>
         Caption Generator
       </div>
 
-      <button className="icon-button" disabled={!canUndo} onClick={undo} title="Undo">
+      <button className="icon-button hidden sm:inline-grid" disabled={!canUndo} onClick={undo} title="Undo">
         <Undo2 size={15} />
       </button>
-      <button className="icon-button" disabled={!canRedo} onClick={redo} title="Redo">
+      <button className="icon-button hidden sm:inline-grid" disabled={!canRedo} onClick={redo} title="Redo">
         <Redo2 size={15} />
       </button>
 
@@ -65,7 +65,7 @@ export default function Toolbar() {
         Last edited a few seconds ago
       </span>
 
-      <button className="icon-button" title="Save project">
+      <button className="icon-button hidden sm:inline-grid" title="Save project">
         <Save size={15} />
       </button>
       <button

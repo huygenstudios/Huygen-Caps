@@ -15,7 +15,7 @@ import { useTimelineStore } from "@/store/timelineStore";
 import { useVideoPlayer } from "@/hooks/useVideoPlayer";
 import CaptionOverlay from "./CaptionOverlay";
 
-export default function ProgramMonitor() {
+export default function ProgramMonitor({ chrome = "full" }: { chrome?: "full" | "preview-only" }) {
   const {
     isPlaying,
     currentTime,
@@ -142,10 +142,12 @@ export default function ProgramMonitor() {
     : 0;
 
   return (
-    <div className="panel flex h-full flex-col">
-      <div className="panel-header">
-        <span>Program</span>
-      </div>
+    <div className={`panel flex h-full flex-col ${chrome === "preview-only" ? "program-monitor-preview-only" : ""}`}>
+      {chrome === "full" && (
+        <div className="panel-header">
+          <span>Program</span>
+        </div>
+      )}
 
       <div
         ref={viewportRef}
@@ -281,10 +283,11 @@ export default function ProgramMonitor() {
         </div>
       </div>
 
-      <div
-        className="flex shrink-0 items-center gap-1 px-3 py-1.5"
-        style={{ background: "var(--bg-monitor-controls)", borderTop: "1px solid var(--border)" }}
-      >
+      {chrome === "full" && (
+        <div
+          className="flex shrink-0 items-center gap-1 px-3 py-1.5"
+          style={{ background: "var(--bg-monitor-controls)", borderTop: "1px solid var(--border)" }}
+        >
         <button className="p-1 rounded hover:bg-[var(--hover-surface)]" onClick={stop} title="Stop">
           <Square size={14} style={{ color: "var(--text-muted)" }} />
         </button>
@@ -354,7 +357,8 @@ export default function ProgramMonitor() {
           <option value="half">1/2</option>
           <option value="quarter">1/4</option>
         </select>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

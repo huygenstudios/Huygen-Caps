@@ -4,12 +4,9 @@
 
 import React, { useEffect } from "react";
 
-import CaptionFirstLeftPanel from "@/components/editor/CaptionFirstLeftPanel";
-import CaptionStylePanel from "@/components/editor/CaptionStylePanel";
+import EditorWorkspaceShell from "@/components/editor/EditorWorkspaceShell";
 import ExportModal from "@/components/editor/ExportModal";
-import ProgramMonitor from "@/components/editor/ProgramMonitor";
 import SequenceSettingsModal from "@/components/editor/SequenceSettingsModal";
-import Timeline from "@/components/editor/Timeline";
 import Toolbar from "@/components/editor/Toolbar";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useEditorStore } from "@/store/editorStore";
@@ -43,37 +40,9 @@ export default function EditorPage() {
   }, [colorMode]);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden" style={{ background: "var(--bg-app)" }}>
+    <div className="editor-shell flex h-[100dvh] w-screen flex-col overflow-hidden" style={{ background: "var(--bg-app)" }}>
       <Toolbar />
-
-      <main
-        className="grid min-h-0 flex-1 gap-1 p-1"
-        style={{ gridTemplateRows: "minmax(0, 1fr) 236px" }}
-      >
-        <section className="min-h-0 min-w-0 overflow-hidden">
-          <div
-            className="grid h-full min-h-0 gap-1"
-            style={{
-              gridTemplateColumns:
-                "clamp(280px, 26vw, 420px) minmax(320px, 1fr) clamp(300px, 24vw, 390px)",
-            }}
-          >
-            <div className="min-h-0 min-w-0 overflow-hidden">
-              <CaptionFirstLeftPanel />
-            </div>
-            <div className="min-h-0 min-w-0 overflow-hidden">
-              <ProgramMonitor />
-            </div>
-            <aside className="panel min-h-0 min-w-0 overflow-hidden">
-              <CaptionStylePanel />
-            </aside>
-          </div>
-        </section>
-
-        <section className="min-h-0 min-w-0 overflow-hidden">
-          <Timeline />
-        </section>
-      </main>
+      <EditorWorkspaceShell />
 
       <ExportModal />
       <SequenceSettingsModal />
