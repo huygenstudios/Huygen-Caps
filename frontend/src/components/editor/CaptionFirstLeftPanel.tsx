@@ -96,7 +96,7 @@ export default function CaptionFirstLeftPanel() {
         ))}
       </nav>
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div className="left-panel-scroll min-h-0 min-w-0 flex-1">
         {renderPanel()}
       </div>
     </div>
