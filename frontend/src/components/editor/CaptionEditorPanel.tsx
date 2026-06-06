@@ -15,6 +15,7 @@ import {
   Plus,
   Search,
   Sparkles,
+  Trash2,
   Wand2,
 } from "lucide-react";
 import {
@@ -29,7 +30,7 @@ import {
 import { addMediaSpeechToCoverageReport, validateCaptionCoverage } from "@/lib/captionCoverage";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
 import { AlignedSegment, AlignedWord, Caption, CaptionCoverageReport, CaptionDocument, Language } from "@/lib/types";
-import { applyCaptionSync, autoFixCaptionSync, getHealth, getJob, getTimingDebug, previewCaptionSync, resolveBackendUrl, runHighQualityAlignment, uploadVideo } from "@/lib/api";
+import { applyCaptionSync, autoFixCaptionSync, cancelJob, getHealth, getJob, previewCaptionSync, runHighQualityAlignment, uploadVideo } from "@/lib/api";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { openMediaPicker } from "@/lib/mediaImport";
@@ -37,13 +38,14 @@ import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { usePlaybackStore } from "@/store/playbackStore";
 import { useTimelineStore } from "@/store/timelineStore";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 
 interface CaptionEditorPanelProps {
   initialFlow?: "setup" | "list";
 }
 
 type OriginalLanguageOption = "auto_detect" | "english" | "telugu" | "hindi" | "auto_mixed_indian" | "hinglish" | "telgish";
-type TranslateOption = "same" | "english" | "telugu" | "hindi" | "roman_telgish";
+type TranslateOption = "same" | "english" | "telugu" | "hindi" | "telgish";
 
 const ORIGINAL_LANGUAGE_OPTIONS: { value: OriginalLanguageOption; label: string }[] = [
   { value: "auto_detect", label: "Auto Detect" },
@@ -55,18 +57,18 @@ const ORIGINAL_LANGUAGE_OPTIONS: { value: OriginalLanguageOption; label: string 
   { value: "telgish", label: "Telgish / Teluglish" },
 ];
 
-const TRANSLATE_OPTIONS: { value: TranslateOption; label: string }[] = [
+const TRANSLATE_OPTIONS: { value: TranslateOption; label: string; disabled?: boolean }[] = [
   { value: "same", label: "None / Same as original" },
   { value: "english", label: "English" },
-  { value: "telugu", label: "Telugu" },
-  { value: "hindi", label: "Hindi" },
-  { value: "roman_telgish", label: "Roman English / Telgish output" },
+  { value: "hindi", label: "Hindi / Hinglish" },
+  { value: "telugu", label: "Telugu script (coming later)", disabled: true },
+  { value: "telgish", label: "Telgish / Telugu in English letters" },
 ];
 
 function languageModeFromSelection(original: OriginalLanguageOption, translate: TranslateOption): Language {
   if (translate === "english") return "english";
   if (translate === "hindi") return "hinglish";
-  if (translate === "telugu" || translate === "roman_telgish") return "telgish";
+  if (translate === "telugu" || translate === "telgish") return "telgish";
   if (original === "english") return "english";
   if (original === "hindi" || original === "hinglish") return "hinglish";
   if (original === "telugu" || original === "telgish") return "telgish";
@@ -124,11 +126,26 @@ function formatSubtitleTime(seconds: number) {
 
 function formatGenerateError(message: string) {
   if (!message) return "";
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("invalid_api_key") ||
+    lower.includes("invalid api key") ||
+    lower.includes("incorrect api key") ||
+    (lower.includes("401") && lower.includes("openai"))
+  ) {
+    return "OpenAI API key is invalid or missing. Update OPENAI_API_KEY in the backend environment, then restart the server.";
+  }
+  if (lower.includes("sarvam") && (lower.includes("401") || lower.includes("403") || lower.includes("invalid") || lower.includes("unauthorized"))) {
+    return "Sarvam API key is invalid or missing. Update SARVAM_API_KEY in the backend environment, then restart the server.";
+  }
   if (message.includes("<!DOCTYPE html") || message.includes("<html")) {
     if (message.includes("This page could not be found") || message.includes("404")) {
       return "Backend API returned a frontend 404 page. Make sure FastAPI is reachable and NEXT_PUBLIC_API_URL is correct.";
     }
     return "Backend returned HTML instead of JSON. Check the backend logs and /api/health.";
+  }
+  if (process.env.NODE_ENV !== "development" && (message.includes("{'error'") || message.includes('"error"'))) {
+    return "Subtitle generation failed. Check backend provider keys and try again.";
   }
   return message.length > 500 ? `${message.slice(0, 500)}...` : message;
 }
@@ -296,6 +313,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     selectCaption,
     updateCaption,
     addCaption,
+    clearAll,
     setCaptions,
     setCaptionDocument,
     setCaptionCoverageReport,
@@ -323,21 +341,37 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
   const [translateTo, setTranslateTo] = useState<TranslateOption>("same");
   const [isRebuilding, setIsRebuilding] = useState(false);
   const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null);
+  const [showResetDialog, setShowResetDialog] = useState(false);
   const [coverageNotice, setCoverageNotice] = useState("");
   const [syncShiftSeconds, setSyncShiftSeconds] = useState(0);
   const [syncSkew, setSyncSkew] = useState(1);
   const [syncAnchorSeconds, setSyncAnchorSeconds] = useState(0);
-  const [syncBusy, setSyncBusy] = useState<"" | "preview" | "apply" | "auto" | "debug" | "align">("");
+  const [syncBusy, setSyncBusy] = useState<"" | "preview" | "apply" | "auto" | "align">("");
   const [syncNotice, setSyncNotice] = useState("");
   const [syncReport, setSyncReport] = useState<Record<string, unknown> | null>(null);
   const [lastAutoRecommendation, setLastAutoRecommendation] = useState<{ shiftSeconds: number; skew: number } | null>(null);
   const previewBackupRef = useRef<Caption[] | null>(null);
+  const generationRunIdRef = useRef(0);
+  const activeUploadAbortRef = useRef<AbortController | null>(null);
+  const activePollIntervalRef = useRef<number | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+  const cancelledRunIdsRef = useRef<Set<number>>(new Set());
   const charsPerSubtitle = captionCharsPerSubtitle;
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const lastAutoScrolledCaptionRef = useRef<string | null>(null);
 
   useWebSocket();
+
+  useEffect(() => {
+    return () => {
+      activeUploadAbortRef.current?.abort();
+      if (activePollIntervalRef.current !== null) {
+        window.clearInterval(activePollIntervalRef.current);
+      }
+      activePollIntervalRef.current = null;
+    };
+  }, []);
 
   const activeMedia = mediaFiles.find((file) => file.id === activeMediaId);
   const sortedCaptions = useMemo(() => [...captions].sort((a, b) => a.start - b.start), [captions]);
@@ -490,6 +524,30 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     transcriptSegments,
   ]);
 
+  const handleCancelGenerate = useCallback(() => {
+    const runId = generationRunIdRef.current;
+    cancelledRunIdsRef.current.add(runId);
+    activeUploadAbortRef.current?.abort();
+    activeUploadAbortRef.current = null;
+
+    if (activePollIntervalRef.current !== null) {
+      window.clearInterval(activePollIntervalRef.current);
+      activePollIntervalRef.current = null;
+    }
+
+    const jobToCancel = activeJobIdRef.current;
+    setIsGenerating(false);
+    setPipelineProgress("Cancelled", -1);
+
+    if (jobToCancel) {
+      void cancelJob(jobToCancel).catch((error) => {
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[captions] cancel job failed", error);
+        }
+      });
+    }
+  }, [setPipelineProgress]);
+
   const handleGenerate = useCallback(async () => {
     if (!activeMedia || isGenerating) return;
     if (activeMedia.type !== "video") {
@@ -497,6 +555,19 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
       return;
     }
 
+    if (activePollIntervalRef.current !== null) {
+      window.clearInterval(activePollIntervalRef.current);
+      activePollIntervalRef.current = null;
+    }
+    activeUploadAbortRef.current?.abort();
+    const runId = generationRunIdRef.current + 1;
+    generationRunIdRef.current = runId;
+    activeJobIdRef.current = null;
+    cancelledRunIdsRef.current.delete(runId);
+    const uploadController = new AbortController();
+    activeUploadAbortRef.current = uploadController;
+
+    const isCurrentRun = () => generationRunIdRef.current === runId && !cancelledRunIdsRef.current.has(runId);
     const requestedLanguage = languageModeFromSelection(originalLanguage, translateTo);
     setLanguage(requestedLanguage);
     setIsGenerating(true);
@@ -513,16 +584,26 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
       }
 
       setPipelineProgress("Uploading...", 5);
-      const result = await uploadVideo(activeMedia.file, requestedLanguage);
+      const result = await uploadVideo(activeMedia.file, requestedLanguage, uploadController.signal);
+      if (!isCurrentRun()) return;
+      activeUploadAbortRef.current = null;
+      activeJobIdRef.current = result.job_id;
       setJobId(result.job_id);
 
       let pollFailures = 0;
       const pollInterval = window.setInterval(async () => {
+        if (!isCurrentRun()) {
+          window.clearInterval(pollInterval);
+          if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
+          return;
+        }
         try {
           const job = await getJob(result.job_id);
+          if (!isCurrentRun()) return;
           pollFailures = 0;
           if (job.status === "completed") {
             window.clearInterval(pollInterval);
+            if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
             setPipelineProgress("Done", 100);
             const sourceSegments = job.transcript?.segments?.length ? job.transcript.segments : job.segments || [];
             if (sourceSegments.length) {
@@ -569,8 +650,15 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
               setCaptionNeedsRebuild(false);
             }
             setIsGenerating(false);
+          } else if (job.status === "cancelled") {
+            window.clearInterval(pollInterval);
+            if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
+            cancelledRunIdsRef.current.add(runId);
+            setPipelineProgress("Cancelled", -1);
+            setIsGenerating(false);
           } else if (job.status === "failed") {
             window.clearInterval(pollInterval);
+            if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
             setPipelineProgress("Failed", -1);
             setGenerateError(job.error || "Subtitle generation failed.");
             setIsGenerating(false);
@@ -578,16 +666,25 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             setPipelineProgress(job.status || "Processing", Math.max(0, job.progress || 0));
           }
         } catch (error) {
+          if (!isCurrentRun()) return;
           pollFailures += 1;
           setGenerateError(error instanceof Error ? error.message : "Failed to read job status.");
           if (pollFailures >= 3) {
             window.clearInterval(pollInterval);
+            if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
             setPipelineProgress("Error", -1);
             setIsGenerating(false);
           }
         }
       }, 2000);
+      activePollIntervalRef.current = pollInterval;
     } catch (error) {
+      activeUploadAbortRef.current = null;
+      if (!isCurrentRun()) {
+        setPipelineProgress("Cancelled", -1);
+        setIsGenerating(false);
+        return;
+      }
       setPipelineProgress("Error", -1);
       setGenerateError(error instanceof Error ? error.message : "Upload failed.");
       setIsGenerating(false);
@@ -825,24 +922,38 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     setLastAutoRecommendation(null);
   }, [setCaptions]);
 
-  const openTimingDebug = useCallback(async () => {
-    if (!jobId) {
-      setSyncNotice("Generate captions before opening timing debug.");
-      return;
+  const resetSubtitleState = useCallback(() => {
+    if (activePollIntervalRef.current !== null) {
+      window.clearInterval(activePollIntervalRef.current);
+      activePollIntervalRef.current = null;
     }
-    setSyncBusy("debug");
-    try {
-      const debugUrl = `/api/jobs/${jobId}/timing-debug?currentTime=${encodeURIComponent(currentTime.toFixed(3))}`;
-      const debug = await getTimingDebug(jobId, currentTime);
-      setSyncReport(debug.syncReport as Record<string, unknown>);
-      setSyncNotice("Timing debug loaded.");
-      window.open(resolveBackendUrl(debugUrl), "_blank", "noopener,noreferrer");
-    } catch (error) {
-      setSyncNotice(error instanceof Error ? error.message : "Timing debug failed.");
-    } finally {
-      setSyncBusy("");
-    }
-  }, [currentTime, jobId]);
+    activeUploadAbortRef.current?.abort();
+    activeUploadAbortRef.current = null;
+    generationRunIdRef.current += 1;
+    clearAll();
+    setCaptionDocument(null);
+    setCaptionCoverageReport(null);
+    setTranscriptSegments([]);
+    setCaptionNeedsRebuild(false);
+    setCaptionSearch("");
+    setGenerateError("");
+    setCoverageNotice("");
+    setSyncNotice("");
+    setSyncReport(null);
+    setLastAutoRecommendation(null);
+    previewBackupRef.current = null;
+    setIsGenerating(false);
+    setPipelineProgress("", 0);
+    setFlow("setup");
+    setShowResetDialog(false);
+  }, [
+    clearAll,
+    setCaptionCoverageReport,
+    setCaptionDocument,
+    setCaptionNeedsRebuild,
+    setPipelineProgress,
+    setTranscriptSegments,
+  ]);
 
   const addSubtitleLine = useCallback(() => {
     addCaption({
@@ -970,7 +1081,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             onChange={(event) => setTranslateTo(event.target.value as TranslateOption)}
           >
             {TRANSLATE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
+              <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
             ))}
           </select>
         </label>
@@ -1007,7 +1118,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         </button>
 
         {isGenerating && (
-          <button className="btn-ghost w-full" onClick={() => setIsGenerating(false)}>
+          <button className="btn-ghost w-full" onClick={handleCancelGenerate}>
             Cancel
           </button>
         )}
@@ -1051,21 +1162,16 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         <button className="icon-button" onClick={() => setFlow("setup")} title="Back">
           <ChevronLeft size={15} />
         </button>
-        <label className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1" style={{ background: "var(--bg-control)", border: "1px solid var(--border)" }}>
-          <Search size={13} style={{ color: "var(--text-muted)" }} />
-          <input
-            className="w-full border-0 bg-transparent text-xs outline-none"
-            value={captionSearch}
-            placeholder="Search subtitles"
-            onChange={(event) => setCaptionSearch(event.target.value)}
-            style={{ color: "var(--text-primary)" }}
-          />
-        </label>
+        <div className="min-w-0 flex-1" />
         <button className="icon-button" onClick={exportSRT} title="Download SRT" disabled={!captions.length}>
           <Download size={15} />
         </button>
         <button className="icon-button" onClick={toggleCaptionOverlay} title="Preview subtitles">
           {showCaptionOverlay ? <Eye size={15} /> : <EyeOff size={15} />}
+        </button>
+        <button className="btn-ghost inline-flex items-center gap-1 text-[10px]" onClick={() => setShowResetDialog(true)} disabled={!captions.length} title="Reset all subtitles">
+          <Trash2 size={13} />
+          Reset
         </button>
         <button className="icon-button" title="More">
           <MoreVertical size={15} />
@@ -1123,9 +1229,6 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         <div className="brutal-box grid gap-2 p-2">
           <div className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase" style={{ color: "var(--text-primary)" }}>
             <span>Timing & Sync</span>
-            <button className="btn-ghost px-2 py-1 text-[10px]" type="button" disabled={!jobId || syncBusy === "debug"} onClick={openTimingDebug}>
-              Open Timing Debug
-            </button>
           </div>
           <label className="grid gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
             <span>Global offset {syncShiftSeconds.toFixed(2)}s</span>
@@ -1213,6 +1316,16 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             </div>
           )}
         </div>
+        <label className="flex min-w-0 items-center gap-2 rounded px-2 py-2" style={{ background: "var(--bg-control)", border: "1px solid var(--border)" }}>
+          <Search size={13} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+          <input
+            className="w-full border-0 bg-transparent text-xs outline-none"
+            value={captionSearch}
+            placeholder="Search subtitles"
+            onChange={(event) => setCaptionSearch(event.target.value)}
+            style={{ color: "var(--text-primary)" }}
+          />
+        </label>
       </div>
 
       {generateError && (
@@ -1348,5 +1461,18 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     </div>
   );
 
-  return flow === "setup" && captions.length === 0 ? setupPanel : flow === "setup" ? setupPanel : listPanel;
+  return (
+    <>
+      {flow === "setup" && captions.length === 0 ? setupPanel : flow === "setup" ? setupPanel : listPanel}
+      <ConfirmDialog
+        open={showResetDialog}
+        title="Reset all subtitles?"
+        body="This will remove all generated and edited subtitle rows. This cannot be undone."
+        confirmLabel="Reset Subtitles"
+        destructive
+        onCancel={() => setShowResetDialog(false)}
+        onConfirm={resetSubtitleState}
+      />
+    </>
+  );
 }

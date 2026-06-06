@@ -18,7 +18,7 @@ interface CaptionState {
   // CRUD
   setCaptions: (captions: Caption[]) => void;
   setCaptionDocument: (document: CaptionDocument | null) => void;
-  setCaptionCoverageReport: (report: CaptionCoverageReport) => void;
+  setCaptionCoverageReport: (report: CaptionCoverageReport | null) => void;
   addCaption: (caption: Omit<Caption, "id">) => void;
   updateCaption: (id: string, updates: Partial<Caption>) => void;
   deleteCaption: (id: string) => void;
@@ -72,7 +72,11 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
 
   setCaptionCoverageReport: (report) => {
     set((s) => ({
-      captionDocument: s.captionDocument ? { ...s.captionDocument, coverageReport: report } : s.captionDocument,
+      captionDocument: s.captionDocument
+        ? report
+          ? { ...s.captionDocument, coverageReport: report }
+          : { ...s.captionDocument, coverageReport: undefined }
+        : s.captionDocument,
     }));
   },
 

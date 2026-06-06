@@ -210,10 +210,18 @@ async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
   timeoutMs = 30000,
-  responseType: ApiResponseType = "json"
+  responseType: ApiResponseType = "json",
+  externalSignal?: AbortSignal
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const abortFromExternalSignal = () => controller.abort();
+
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromExternalSignal, { once: true });
+  }
 
   try {
     const res = await fetch(apiUrl(path), {
@@ -231,7 +239,11 @@ async function apiFetch<T>(
   } catch (err) {
     if (err instanceof ApiError) throw err;
     if (err instanceof DOMException && err.name === "AbortError") {
-      throw new ApiError(`Request to ${apiLabel()} timed out after ${Math.round(timeoutMs / 1000)}s.`);
+      throw new ApiError(
+        externalSignal?.aborted
+          ? "Request cancelled."
+          : `Request to ${apiLabel()} timed out after ${Math.round(timeoutMs / 1000)}s.`
+      );
     }
     throw new ApiError(
       `Backend is unreachable. Check API URL and /health. Tried ${apiLabel()}. ` +
@@ -241,6 +253,7 @@ async function apiFetch<T>(
     );
   } finally {
     window.clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", abortFromExternalSignal);
   }
 }
 
@@ -254,7 +267,8 @@ export function resolveBackendUrl(path: string) {
 
 export async function uploadVideo(
   file: File,
-  languageMode: string = "auto_mixed_indian"
+  languageMode: string = "auto_mixed_indian",
+  signal?: AbortSignal
 ): Promise<UploadJobResponse> {
   const formData = new FormData();
   formData.append("file", file);
@@ -266,12 +280,18 @@ export async function uploadVideo(
       method: "POST",
       body: formData,
     },
-    120000
+    120000,
+    "json",
+    signal
   );
 }
 
 export async function getJob(jobId: string): Promise<JobResponse> {
   return apiFetch<JobResponse>(`/api/jobs/${jobId}`, {}, 30000);
+}
+
+export async function cancelJob(jobId: string): Promise<JobResponse> {
+  return apiFetch<JobResponse>(`/api/jobs/${jobId}/cancel`, { method: "POST" }, 30000);
 }
 
 export async function getJobs(): Promise<JobResponse[]> {
