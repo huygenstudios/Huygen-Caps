@@ -42,6 +42,9 @@ SARVAM_URL = "https://api.sarvam.ai/speech-to-text"
 
 
 SUPPORTED_STT_PROVIDERS = {"auto", "whisper", "groq_whisper", "openai_whisper", "sarvam"}
+OPENAI_KEY_ERROR = "OpenAI API key is invalid or missing. Update OPENAI_API_KEY in the backend environment, then restart the server."
+SARVAM_KEY_ERROR = "Sarvam API key is invalid or missing. Update SARVAM_API_KEY in the backend environment, then restart the server."
+GROQ_KEY_ERROR = "Groq API key is invalid or missing. Update GROQ_API_KEY in the backend environment, then restart the server."
 
 
 def get_stt_provider() -> str:
@@ -126,6 +129,11 @@ def _as_timing_float(value: Any) -> float | None:
         return None
 
 
+def _looks_like_auth_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(token in text for token in ("invalid_api_key", "invalid api key", "incorrect api key", "unauthorized", "401", "403"))
+
+
 def _normalize_provider_result(result: dict, provider: str) -> dict:
     normalized_words: list[dict[str, Any]] = []
     for raw_word in result.get("words") or []:
@@ -172,7 +180,12 @@ def _call_groq(client, audio_path: str, prompt: str, language_hint: str | None,
         if language_hint:
             kwargs["language"] = language_hint
 
-        transcription = client.audio.transcriptions.create(**kwargs)
+        try:
+            transcription = client.audio.transcriptions.create(**kwargs)
+        except Exception as exc:
+            if _looks_like_auth_error(exc):
+                raise RuntimeError(GROQ_KEY_ERROR) from exc
+            raise
 
     if hasattr(transcription, "model_dump"):
         payload = transcription.model_dump()
@@ -211,7 +224,12 @@ def _call_openai_whisper(audio_path: str, language_mode: str) -> dict:
             kwargs["language"] = language_hint
         if prompt:
             kwargs["prompt"] = prompt
-        transcription = client.audio.transcriptions.create(**kwargs)
+        try:
+            transcription = client.audio.transcriptions.create(**kwargs)
+        except Exception as exc:
+            if _looks_like_auth_error(exc):
+                raise RuntimeError(OPENAI_KEY_ERROR) from exc
+            raise
 
     if hasattr(transcription, "model_dump"):
         payload = transcription.model_dump()
@@ -291,6 +309,9 @@ def _call_sarvam(audio_path: str, language_mode: str) -> dict:
         except (ValueError, json.JSONDecodeError):
             provider_message = raw_detail
             provider_code = None
+
+        if response.status_code in {401, 403} or str(provider_code).lower() in {"invalid_api_key", "unauthorized"}:
+            raise RuntimeError(SARVAM_KEY_ERROR)
 
         if response.status_code == 429:
             raise RuntimeError(

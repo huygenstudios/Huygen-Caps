@@ -419,6 +419,41 @@ async def get_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
     )
 
 
+@router.post("/{job_id}/cancel", response_model=JobResponse)
+async def cancel_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if row["status"] == "completed":
+        raise HTTPException(status_code=409, detail="Completed jobs cannot be cancelled.")
+
+    await db.execute(
+        """
+        UPDATE jobs
+        SET status = 'cancelled',
+            progress = -1,
+            error = 'Cancelled by user',
+            completed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (job_id,),
+    )
+    await db.commit()
+    await manager.broadcast_progress(job_id, "cancelled", -1, "Cancelled by user.")
+
+    return JobResponse(
+        job_id=job_id,
+        status="cancelled",
+        progress=-1,
+        filename=row["filename"],
+        target_lang=row["target_lang"],
+        languageMode=_stored_language_mode(row["target_lang"]),
+        video_url=f"/api/jobs/{job_id}/video",
+    )
+
+
 @router.get("/{job_id}/timing-debug")
 async def get_job_timing_debug(
     job_id: str,
