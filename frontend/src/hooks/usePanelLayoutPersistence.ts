@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 const PANEL_LAYOUT_KEY = "huygen-caps-panel-layout-v1";
+export const RESET_PANEL_LAYOUT_EVENT = "huygen-caps-reset-layout";
 
 type PanelLayouts = {
   vertical: number[];
@@ -27,6 +28,7 @@ function cleanLayout(value: unknown, fallback: number[]) {
 
 export function usePanelLayoutPersistence() {
   const [layouts, setLayouts] = useState<PanelLayouts>(DEFAULT_LAYOUTS);
+  const [layoutVersion, setLayoutVersion] = useState(0);
 
   useEffect(() => {
     try {
@@ -55,7 +57,13 @@ export function usePanelLayoutPersistence() {
   const resetLayout = useCallback(() => {
     window.localStorage.removeItem(PANEL_LAYOUT_KEY);
     setLayouts(DEFAULT_LAYOUTS);
+    setLayoutVersion((value) => value + 1);
   }, []);
 
-  return useMemo(() => ({ layouts, saveLayout, resetLayout }), [layouts, resetLayout, saveLayout]);
+  useEffect(() => {
+    window.addEventListener(RESET_PANEL_LAYOUT_EVENT, resetLayout);
+    return () => window.removeEventListener(RESET_PANEL_LAYOUT_EVENT, resetLayout);
+  }, [resetLayout]);
+
+  return useMemo(() => ({ layouts, saveLayout, resetLayout, layoutVersion }), [layoutVersion, layouts, resetLayout, saveLayout]);
 }

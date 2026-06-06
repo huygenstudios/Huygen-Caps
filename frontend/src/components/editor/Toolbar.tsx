@@ -4,10 +4,11 @@
 "use client";
 
 import React from "react";
-import { Download, Moon, Redo2, Save, Sun, Undo2, UploadCloud } from "lucide-react";
+import { Download, Moon, Redo2, RotateCcw, Save, Sun, Undo2, UploadCloud } from "lucide-react";
 import { useEditorStore } from "@/store/editorStore";
 import { useProjectHistoryStore } from "@/store/projectHistoryStore";
 import { openMediaPicker } from "@/lib/mediaImport";
+import { RESET_PANEL_LAYOUT_EVENT } from "@/hooks/usePanelLayoutPersistence";
 
 export default function Toolbar() {
   const {
@@ -23,6 +24,10 @@ export default function Toolbar() {
     setLeftSidebarTab("media");
     setMediaPanelTab("project");
     void openMediaPicker();
+  };
+
+  const resetPanelLayout = () => {
+    window.dispatchEvent(new CustomEvent(RESET_PANEL_LAYOUT_EVENT));
   };
 
   return (
@@ -67,6 +72,9 @@ export default function Toolbar() {
 
       <button className="icon-button hidden sm:inline-grid" title="Save project">
         <Save size={15} />
+      </button>
+      <button className="icon-button hidden sm:inline-grid" onClick={resetPanelLayout} title="Reset panel layout">
+        <RotateCcw size={15} />
       </button>
       <button
         className="icon-button"

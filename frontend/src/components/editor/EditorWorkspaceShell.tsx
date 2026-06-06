@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState } from "react";
-import { RotateCcw } from "lucide-react";
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import CaptionFirstLeftPanel from "./CaptionFirstLeftPanel";
 import MobileEditorShell from "./MobileEditorShell";
@@ -17,22 +16,13 @@ function ResizeHandle({ direction }: { direction: "horizontal" | "vertical" }) {
   return <Separator className={`resize-handle ${direction === "horizontal" ? "resize-handle-x" : "resize-handle-y"}`} />;
 }
 
-function ResetLayoutButton({ onReset }: { onReset: () => void }) {
-  return (
-    <button className="editor-layout-reset" onClick={onReset} title="Reset panel layout">
-      <RotateCcw size={13} />
-      <span>Reset Layout</span>
-    </button>
-  );
-}
-
 function valuesFromLayout(layout: Layout, ids: string[]) {
   const values = ids.map((id) => Number(layout[id]));
   return values.every((value) => Number.isFinite(value) && value > 0) ? values : null;
 }
 
 function DesktopResizableLayout() {
-  const { layouts, saveLayout, resetLayout } = usePanelLayoutPersistence();
+  const { layouts, saveLayout, layoutVersion } = usePanelLayoutPersistence();
   const saveVertical = (layout: Layout) => {
     const values = valuesFromLayout(layout, ["top", "timeline"]);
     if (values) saveLayout("vertical", values);
@@ -44,8 +34,7 @@ function DesktopResizableLayout() {
 
   return (
     <main className="editor-workspace editor-workspace-desktop">
-      <ResetLayoutButton onReset={resetLayout} />
-      <Group orientation="vertical" onLayoutChanged={saveVertical}>
+      <Group key={`desktop-layout-${layoutVersion}`} orientation="vertical" onLayoutChanged={saveVertical}>
         <Panel id="top" defaultSize={`${layouts.vertical[0]}%`} minSize="55%">
           <Group orientation="horizontal" onLayoutChanged={saveHorizontal}>
             <Panel id="left" defaultSize={`${layouts.horizontal[0]}%`} minSize="280px" maxSize="520px">
@@ -71,7 +60,7 @@ function DesktopResizableLayout() {
 }
 
 function TabletResizableLayout() {
-  const { layouts, saveLayout, resetLayout } = usePanelLayoutPersistence();
+  const { layouts, saveLayout, layoutVersion } = usePanelLayoutPersistence();
   const [sidePanel, setSidePanel] = useState<TabletSidePanel>("captions");
   const saveVertical = (layout: Layout) => {
     const values = valuesFromLayout(layout, ["top", "timeline"]);
@@ -84,8 +73,7 @@ function TabletResizableLayout() {
 
   return (
     <main className="editor-workspace editor-workspace-tablet">
-      <ResetLayoutButton onReset={resetLayout} />
-      <Group orientation="vertical" onLayoutChanged={saveVertical}>
+      <Group key={`tablet-layout-${layoutVersion}`} orientation="vertical" onLayoutChanged={saveVertical}>
         <Panel id="top" defaultSize={`${layouts.tabletVertical[0]}%`} minSize="52%">
           <Group orientation="horizontal" onLayoutChanged={saveHorizontal}>
             <Panel id="program" defaultSize={`${layouts.tabletHorizontal[0]}%`} minSize="320px">
