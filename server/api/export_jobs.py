@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -73,6 +74,7 @@ class ExportRequest:
     bitrate: str
     custom_bitrate_mbps: float | None
     export_mode: str
+    captions_only: bool
     background_color: str
     duration_override: float | None
     duration_source: str | None
@@ -82,6 +84,7 @@ class ExportRequest:
     hardware_acceleration: bool
     render_mode: str
     original_video_path: str
+    composition_json: str | None
 
 
 @dataclass
@@ -418,6 +421,23 @@ async def _run_export_job(export_job_id: str, request: ExportRequest) -> None:
             if not isinstance(parsed_captions, list):
                 raise ExportStageError("render_input", "Captions JSON must be a list of caption chunks.")
 
+            duration = float(request.duration_override or 0)
+            total_frames = math.ceil(duration * request.export_fps) if duration > 0 else None
+            logger.info(
+                "export_job_request export_job_id=%s export_mode=%s captions_only=%s width=%s height=%s fps=%s duration=%s include_audio=%s background_color=%s render_url=%s total_frames=%s",
+                export_job_id,
+                request.export_mode,
+                request.export_mode == "captions_only" or request.captions_only,
+                request.export_width,
+                request.export_height,
+                request.export_fps,
+                request.duration_override,
+                request.include_audio,
+                request.background_color,
+                os.getenv("RENDER_PAGE_URL") or "bundled/static render page",
+                total_frames,
+            )
+
             output_path = await export_headless(
                 job_id=export_job_id,
                 video_path=request.original_video_path,
@@ -438,6 +458,7 @@ async def _run_export_job(export_job_id: str, request: ExportRequest) -> None:
                 duration_override=request.duration_override,
                 duration_source=request.duration_source,
                 hardware_acceleration=request.hardware_acceleration,
+                composition_json=request.composition_json,
             )
 
             output = Path(output_path)
@@ -545,19 +566,28 @@ async def start_export_job(
     bitrate: str = Form("auto"),
     custom_bitrate_mbps: float | None = Form(None),
     export_mode: str = Form("full_video"),
+    captions_only: bool = Form(False),
     background_color: str = Form("#101010"),
     duration_override: float | None = Form(None),
     duration_source: str | None = Form(None),
+    duration_mode: str | None = Form(None),
+    custom_duration: float | None = Form(None),
     visible_tracks_count: int | None = Form(None),
     source_media_count: int | None = Form(None),
     caption_chunks_count: int | None = Form(None),
     hardware_acceleration: bool = Form(False),
     render_mode: str = Form("headless"),
+    composition_json: str | None = Form(None),
 ):
     await _prune_jobs()
+    if duration_override is None and custom_duration is not None:
+        duration_override = custom_duration
+    if duration_source is None and duration_mode is not None:
+        duration_source = duration_mode
     _validate_duration(duration_override)
 
     export_fps = max(1, min(120, int(export_fps or 30)))
+    export_mode = "captions_only" if captions_only else export_mode
     if export_mode not in {"full_video", "captions_only", "captions_only_solid_background"}:
         return JSONResponse(
             {"success": False, "stage": "validate_request", "error": f"Unsupported export mode: {export_mode}"},
@@ -600,6 +630,7 @@ async def start_export_job(
         bitrate=bitrate,
         custom_bitrate_mbps=custom_bitrate_mbps,
         export_mode=export_mode,
+        captions_only=captions_only,
         background_color=background_color,
         duration_override=duration_override,
         duration_source=duration_source,
@@ -609,6 +640,7 @@ async def start_export_job(
         hardware_acceleration=hardware_acceleration,
         render_mode=render_mode,
         original_video_path=original_video_path,
+        composition_json=composition_json,
     )
 
     export_job_id = str(uuid.uuid4())

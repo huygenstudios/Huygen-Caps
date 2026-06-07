@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { createMetadata, siteConfig } from "@/config/site";
 import "./globals.css";
 import "@fontsource/poppins/400.css";
 import "@fontsource/poppins/700.css";
@@ -17,8 +18,12 @@ import "@fontsource/anton/400.css";
 import "@fontsource/bebas-neue/400.css";
 
 export const metadata: Metadata = {
-  title: "Huygen Caps",
-  description: "AI caption editor for creators",
+  ...createMetadata({
+    title: siteConfig.defaultTitle,
+    description: siteConfig.defaultDescription,
+    path: "/",
+  }),
+  metadataBase: new URL(siteConfig.domain),
   icons: {
     icon: "/favicon.png",
     shortcut: "/favicon.png",
@@ -30,7 +35,7 @@ export const metadata: Metadata = {
 const criticalShellCss = `
 :root{--bg-app:#050505;--bg-panel:#0b0b0b;--bg-panel-dark:#050505;--bg-panel-raised:#111;--bg-toolbar:#050505;--bg-panel-header:#050505;--panel-header-text:#f5f1e8;--bg-control:#050505;--text-primary:#f5f1e8;--text-muted:#a8a0aa;--border:#3a3a3a;--border-strong:#e8e3d7;--accent:#a970ff;--accent-hover:#c7a4ff;--button-primary-text:#050505;--shadow-hard:4px 4px 0 #000;--shadow-hard-small:2px 2px 0 #000}
 :root[data-theme="light"]{--bg-app:#f7f0e4;--bg-panel:#fffdf8;--bg-panel-dark:#f1e7d6;--bg-panel-raised:#fff;--bg-toolbar:#fffdf8;--bg-panel-header:#f1e7d6;--panel-header-text:#171217;--bg-control:#fff;--text-primary:#171217;--text-muted:#51475a;--border:#b9a992;--border-strong:#2b241f;--accent:#7c3aed;--accent-hover:#4c1d95;--button-primary-text:#fff;--shadow-hard:4px 4px 0 #101010;--shadow-hard-small:2px 2px 0 #101010}
-html,body{margin:0;height:100%;overflow:hidden;background:var(--bg-app);color:var(--text-primary)}
+html,body{margin:0;min-height:100%;overflow-x:hidden;background:var(--bg-app);color:var(--text-primary)}
 body{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 *{box-sizing:border-box}
 button,input,select,textarea{font:inherit}

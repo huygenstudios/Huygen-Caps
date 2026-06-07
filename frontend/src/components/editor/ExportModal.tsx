@@ -5,47 +5,63 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileText, Film, Loader2, Save, X } from "lucide-react";
 import { getExportJobStatus, resolveBackendUrl, startHeadlessExportJob } from "@/lib/api";
-import { captionBelongsOnTrack, determineExportDuration, resolveExportDimensions, resolveExportFps } from "@/lib/editorModel";
+import { captionBelongsOnTrack, determineExportDuration, normalizeClipTransform, resolveExportDimensions, resolveExportFps } from "@/lib/editorModel";
 import { applyCaptionTimingOffset, downloadFile } from "@/lib/captionUtils";
-import { ExportFormat, ProjectData } from "@/lib/types";
+import { ExportDurationSource, ExportFormat, ExportFrameRate, ExportQualityPreset, ExportResolutionPreset, MediaFile, ProjectData, TimelineTrack } from "@/lib/types";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { useTimelineStore } from "@/store/timelineStore";
 
 interface ExportOption {
+  type: "mp4_full_video" | "mp4_captions_only" | "srt" | "ass" | "json" | "project";
   format: ExportFormat;
   label: string;
   description: string;
   icon: React.ReactNode;
+  mp4Mode?: "full_video" | "captions_only";
 }
 
 const options: ExportOption[] = [
   {
+    type: "mp4_full_video",
     format: "mp4",
-    label: "MP4",
-    description: "Render with current export settings",
+    label: "MP4 - Full Video",
+    description: "Export video with captions and supported layers",
     icon: <Film size={19} />,
+    mp4Mode: "full_video",
   },
   {
+    type: "mp4_captions_only",
+    format: "mp4",
+    label: "MP4 - Captions Only",
+    description: "Export animated captions on a solid background",
+    icon: <Film size={19} />,
+    mp4Mode: "captions_only",
+  },
+  {
+    type: "srt",
     format: "srt",
     label: "SRT Subtitles",
     description: "Standard subtitle sidecar",
     icon: <FileText size={19} />,
   },
   {
+    type: "ass",
     format: "ass",
     label: "ASS Subtitles",
     description: "Styled subtitle sidecar",
     icon: <FileText size={19} />,
   },
   {
+    type: "json",
     format: "json",
     label: "Transcript JSON",
     description: "Caption and timing data",
     icon: <FileText size={19} />,
   },
   {
+    type: "project",
     format: "project",
     label: "Project File",
     description: "Save Huygen Caps project data",
@@ -53,17 +69,30 @@ const options: ExportOption[] = [
   },
 ];
 
+type SelectedExportType = ExportOption["type"];
+
+function normalizeHexInput(value: string) {
+  const raw = value.trim();
+  const match = raw.match(/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+  if (!match) return null;
+  const hex = match[1].length === 3 ? match[1].split("").map((ch) => ch + ch).join("") : match[1];
+  return `#${hex.toLowerCase()}`;
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1 text-[10px] uppercase" style={{ color: "var(--text-muted)" }}>
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
 function apiResolutionLabel(width: number, height: number) {
   const maxEdge = Math.max(width, height);
   if (maxEdge <= 854) return "480p";
   if (maxEdge <= 1280) return "720p";
   return "1080p";
-}
-
-function qualityLabel(value: string) {
-  if (value === "best") return "Best Quality";
-  if (value === "low_bitrate") return "Low Bitrate";
-  return value[0]?.toUpperCase() + value.slice(1);
 }
 
 function formatExportError(err: unknown) {
@@ -86,6 +115,95 @@ function formatExportError(err: unknown) {
 
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+const MAX_EXPORT_IMAGE_DATA_URL_BYTES = 12 * 1024 * 1024;
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read image file: ${file.name}`));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error(`Could not read image file as a data URL: ${file.name}`));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function buildExportCompositionJson({
+  tracks,
+  mediaFiles,
+  exportDuration,
+  sourceMediaId,
+}: {
+  tracks: TimelineTrack[];
+  mediaFiles: MediaFile[];
+  exportDuration: number;
+  sourceMediaId?: string;
+}) {
+  const layers = [];
+  const unsupported: string[] = [];
+  const visibleTracks = tracks.filter((track) => track.visible);
+  const firstVideoMediaId = mediaFiles.find((file) => file.type === "video")?.id;
+  const baseVideoMediaIds = new Set([sourceMediaId, firstVideoMediaId].filter(Boolean));
+
+  for (const track of visibleTracks) {
+    for (const clip of track.clips || []) {
+      if (clip.visible === false || clip.type === "audio" || clip.type === "caption") continue;
+      if (clip.end <= 0 || clip.start >= exportDuration || clip.end <= clip.start) continue;
+
+      const media = mediaFiles.find((file) => file.id === clip.mediaId);
+      if (!media) continue;
+
+      if (clip.type === "image" && media.type === "image") {
+        if (media.file.size > MAX_EXPORT_IMAGE_DATA_URL_BYTES) {
+          throw new Error(
+            `${media.name} is too large for image-layer MP4 export. Keep image overlays under ${Math.round(
+              MAX_EXPORT_IMAGE_DATA_URL_BYTES / (1024 * 1024)
+            )} MB.`
+          );
+        }
+        layers.push({
+          id: clip.id,
+          clipId: clip.id,
+          trackId: track.id,
+          mediaId: media.id,
+          name: media.name,
+          type: "image",
+          dataUrl: await fileToDataUrl(media.file),
+          start: Math.max(0, clip.start),
+          end: Math.min(exportDuration, clip.end),
+          zIndex: track.zIndex || 0,
+          transform: normalizeClipTransform(clip.transform),
+        });
+        continue;
+      }
+
+      if (clip.type === "video" && media.type === "video" && baseVideoMediaIds.has(media.id)) {
+        continue;
+      }
+
+      if (clip.type === "video" || media.type === "video") {
+        unsupported.push(media.name);
+      }
+    }
+  }
+
+  if (unsupported.length) {
+    const unsupportedNames = Array.from(new Set(unsupported));
+    throw new Error(
+      `Some overlay types are not supported in MP4 export yet. Image overlays are supported; video overlays are planned. Unsupported: ${unsupportedNames.join(", ")}.`
+    );
+  }
+
+  return JSON.stringify({
+    version: 1,
+    layers,
+  });
 }
 
 function toAttachmentDownloadUrl(url: string) {
@@ -133,6 +251,9 @@ export default function ExportModal() {
   const [exportError, setExportError] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadName, setDownloadName] = useState("");
+  const [selectedExportType, setSelectedExportType] = useState<SelectedExportType>(
+    exportSettings.mode === "captions_only" ? "mp4_captions_only" : "mp4_full_video"
+  );
   const pollCancelledRef = useRef(false);
 
   const visibleCaptionTracks = useMemo(
@@ -206,10 +327,41 @@ export default function ExportModal() {
     playbackDuration: timelineDuration,
   });
   const includeAudioForExport =
-    exportSettings.includeAudio &&
-    tracks.some((track) => track.type === "audio" && track.visible && !track.muted);
+    exportSettings.mode === "captions_only"
+      ? exportSettings.includeAudio
+      : exportSettings.includeAudio &&
+        tracks.some((track) => track.type === "audio" && track.visible && !track.muted);
   const exportDuration = durationInfo.duration;
-  const handleExport = async (format: ExportFormat) => {
+  const selectedOption = options.find((option) => option.type === selectedExportType) || options[0];
+  const selectedMp4Mode = selectedOption.mp4Mode || exportSettings.mode;
+  const selectedIsMp4 = selectedOption.format === "mp4";
+  const selectedIsCaptionsOnly = selectedOption.type === "mp4_captions_only";
+  const selectedIncludeAudio =
+    selectedIsCaptionsOnly
+      ? exportSettings.includeAudio
+      : exportSettings.includeAudio &&
+        tracks.some((track) => track.type === "audio" && track.visible && !track.muted);
+
+  const selectExportType = (option: ExportOption) => {
+    setExportError("");
+    setDownloadUrl((current) => {
+      if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+      return "";
+    });
+    setDownloadName("");
+    setSelectedExportType(option.type);
+    if (option.mp4Mode === "full_video") {
+      setExportSettings({ mode: "full_video" });
+    } else if (option.mp4Mode === "captions_only") {
+      setExportSettings({
+        mode: "captions_only",
+        includeAudio: false,
+        backgroundColor: normalizeHexInput(exportSettings.backgroundColor) || "#00ff00",
+      });
+    }
+  };
+
+  const handleExport = async (format: ExportFormat, mp4Mode: "full_video" | "captions_only" = exportSettings.mode) => {
     setExportError("");
     setExportStatus("");
     setExportPercent(0);
@@ -289,8 +441,8 @@ export default function ExportModal() {
       return;
     }
 
-    if (exportSettings.mode === "captions_only" && captionsForExport.length === 0) {
-      setExportError("No captions available for captions-only export.");
+    if (mp4Mode === "captions_only" && captionsForExport.length === 0) {
+      setExportError("No captions found. Generate or import captions before exporting captions-only video.");
       setExporting(false);
       return;
     }
@@ -300,18 +452,47 @@ export default function ExportModal() {
       setExporting(false);
       return;
     }
+    if (mp4Mode === "captions_only" && !normalizeHexInput(exportSettings.backgroundColor)) {
+      setExportError("Enter a valid solid background color like #00ff00.");
+      setExporting(false);
+      return;
+    }
+    if (exportDimensions.width < 16 || exportDimensions.height < 16) {
+      setExportError("Export width and height must be at least 16 pixels.");
+      setExporting(false);
+      return;
+    }
+    if (exportFps < 1 || exportFps > 120) {
+      setExportError("Export FPS must be between 1 and 120.");
+      setExporting(false);
+      return;
+    }
 
     try {
-      setExportSettings({ format: "mp4" });
+      setExportSettings({ format: "mp4", mode: mp4Mode });
       setExportStatus("Preparing Huygen render...");
       pollCancelledRef.current = false;
 
       const payloadCaptions = exportSettings.burnCaptions
         ? applyCaptionTimingOffset(captionsForExport, captionTimingConfig.globalOffsetSeconds)
         : [];
+      const sourceMediaId = canonicalCaptionDocument.sourceMediaId || mediaFiles.find((file) => file.type === "video")?.id;
+      const compositionJson =
+        mp4Mode === "captions_only"
+          ? JSON.stringify({ version: 1, layers: [] })
+          : await buildExportCompositionJson({
+              tracks,
+              mediaFiles,
+              exportDuration,
+              sourceMediaId,
+            });
+      const includeAudio =
+        mp4Mode === "captions_only"
+          ? exportSettings.mode === "captions_only" && exportSettings.includeAudio
+          : includeAudioForExport;
       console.info("huygen_export_request", {
         jobId,
-        mode: exportSettings.mode,
+        mode: mp4Mode,
         width: exportDimensions.width,
         height: exportDimensions.height,
         fps: exportFps,
@@ -321,6 +502,7 @@ export default function ExportModal() {
         exportGlobalOffsetSeconds: captionTimingConfig.globalOffsetSeconds,
         visibleTracks: visibleCaptionTracks.length,
         sourceMedia: mediaFiles.length,
+        compositionLayers: JSON.parse(compositionJson).layers?.length || 0,
       });
       const started = await startHeadlessExportJob(
         jobId,
@@ -332,18 +514,20 @@ export default function ExportModal() {
           width: exportDimensions.width,
           height: exportDimensions.height,
           fps: exportFps,
-          includeAudio: includeAudioForExport,
+          includeAudio,
+          captionsOnly: mp4Mode === "captions_only",
           quality: exportSettings.quality,
           bitrate: exportSettings.bitrate,
           customBitrateMbps: exportSettings.customBitrateMbps,
-          exportMode: exportSettings.mode,
-          backgroundColor: exportSettings.mode === "captions_only" ? exportSettings.backgroundColor : sequenceSettings.backgroundColor,
+          exportMode: mp4Mode,
+          backgroundColor: mp4Mode === "captions_only" ? normalizeHexInput(exportSettings.backgroundColor) || "#00ff00" : sequenceSettings.backgroundColor,
           duration: exportDuration,
           durationSource: durationInfo.source,
           visibleTracksCount: visibleCaptionTracks.length,
           sourceMediaCount: mediaFiles.length,
           captionChunksCount: payloadCaptions.length,
           hardwareAcceleration: exportSettings.hardwareAcceleration,
+          compositionJson: mp4Mode === "captions_only" ? undefined : compositionJson,
         }
       );
       setExportStatus(started.message || "Export started...");
@@ -363,7 +547,7 @@ export default function ExportModal() {
               throw new Error("Export completed but did not return a download URL.");
             }
             setDownloadUrl(resolveBackendUrl(toAttachmentDownloadUrl(status.downloadUrl)));
-            setDownloadName(status.filename || `huygen_caps_${exportSettings.mode}_${exportDimensions.width}x${exportDimensions.height}_${exportFps}fps.mp4`);
+            setDownloadName(status.filename || `huygen_caps_${mp4Mode}_${exportDimensions.width}x${exportDimensions.height}_${exportFps}fps.mp4`);
             setExportStatus("Export complete. MP4 is ready to download.");
             setExportPercent(100);
             setExporting(false);
@@ -410,16 +594,17 @@ export default function ExportModal() {
           </button>
         </div>
 
-        <div className="grid gap-3 p-4 md:grid-cols-[1fr_220px]">
+        <div className="grid gap-3 p-4 md:grid-cols-[1fr_300px]">
           <div className="grid gap-2">
             {options.map((option) => {
               const disabled = exporting || (option.format !== "mp4" && captionsForExport.length === 0);
+              const selected = option.type === selectedExportType;
               return (
                 <button
-                  key={option.format}
-                  className="export-option"
+                  key={option.type}
+                  className={`export-option${selected ? " selected" : ""}`}
                   disabled={disabled}
-                  onClick={() => handleExport(option.format)}
+                  onClick={() => selectExportType(option)}
                 >
                   <span className="export-option-icon">{option.icon}</span>
                   <span className="min-w-0 flex-1 text-left">
@@ -438,51 +623,106 @@ export default function ExportModal() {
           <div className="grid content-start gap-3">
             <div className="brutal-box grid gap-2 p-3 text-[10px]" style={{ color: "var(--text-muted)" }}>
               <div className="font-bold uppercase" style={{ color: "var(--text-primary)" }}>
-                {exportSettings.mode === "captions_only" ? "Captions Only" : "Full Video"}
+                {selectedOption.label}
               </div>
-              <div className="flex justify-between">
-                <span>Size</span>
-                <span className="font-mono">{exportDimensions.width}x{exportDimensions.height}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>FPS</span>
-                <span className="font-mono">{exportFps}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Quality</span>
-                <span>{qualityLabel(exportSettings.quality)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Audio</span>
-                <span>{includeAudioForExport ? "On" : "Off"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Captions</span>
-                <span>{captionsForExport.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Duration</span>
-                <span>{exportDuration.toFixed(2)}s / {durationInfo.source}</span>
-              </div>
+              {selectedIsMp4 ? (
+                <>
+                  <Field label="Output size">
+                    <select
+                      className="control-input"
+                      value={exportSettings.resolutionPreset === "custom" ? "custom" : "sequence"}
+                      onChange={(event) => setExportSettings({ resolutionPreset: event.target.value as ExportResolutionPreset })}
+                    >
+                      <option value="sequence">Same as sequence</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </Field>
+                  {exportSettings.resolutionPreset === "custom" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Width">
+                        <input className="control-input" type="number" min={16} value={exportSettings.width} onChange={(event) => setExportSettings({ width: Number(event.target.value) })} />
+                      </Field>
+                      <Field label="Height">
+                        <input className="control-input" type="number" min={16} value={exportSettings.height} onChange={(event) => setExportSettings({ height: Number(event.target.value) })} />
+                      </Field>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="FPS">
+                      <select className="control-input" value={exportSettings.fps} onChange={(event) => setExportSettings({ fps: event.target.value === "sequence" ? "sequence" : (Number(event.target.value) as ExportFrameRate) })}>
+                        <option value="sequence">Same as sequence</option>
+                        <option value={24}>24</option>
+                        <option value={25}>25</option>
+                        <option value={30}>30</option>
+                        <option value={60}>60</option>
+                      </select>
+                    </Field>
+                    <Field label="Quality">
+                      <select className="control-input" value={exportSettings.quality} onChange={(event) => setExportSettings({ quality: event.target.value as ExportQualityPreset })}>
+                        <option value="low_bitrate">Draft</option>
+                        <option value="balanced">Balanced</option>
+                        <option value="high">High</option>
+                      </select>
+                    </Field>
+                  </div>
+                  {selectedIsCaptionsOnly && (
+                    <>
+                      <Field label="Solid background color">
+                        <div className="grid grid-cols-[44px_1fr] gap-2">
+                          <input className="control-input h-9 p-1" type="color" value={normalizeHexInput(exportSettings.backgroundColor) || "#00ff00"} onChange={(event) => setExportSettings({ backgroundColor: event.target.value })} />
+                          <input
+                            className="control-input"
+                            value={exportSettings.backgroundColor}
+                            onChange={(event) => setExportSettings({ backgroundColor: event.target.value })}
+                            onBlur={(event) => setExportSettings({ backgroundColor: normalizeHexInput(event.target.value) || "#00ff00" })}
+                            placeholder="#00ff00"
+                          />
+                        </div>
+                      </Field>
+                      <Field label="Duration">
+                        <select className="control-input" value={exportSettings.durationSource} onChange={(event) => setExportSettings({ durationSource: event.target.value as ExportDurationSource })}>
+                          <option value="sequence">Same as sequence</option>
+                          <option value="caption">Captions duration</option>
+                          <option value="custom">Custom duration</option>
+                        </select>
+                      </Field>
+                      {exportSettings.durationSource === "custom" && (
+                        <Field label="Custom seconds">
+                          <input className="control-input" type="number" min={0.1} step={0.1} value={exportSettings.customDuration} onChange={(event) => setExportSettings({ customDuration: Number(event.target.value) })} />
+                        </Field>
+                      )}
+                    </>
+                  )}
+                  <label className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    <span>{selectedIsCaptionsOnly ? "Include original audio" : "Include audio"}</span>
+                    <input type="checkbox" checked={selectedIsCaptionsOnly ? exportSettings.includeAudio : selectedIncludeAudio} onChange={(event) => setExportSettings({ includeAudio: event.target.checked })} />
+                  </label>
+                  {!selectedIsCaptionsOnly && (
+                    <label className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-muted)" }}>
+                      <span>Visible tracks only</span>
+                      <input type="checkbox" checked={exportSettings.visibleTracksOnly} onChange={(event) => setExportSettings({ visibleTracksOnly: event.target.checked })} />
+                    </label>
+                  )}
+                  <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    {selectedIsCaptionsOnly ? "Captions Only ignores video, image, and overlay layers." : "Exports video with captions and supported layers."}
+                  </p>
+                  <div className="grid gap-1 border-t pt-2 font-mono" style={{ borderColor: "var(--border)" }}>
+                    <div className="flex justify-between"><span>Size</span><span>{exportDimensions.width}x{exportDimensions.height}</span></div>
+                    <div className="flex justify-between"><span>FPS</span><span>{exportFps}</span></div>
+                    <div className="flex justify-between"><span>Duration</span><span>{exportDuration.toFixed(2)}s / {durationInfo.source}</span></div>
+                    <div className="flex justify-between"><span>Captions</span><span>{captionsForExport.length}</span></div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  {selectedOption.description}. Click Export when ready.
+                </p>
+              )}
             </div>
-
-            {exportSettings.mode === "captions_only" && (
-              <div className="brutal-box grid gap-2 p-3">
-                <label className="grid gap-1 text-[10px] uppercase" style={{ color: "var(--text-muted)" }}>
-                  <span>Solid background</span>
-                  <input
-                    className="control-input h-9"
-                    type="color"
-                    value={exportSettings.backgroundColor}
-                    onChange={(event) => setExportSettings({ backgroundColor: event.target.value })}
-                  />
-                </label>
-              </div>
-            )}
           </div>
         </div>
 
-        <div className="border-t p-4" style={{ borderColor: "var(--border)" }}>
+        <div className="grid gap-3 border-t p-4" style={{ borderColor: "var(--border)" }}>
           {downloadUrl ? (
             <div className="editor-notice flex items-center justify-between gap-3">
               <span>{exportStatus || "Export complete."}</span>
@@ -511,9 +751,17 @@ export default function ExportModal() {
           ) : (
             <div className="flex items-center justify-between gap-3 text-[10px]" style={{ color: "var(--text-muted)" }}>
               <span>{captionsForExport.length} caption{captionsForExport.length !== 1 ? "s" : ""} ready</span>
-              <span>{exportSettings.visibleTracksOnly ? "visible tracks only" : "all tracks"} / {exportSettings.burnCaptions ? "burn captions" : "no burned captions"}</span>
+              <span>{selectedOption.label}</span>
             </div>
           )}
+          <div className="flex justify-end gap-2">
+            <button className="btn-secondary" disabled={exporting} onClick={() => setShowExportModal(false)}>
+              Cancel
+            </button>
+            <button className="btn-primary" disabled={exporting} onClick={() => handleExport(selectedOption.format, selectedMp4Mode)}>
+              {exporting ? "Exporting..." : downloadUrl ? "Export Again" : "Export"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

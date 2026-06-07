@@ -107,6 +107,7 @@ interface HeadlessExportOptions {
   height?: number;
   fps?: number;
   includeAudio?: boolean;
+  captionsOnly?: boolean;
   quality?: string;
   bitrate?: string;
   customBitrateMbps?: number;
@@ -118,6 +119,7 @@ interface HeadlessExportOptions {
   sourceMediaCount?: number;
   captionChunksCount?: number;
   hardwareAcceleration?: boolean;
+  compositionJson?: string;
 }
 
 const configuredApiBase = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
@@ -437,17 +439,21 @@ function buildHeadlessExportFormData(
   if (options?.height) formData.append("export_height", String(options.height));
   if (options?.fps) formData.append("export_fps", String(options.fps));
   if (typeof options?.includeAudio === "boolean") formData.append("include_audio", String(options.includeAudio));
+  if (typeof options?.captionsOnly === "boolean") formData.append("captions_only", String(options.captionsOnly));
   if (options?.quality) formData.append("quality", options.quality);
   if (options?.bitrate) formData.append("bitrate", options.bitrate);
   if (options?.customBitrateMbps) formData.append("custom_bitrate_mbps", String(options.customBitrateMbps));
   if (options?.exportMode) formData.append("export_mode", options.exportMode);
   if (options?.backgroundColor) formData.append("background_color", options.backgroundColor);
   if (options?.duration) formData.append("duration_override", String(options.duration));
+  if (options?.duration) formData.append("custom_duration", String(options.duration));
   if (options?.durationSource) formData.append("duration_source", options.durationSource);
+  if (options?.durationSource) formData.append("duration_mode", options.durationSource);
   if (typeof options?.visibleTracksCount === "number") formData.append("visible_tracks_count", String(options.visibleTracksCount));
   if (typeof options?.sourceMediaCount === "number") formData.append("source_media_count", String(options.sourceMediaCount));
   if (typeof options?.captionChunksCount === "number") formData.append("caption_chunks_count", String(options.captionChunksCount));
   if (typeof options?.hardwareAcceleration === "boolean") formData.append("hardware_acceleration", String(options.hardwareAcceleration));
+  if (options?.compositionJson) formData.append("composition_json", options.compositionJson);
   if (styleConfigJson) {
     formData.append("style_config_json", styleConfigJson);
   }

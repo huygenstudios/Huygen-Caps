@@ -13,6 +13,8 @@ import math
 import struct
 import shutil
 import time
+import tempfile
+from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
 from .asyncio_compat import needs_proactor_thread, run_on_proactor_loop
@@ -71,10 +73,42 @@ def _render_safe_default() -> bool:
     return bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
 
 
+def _looks_like_browser_disconnect(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "connection lost",
+            "target closed",
+            "browser has been closed",
+            "page has been closed",
+            "crash",
+            "disconnected",
+        )
+    )
+
+
 def _constrain_export_dimensions(width: int, height: int, max_long_edge: int) -> tuple[int, int]:
     if max_long_edge <= 0 or max(width, height) <= max_long_edge:
         return width, height
     return scale_dimensions_to_longest_edge(width, height, max_long_edge)
+
+
+def _normalize_hex_color(value: str | None, fallback: str = "#101010") -> str:
+    raw = (value or fallback).strip()
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if len(raw) in {3, 6} and all(ch in "0123456789abcdefABCDEF" for ch in raw):
+        if len(raw) == 3:
+            raw = "".join(ch * 2 for ch in raw)
+        return f"#{raw.lower()}"
+    if value != fallback:
+        return _normalize_hex_color(fallback, "#101010")
+    return "#101010"
+
+
+def _ffmpeg_color(value: str | None, fallback: str = "#101010") -> str:
+    return f"0x{_normalize_hex_color(value, fallback)[1:]}"
 
 
 class ExportStageError(RuntimeError):
@@ -132,6 +166,11 @@ def check_export_runtime() -> dict[str, object]:
         "exports_writable": export_writable,
         "exports_write_error": export_write_error,
         "render_page_url": default_render_page_url(),
+        "bundled_render_page_url": bundled_render_page_url(),
+        "frontend_dist_available": frontend_dist_available(),
+        "export_prefer_bundled_render": _bool_env("EXPORT_PREFER_BUNDLED_RENDER", True),
+        "export_frame_capture_retries": _int_env("EXPORT_FRAME_CAPTURE_RETRIES", 3),
+        "export_render_page_recycle_frames": _int_env("EXPORT_RENDER_PAGE_RECYCLE_FRAMES", 450),
         "render_safe_mode": _bool_env("EXPORT_RENDER_SAFE_MODE", _render_safe_default()),
         "export_max_long_edge": _int_env("EXPORT_MAX_LONG_EDGE", 1280 if _render_safe_default() else 0),
         "export_max_fps": _int_env("EXPORT_MAX_FPS", 24 if _render_safe_default() else 120),
@@ -260,6 +299,7 @@ async def export_headless(
     duration_override: float | None = None,
     duration_source: str | None = None,
     hardware_acceleration: bool = False,
+    composition_json: str | None = None,
 ) -> str:
     """
     Export video with pixel-perfect burned captions using headless browser.
@@ -288,6 +328,7 @@ async def export_headless(
                 duration_override=duration_override,
                 duration_source=duration_source,
                 hardware_acceleration=hardware_acceleration,
+                composition_json=composition_json,
             )
         )
 
@@ -320,9 +361,30 @@ async def export_headless(
         raise ExportStageError("render_input", "Invalid captions JSON sent to export.", exc) from exc
     if not isinstance(parsed_captions, list):
         raise ExportStageError("render_input", "Captions JSON must be a list of caption chunks.")
+    captions_duration = max(
+        (
+            float(caption.get("end") or 0)
+            for caption in parsed_captions
+            if isinstance(caption, dict)
+        ),
+        default=0.0,
+    )
+    if composition_json and composition_json.strip():
+        try:
+            parsed_composition = json.loads(composition_json)
+        except json.JSONDecodeError as exc:
+            raise ExportStageError("render_input", "Invalid composition JSON sent to export.", exc) from exc
+        if not isinstance(parsed_composition, dict):
+            raise ExportStageError("render_input", "Composition JSON must be an object.")
+        layers = parsed_composition.get("layers", [])
+        if not isinstance(layers, list):
+            raise ExportStageError("render_input", "Composition JSON layers must be a list.")
 
     media_exists = os.path.exists(video_path)
-    if (not is_captions_only or include_audio) and not media_exists:
+    if is_captions_only and include_audio and not media_exists:
+        logger.warning("captions_only_audio_requested_without_source_media job_id=%s media=%s", job_id, video_path)
+        include_audio = False
+    if not is_captions_only and not media_exists:
         raise ExportStageError(
             "media_resolution",
             f"Source media file was not found for export: {video_path}",
@@ -408,6 +470,12 @@ async def export_headless(
     duration = float(duration_override or 0)
     resolved_duration_source = duration_source or ("frontend" if duration > 0 else "ffprobe")
     if duration <= 0:
+        if is_captions_only and captions_duration > 0:
+            duration = captions_duration
+            resolved_duration_source = "captions"
+        elif is_captions_only:
+            raise ExportStageError("duration_detection", "Cannot determine captions-only export duration.")
+    if duration <= 0:
         if not shutil.which("ffprobe"):
             raise ExportStageError(
                 "duration_detection",
@@ -423,12 +491,16 @@ async def export_headless(
         )
 
     total_frames = max(1, math.ceil(duration * export_fps))
+    source_duration = await get_video_duration(video_path) if media_exists else 0.0
+    safe_bg = _ffmpeg_color(background_color, fallback="#00ff00" if is_captions_only else "#101010")
     logger.info(
-        "Headless export: %s frames @ %sfps, duration=%.2fs source=%s mode=%s",
+        "Headless export: %s frames @ %sfps, duration=%.2fs source=%s source_video_duration=%.2fs exceeds_source=%s mode=%s",
         total_frames,
         export_fps,
         duration,
         resolved_duration_source,
+        source_duration,
+        bool(source_duration > 0 and duration > source_duration + (1 / export_fps)),
         export_mode,
     )
     _log_export_event(
@@ -437,19 +509,52 @@ async def export_headless(
         duration=duration,
         source=resolved_duration_source,
         totalFrames=total_frames,
+        sourceVideoDuration=source_duration,
+        exportDurationExceedsSource=bool(source_duration > 0 and duration > source_duration + (1 / export_fps)),
+        exportMode=export_mode,
+        captionsOnly=is_captions_only,
+        width=width,
+        height=height,
+        fps=export_fps,
+        includeAudio=include_audio,
+        backgroundColor=_normalize_hex_color(background_color, "#00ff00" if is_captions_only else "#101010"),
+        renderUrl=bundled_render_page_url() if frontend_dist_available() else default_render_page_url(),
     )
 
     browser = None
     page = None
     ffmpeg_proc = None
     stderr_chunks: list[bytes] = []
+    frame_capture_retries = max(1, _int_env("EXPORT_FRAME_CAPTURE_RETRIES", 3))
+    render_page_recycle_frames = max(0, _int_env("EXPORT_RENDER_PAGE_RECYCLE_FRAMES", 450))
     async with async_playwright() as p:
-        try:
-            # Launch headless Chromium
+        async def close_browser_safely() -> None:
+            nonlocal browser
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+                browser = None
+
+        async def launch_browser() -> None:
+            nonlocal browser
+            await close_browser_safely()
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
+                args=[
+                    "--disable-gpu",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                ],
             )
+
+        try:
+            # Launch headless Chromium
+            await launch_browser()
         except Exception as exc:
             raise ExportStageError(
                 "headless_launch",
@@ -474,19 +579,18 @@ async def export_headless(
                     pass
                 page = None
 
-        async def close_browser_safely() -> None:
-            if browser:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-
         await progress_callback("exporting", 2, "Loading render page...")
 
-        # Prefer the configured render page, but fall back to the bundled static
-        # render page when local dev on port 3000 is not running.
-        render_page_candidates = [default_render_page_url()]
+        # Prefer the bundled static render page for long exports. Next dev/HMR
+        # pages are useful while editing, but they are much easier to crash
+        # during thousands of frame screenshots.
+        render_page_candidates: list[str] = []
         bundled_render_url = bundled_render_page_url()
+        configured_render_url = default_render_page_url()
+        prefer_bundled_render = frontend_dist_available() and _bool_env("EXPORT_PREFER_BUNDLED_RENDER", True)
+        if prefer_bundled_render:
+            render_page_candidates.append(bundled_render_url)
+        render_page_candidates.append(configured_render_url)
         if frontend_dist_available() and bundled_render_url not in render_page_candidates:
             render_page_candidates.append(bundled_render_url)
 
@@ -546,7 +650,7 @@ async def export_headless(
             try:
                 return await page.screenshot(
                     type="png",
-                    omit_background=not is_captions_only,
+                    omit_background=True,
                     clip={"x": 0, "y": 0, "width": width, "height": height},
                     timeout=10000,
                 )
@@ -555,7 +659,7 @@ async def export_headless(
                     element = page.locator("#render-frame")
                     return await element.screenshot(
                         type="png",
-                        omit_background=not is_captions_only,
+                        omit_background=True,
                         timeout=5000,
                     )
                 except Exception as locator_exc:
@@ -581,30 +685,234 @@ async def export_headless(
                         detail = f"{detail} Render logs: {logs}"
                     raise ExportStageError("render_frames", detail, locator_exc) from locator_exc
 
+        async def inject_caption_data() -> None:
+            if page is None:
+                raise ExportStageError("composition_load", "Render page is not available for caption injection.")
+            try:
+                inject_result = await page.evaluate(
+                    "([json, t, w, h, styleJson, fps, bg, compositionJson, renderMode]) => window.setCaptionData(json, t, w, h, styleJson, fps, bg, compositionJson, renderMode)",
+                    [
+                        captions_json,
+                        theme,
+                        width,
+                        height,
+                        style_config_json or "",
+                        export_fps,
+                        "transparent",
+                        "" if is_captions_only else (composition_json or ""),
+                        "captions_only" if is_captions_only else "full_video",
+                    ]
+                )
+            except Exception as exc:
+                logs = _tail("\n".join(page_logs), 1400)
+                detail = f" Render logs: {logs}" if logs else ""
+                raise ExportStageError("composition_load", f"Failed to inject captions into render page.{detail}", exc) from exc
+            if not inject_result:
+                raise ExportStageError("composition_load", "Render page rejected the caption data.")
+
+        async def recreate_render_page(current_time: float, reason: Exception) -> None:
+            nonlocal page
+            logger.warning(
+                "recovering_render_page export_job_id=%s time=%.3f reason=%s: %s",
+                export_job_id,
+                current_time,
+                type(reason).__name__,
+                reason,
+            )
+            await close_page_safely()
+            try:
+                browser_connected = bool(browser and browser.is_connected())
+            except Exception:
+                browser_connected = False
+            if browser is None or not browser_connected or _looks_like_browser_disconnect(reason):
+                await launch_browser()
+            page_logs.clear()
+            page = await browser.new_page(
+                viewport={"width": width, "height": height},
+                device_scale_factor=1,
+            )
+            page.on("console", lambda msg: capture_page_log("console", msg.text))
+            page.on("pageerror", lambda exc: capture_page_log("pageerror", str(exc)))
+            page.on("requestfailed", lambda request: capture_page_log("requestfailed", f"{request.url} {request.failure}"))
+            response = await page.goto(render_page_url, wait_until="networkidle", timeout=30000)
+            if response is None or response.status >= 400:
+                status = "no response" if response is None else f"HTTP {response.status}"
+                raise ExportStageError("composition_load", f"Render page reload failed during export recovery: {status} {render_page_url}")
+            await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=10000)
+            await inject_caption_data()
+            await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
+
         # Inject caption data via proper serialization (avoids string escaping issues)
         try:
-            inject_result = await page.evaluate(
-                "([json, t, w, h, styleJson, fps, bg]) => window.setCaptionData(json, t, w, h, styleJson, fps, bg)",
-                [captions_json, theme, width, height, style_config_json or "", export_fps, background_color if is_captions_only else "transparent"]
-            )
+            await inject_caption_data()
         except Exception as exc:
-            logs = _tail("\n".join(page_logs), 1400)
-            detail = f" Render logs: {logs}" if logs else ""
             await close_browser_safely()
-            raise ExportStageError("composition_load", f"Failed to inject captions into render page.{detail}", exc) from exc
-        if not inject_result:
-            await close_browser_safely()
-            raise ExportStageError("composition_load", "Render page rejected the caption data.")
+            raise
 
         await progress_callback("exporting", 5, "Starting frame capture...")
 
+        if is_captions_only:
+            chunk_size = max(30, _int_env("EXPORT_CAPTIONS_ONLY_CHUNK_FRAMES", 240))
+            chunk_retries = max(1, _int_env("EXPORT_CAPTIONS_ONLY_CHUNK_RETRIES", 3))
+            frame_dir = Path(tempfile.mkdtemp(prefix=f"huygen_frames_{job_id}_"))
+
+            async def delete_chunk_frames(start_frame: int, end_frame: int) -> None:
+                def _delete() -> None:
+                    for delete_idx in range(start_frame, end_frame):
+                        try:
+                            (frame_dir / f"frame_{delete_idx:06d}.png").unlink(missing_ok=True)
+                        except OSError:
+                            pass
+
+                await asyncio.to_thread(_delete)
+
+            async def write_frame(frame_number: int, data: bytes) -> None:
+                path = frame_dir / f"frame_{frame_number:06d}.png"
+                await asyncio.to_thread(path.write_bytes, data)
+
+            async def capture_chunk(start_frame: int, end_frame: int, attempt: int) -> None:
+                nonlocal page
+                start_time = start_frame / export_fps
+                if attempt > 0 or start_frame > 0:
+                    await recreate_render_page(
+                        start_time,
+                        ExportStageError("render_frames", f"Starting captions-only chunk {start_frame}-{end_frame - 1}."),
+                    )
+                for current_frame in range(start_frame, end_frame):
+                    current_time = current_frame / export_fps
+                    if page is None:
+                        raise ExportStageError("render_frames", "Render page is not available.")
+                    await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
+                    await write_frame(current_frame, await capture_render_frame())
+
+            try:
+                last_pct = 5
+                for chunk_start in range(0, total_frames, chunk_size):
+                    chunk_end = min(total_frames, chunk_start + chunk_size)
+                    chunk_error: Exception | None = None
+                    for attempt in range(chunk_retries):
+                        try:
+                            await progress_callback(
+                                "exporting",
+                                last_pct,
+                                f"Capturing caption frames {chunk_start + 1}-{chunk_end}/{total_frames}...",
+                            )
+                            await capture_chunk(chunk_start, chunk_end, attempt)
+                            chunk_error = None
+                            break
+                        except Exception as exc:
+                            chunk_error = exc
+                            await delete_chunk_frames(chunk_start, chunk_end)
+                            await close_page_safely()
+                            if attempt < chunk_retries - 1:
+                                await progress_callback(
+                                    "exporting",
+                                    last_pct,
+                                    f"Renderer restarted for captions-only frame {chunk_start + 1}; retrying chunk...",
+                                )
+                    if chunk_error:
+                        logs = _tail("\n".join(page_logs), 1600)
+                        detail = (
+                            f"Caption frame capture failed at frame {chunk_start + 1} after retries. "
+                            "Check render page console logs."
+                        )
+                        if logs:
+                            detail = f"{detail} Render logs: {logs}"
+                        raise ExportStageError("render_frames", detail, chunk_error) from chunk_error
+                    pct = 5 + int((chunk_end / total_frames) * 75)
+                    if pct > last_pct:
+                        last_pct = pct
+                        await progress_callback("exporting", pct, f"Captured {chunk_end}/{total_frames} caption frames.")
+
+                await close_browser_safely()
+                await progress_callback("encoding", 82, "Encoding captions-only MP4...")
+
+                encoder = "h264_nvenc" if hardware_acceleration else "libx264"
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y",
+                    "-f", "lavfi", "-r", str(export_fps), "-i", f"color=c={safe_bg}:s={width}x{height}:d={duration:.6f}",
+                    "-framerate", str(export_fps), "-start_number", "0", "-i", str(frame_dir / "frame_%06d.png"),
+                ]
+                if include_audio and media_exists:
+                    ffmpeg_cmd.extend(["-i", video_path])
+                ffmpeg_cmd.extend([
+                    "-filter_complex",
+                    "[1:v]format=rgba[ov];[0:v][ov]overlay=0:0:format=auto:eof_action=pass:shortest=0[out]",
+                    "-map", "[out]",
+                    "-c:v", encoder,
+                    "-preset", "ultrafast",
+                ])
+                if ffmpeg_threads:
+                    ffmpeg_cmd.extend(["-threads", str(ffmpeg_threads)])
+                if video_bitrate:
+                    ffmpeg_cmd.extend(["-b:v", video_bitrate])
+                else:
+                    ffmpeg_cmd.extend(["-cq" if hardware_acceleration else "-crf", crf])
+                if include_audio and media_exists:
+                    ffmpeg_cmd.extend(["-map", "2:a?", "-c:a", "aac", "-b:a", "192k"])
+                else:
+                    ffmpeg_cmd.append("-an")
+                ffmpeg_cmd.extend(["-t", f"{duration:.6f}", "-pix_fmt", "yuv420p", output_path])
+
+                _log_export_event(
+                    "captions_only_ffmpeg_encode_started",
+                    exportJobId=export_job_id,
+                    command=" ".join(ffmpeg_cmd),
+                    frameDir=str(frame_dir),
+                    totalFrames=total_frames,
+                )
+                proc = await asyncio.create_subprocess_exec(
+                    *ffmpeg_cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _out, err = await proc.communicate()
+                if proc.returncode != 0:
+                    stderr_text = _tail(err.decode(errors="replace"))
+                    raise ExportStageError(
+                        "ffmpeg_encode",
+                        f"FFmpeg failed while encoding captions-only MP4 (exit {proc.returncode}). {stderr_text}".strip(),
+                    )
+                if not os.path.exists(output_path):
+                    raise ExportStageError("output_write", f"FFmpeg finished but output file was not created: {output_path}")
+                output_size = os.path.getsize(output_path)
+                if output_size <= 0:
+                    raise ExportStageError("output_write", f"FFmpeg created an empty output file: {output_path}")
+
+                await progress_callback("export_complete", 100, "Done!")
+                _log_export_event(
+                    "export_job_complete",
+                    exportJobId=export_job_id,
+                    outputPath=output_path,
+                    bytes=output_size,
+                )
+                return output_path
+            finally:
+                await close_browser_safely()
+                try:
+                    shutil.rmtree(frame_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
         encoder = "h264_nvenc" if hardware_acceleration else "libx264"
         ffmpeg_cmd = ["ffmpeg", "-y"]
+        safe_bg = _ffmpeg_color(background_color, fallback="#00ff00" if is_captions_only else "#101010")
         if is_captions_only:
-            ffmpeg_cmd.extend(["-f", "image2pipe", "-framerate", str(export_fps), "-c:v", "png", "-i", "pipe:0"])
+            # Input 0: full-duration solid canvas. Input 1: piped transparent caption frames.
+            # Optional input 2: source media for audio only.
+            ffmpeg_cmd.extend([
+                "-f", "lavfi", "-r", str(export_fps), "-i", f"color=c={safe_bg}:s={width}x{height}:d={duration:.6f}",
+                "-f", "image2pipe", "-framerate", str(export_fps), "-c:v", "png", "-i", "pipe:0",
+            ])
             if include_audio:
                 ffmpeg_cmd.extend(["-i", video_path])
-            ffmpeg_cmd.extend(["-map", "0:v", "-c:v", encoder, "-preset", "ultrafast"])
+            ffmpeg_cmd.extend([
+                "-filter_complex",
+                "[1:v]format=rgba[ov];[0:v][ov]overlay=0:0:eof_action=pass:shortest=0[out]",
+                "-map", "[out]",
+                "-c:v", encoder,
+                "-preset", "ultrafast",
+            ])
             if ffmpeg_threads:
                 ffmpeg_cmd.extend(["-threads", str(ffmpeg_threads)])
             if video_bitrate:
@@ -612,19 +920,22 @@ async def export_headless(
             else:
                 ffmpeg_cmd.extend(["-cq" if hardware_acceleration else "-crf", crf])
             if include_audio:
-                ffmpeg_cmd.extend(["-map", "1:a?", "-c:a", "copy", "-shortest"])
+                ffmpeg_cmd.extend(["-map", "2:a?", "-c:a", "copy"])
             else:
                 ffmpeg_cmd.append("-an")
             ffmpeg_cmd.extend(["-t", f"{duration:.6f}", "-pix_fmt", "yuv420p", output_path])
         else:
-            # Input 0: original video. Input 1: piped PNG caption frames.
+            # Input 0: full-duration canvas. Input 1: original video.
+            # Input 2: piped PNG caption/composition frames.
             ffmpeg_cmd.extend([
+                "-f", "lavfi", "-r", str(export_fps), "-i", f"color=c={safe_bg}:s={width}x{height}:d={duration:.6f}",
                 "-i", video_path,
                 "-f", "image2pipe", "-framerate", str(export_fps), "-c:v", "png", "-i", "pipe:0",
                 "-filter_complex",
-                f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[base];"
-                f"[1:v]format=rgba[ov];"
-                f"[base][ov]overlay=0:0:shortest=1[out]",
+                f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={safe_bg}[src];"
+                f"[0:v][src]overlay=0:0:eof_action=pass:shortest=0[base];"
+                f"[2:v]format=rgba[ov];"
+                f"[base][ov]overlay=0:0:eof_action=pass:shortest=0[out]",
                 "-map", "[out]",
                 "-c:v", encoder, "-preset", "ultrafast",
             ])
@@ -635,7 +946,7 @@ async def export_headless(
             else:
                 ffmpeg_cmd.extend(["-cq" if hardware_acceleration else "-crf", crf])
             if include_audio:
-                ffmpeg_cmd.extend(["-map", "0:a?", "-c:a", "copy"])
+                ffmpeg_cmd.extend(["-map", "1:a?", "-c:a", "copy", "-shortest"])
             else:
                 ffmpeg_cmd.append("-an")
             ffmpeg_cmd.extend(["-t", f"{duration:.6f}", "-pix_fmt", "yuv420p", output_path])
@@ -678,11 +989,44 @@ async def export_headless(
             for frame_idx in range(total_frames):
                 current_time = frame_idx / export_fps
 
-                # Set the caption time in the render page. The page resolves
-                # after React has committed the frame.
-                await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
+                if render_page_recycle_frames and frame_idx > 0 and frame_idx % render_page_recycle_frames == 0:
+                    await progress_callback(
+                        "exporting",
+                        last_pct,
+                        f"Refreshing renderer at frame {frame_idx + 1}/{total_frames} to keep export stable...",
+                    )
+                    await recreate_render_page(
+                        current_time,
+                        ExportStageError("render_frames", f"Scheduled renderer refresh after {render_page_recycle_frames} frames."),
+                    )
 
-                screenshot_bytes = await capture_render_frame()
+                screenshot_bytes = None
+                last_frame_error: Exception | None = None
+                for attempt in range(frame_capture_retries):
+                    try:
+                        if page is None:
+                            raise ExportStageError("render_frames", "Render page is not available.")
+
+                        # Set the caption time in the render page. The page resolves
+                        # after React has committed the frame.
+                        await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
+                        screenshot_bytes = await capture_render_frame()
+                        break
+                    except Exception as frame_exc:
+                        last_frame_error = frame_exc
+                        if attempt >= frame_capture_retries - 1:
+                            break
+                        await progress_callback(
+                            "exporting",
+                            last_pct,
+                            f"Renderer restarted at frame {frame_idx + 1}/{total_frames}; retrying capture...",
+                        )
+                        await recreate_render_page(current_time, frame_exc)
+
+                if screenshot_bytes is None:
+                    if last_frame_error:
+                        raise last_frame_error
+                    raise ExportStageError("render_frames", "Frame capture returned no image bytes.")
 
                 # Write PNG bytes to FFmpeg stdin
                 if ffmpeg_proc.stdin:

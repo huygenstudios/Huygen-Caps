@@ -671,9 +671,13 @@ async def export_video(
     bitrate: str = Form("auto"),
     custom_bitrate_mbps: float | None = Form(None),
     export_mode: str = Form("full_video"),
+    captions_only: bool = Form(False),
     background_color: str = Form("#101010"),
     duration_override: float | None = Form(None),
     duration_source: str | None = Form(None),
+    duration_mode: str | None = Form(None),
+    custom_duration: float | None = Form(None),
+    composition_json: str | None = Form(None),
     visible_tracks_count: int | None = Form(None),
     source_media_count: int | None = Form(None),
     caption_chunks_count: int | None = Form(None),
@@ -693,6 +697,11 @@ async def export_video(
     response_format = (response_format or "file").lower().strip()
     if response_format not in {"file", "json"}:
         return _export_failure("validate_request", "response_format must be either 'file' or 'json'.", "json", 400)
+    export_mode = "captions_only" if captions_only else export_mode
+    if duration_override is None and custom_duration is not None:
+        duration_override = custom_duration
+    if duration_source is None and duration_mode is not None:
+        duration_source = duration_mode
     
     cursor = await db.execute("SELECT filename FROM jobs WHERE id = ?", (job_id,))
     r = await cursor.fetchone()
@@ -728,6 +737,7 @@ async def export_video(
         captions=caption_chunks_count if caption_chunks_count is not None else parsed_caption_count,
         visible_tracks=visible_tracks_count,
         source_media=source_media_count,
+        composition_json_bytes=len(composition_json or ""),
     )
 
     # ── HEADLESS BROWSER EXPORT (pixel-perfect) ──
@@ -764,6 +774,7 @@ async def export_video(
                 background_color=background_color,
                 duration_override=duration_override,
                 duration_source=duration_source,
+                composition_json=composition_json,
                 hardware_acceleration=hardware_acceleration,
             )
             output_filename = Path(output_path).name
