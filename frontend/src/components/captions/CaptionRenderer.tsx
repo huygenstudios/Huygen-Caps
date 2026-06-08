@@ -869,7 +869,7 @@ function buildEditorialLockupLayout(
   const collisionPadding = Math.max(0, (config.collisionPadding ?? 8) * scale);
   const safeWidth = Math.max(1, bounds.right - bounds.left);
   const safeHeight = Math.max(1, bounds.bottom - bounds.top);
-  const configuredBigFontSize = clamp(config.bigFontSizePx ?? BUILD_BIG_FONT_SIZE_PX, 80, 400) * scale;
+  const configuredBigFontSize = clamp(config.bigFontSizePx ?? BUILD_BIG_FONT_SIZE_PX, 42, 400) * scale;
   const configuredSmallFontSize = Math.min(
     configuredBigFontSize * 0.78,
     Math.max(

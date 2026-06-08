@@ -86,7 +86,7 @@ export const PRESET_CAPABILITIES: Record<CaptionStylePresetId, CaptionPresetCapa
     textOutline: true,
     textShadow: true,
     transitions: true,
-    maxLines: false,
+    maxLines: true,
     asymmetricScale: false,
     editorialFonts: true,
   },
