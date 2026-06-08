@@ -71,7 +71,7 @@ export function useKeyboardShortcuts() {
         case "ArrowRight":
           e.preventDefault();
           {
-            const fps = useEditorStore.getState().sequenceSettings.fps || 30;
+            const fps = useEditorStore.getState().sequenceSettings.fps || 60;
             usePlaybackStore.getState().seekBy(shift ? 5 / fps : 1 / fps);
           }
           break;
@@ -79,7 +79,7 @@ export function useKeyboardShortcuts() {
         case "ArrowLeft":
           e.preventDefault();
           {
-            const fps = useEditorStore.getState().sequenceSettings.fps || 30;
+            const fps = useEditorStore.getState().sequenceSettings.fps || 60;
             usePlaybackStore.getState().seekBy(shift ? -5 / fps : -1 / fps);
           }
           break;

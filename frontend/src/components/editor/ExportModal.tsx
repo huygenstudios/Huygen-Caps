@@ -650,7 +650,7 @@ export default function ExportModal() {
                   <div className="grid grid-cols-2 gap-2">
                     <Field label="FPS">
                       <select className="control-input" value={exportSettings.fps} onChange={(event) => setExportSettings({ fps: event.target.value === "sequence" ? "sequence" : (Number(event.target.value) as ExportFrameRate) })}>
-                        <option value="sequence">Same as sequence</option>
+                        <option value="sequence">Same as sequence ({sequenceSettings.fps} fps)</option>
                         <option value={24}>24</option>
                         <option value={25}>25</option>
                         <option value={30}>30</option>

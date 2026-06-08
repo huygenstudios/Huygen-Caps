@@ -725,11 +725,12 @@ export function validateCaptionTiming(caption: Caption): string | undefined {
   return caption.timingNeedsReview ? caption.timingWarning : undefined;
 }
 
-export function formatTimecode(seconds: number): string {
+export function formatTimecode(seconds: number, fps = 60): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  const f = Math.floor((seconds % 1) * 30); // 30fps frame count
+  const safeFps = Math.max(1, Number.isFinite(fps) ? Math.round(fps) : 60);
+  const f = Math.min(safeFps - 1, Math.floor((seconds % 1) * safeFps));
   return `${pad(h)}:${pad(m)}:${pad(s)}:${pad(f)}`;
 }
 

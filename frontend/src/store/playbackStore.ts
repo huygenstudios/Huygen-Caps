@@ -47,8 +47,16 @@ export const usePlaybackStore = create<PlaybackState>((set) => ({
   pause: () => set({ isPlaying: false }),
   togglePlayPause: () => set((s) => ({ isPlaying: !s.isPlaying })),
   stop: () => set({ isPlaying: false, currentTime: 0 }),
-  setCurrentTime: (time) => set((s) => ({ currentTime: clampTime(time, s.duration) })),
-  setDuration: (duration) => set({ duration }),
+  setCurrentTime: (time) =>
+    set((s) => {
+      const currentTime = clampTime(time, s.duration);
+      return Math.abs(currentTime - s.currentTime) < 0.0005 ? s : { currentTime };
+    }),
+  setDuration: (duration) =>
+    set((s) => {
+      const nextDuration = Math.max(0, Number.isFinite(duration) ? duration : 0);
+      return Math.abs(nextDuration - s.duration) < 0.0005 ? s : { duration: nextDuration };
+    }),
   setVolume: (vol) => set({ volume: Math.max(0, Math.min(1, vol)) }),
   setPlaybackRate: (rate) => set({ playbackRate: rate }),
   setZoom: (zoom) => set({ zoom }),

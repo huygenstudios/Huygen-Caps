@@ -66,13 +66,13 @@ const DEFAULT_STATE: RenderState = {
   compositionLayers: [],
   currentTime: 0,
   resolution: { width: 1080, height: 1920 },
-  fps: 30,
+  fps: 60,
   backgroundColor: "transparent",
   ready: false,
 };
 
 function quantizeToFrame(time: number, fps: number) {
-  const safeFps = Math.max(1, Number.isFinite(fps) ? fps : 30);
+  const safeFps = Math.max(1, Number.isFinite(fps) ? fps : 60);
   const frame = Math.max(0, Math.floor(Math.max(0, time) * safeFps + 1e-6));
   return frame / safeFps;
 }

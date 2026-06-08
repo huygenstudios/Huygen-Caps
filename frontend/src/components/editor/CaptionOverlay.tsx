@@ -48,10 +48,8 @@ export default function CaptionOverlay() {
   }, []);
 
   const frameTime = useMemo(() => {
-    const fps = Math.max(1, Number(sequenceFps) || 30);
-    const frame = Math.max(0, Math.floor(currentTime * fps + 1e-6));
-    return frame / fps + globalOffsetSeconds;
-  }, [currentTime, globalOffsetSeconds, sequenceFps]);
+    return Math.max(0, currentTime + globalOffsetSeconds);
+  }, [currentTime, globalOffsetSeconds]);
 
   const previewScale = useMemo(() => {
     const sequenceWidth = Math.max(1, sequenceSettings.width);
@@ -114,6 +112,8 @@ export default function CaptionOverlay() {
         cursor: locked ? "not-allowed" : captions.length ? "grab" : "default",
         minWidth: 1,
         minHeight: 1,
+        transform: "translateZ(0)",
+        willChange: "transform",
       }}
       title={locked ? "Caption track locked" : "Drag to move the global caption layer"}
       onPointerDown={handlePointerDown}
@@ -121,7 +121,7 @@ export default function CaptionOverlay() {
       <CaptionRenderer
         captions={[activeCaption]}
         currentTime={frameTime}
-        fps={sequenceFps}
+        fps={Math.max(1, sequenceFps || 60)}
         scale={effectivePreviewScale}
         transition
         styleConfig={captionStyleConfig}

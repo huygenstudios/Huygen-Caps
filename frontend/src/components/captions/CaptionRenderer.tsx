@@ -1275,7 +1275,7 @@ function renderAttentionPunch(
 export default function CaptionRenderer({
   captions,
   currentTime,
-  fps = 30,
+  fps = 60,
   scale = 1,
   transition = false,
   styleConfig,

@@ -49,7 +49,7 @@ BITRATE_PRESETS = {
     "high": "16M",
 }
 
-EXPORT_FPS = 30
+EXPORT_FPS = 60
 
 
 def _bool_env(name: str, default: bool = False) -> bool:

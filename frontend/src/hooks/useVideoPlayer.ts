@@ -9,9 +9,10 @@ import { useEditorStore } from "@/store/editorStore";
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const animFrameRef = useRef<number>(0);
-  const videoFrameRef = useRef<number>(0);
+  const lastPublishedTimeRef = useRef(-1);
   const sequenceFps = useEditorStore((s) => s.sequenceSettings.fps);
-  const driftToleranceSeconds = Math.max(1 / Math.max(1, sequenceFps), 2 / Math.max(1, sequenceFps));
+  const safeSequenceFps = Math.max(1, sequenceFps || 60);
+  const driftToleranceSeconds = Math.max(1 / safeSequenceFps, 2 / safeSequenceFps);
 
   const {
     isPlaying,
@@ -37,6 +38,7 @@ export function useVideoPlayer() {
       };
 
       el.onended = () => {
+        setCurrentTime(el.duration || el.currentTime);
         pause();
       };
 
@@ -49,7 +51,9 @@ export function useVideoPlayer() {
       };
 
       el.ontimeupdate = () => {
-        setCurrentTime(el.currentTime);
+        if (!usePlaybackStore.getState().isPlaying) {
+          setCurrentTime(el.currentTime);
+        }
       };
     },
     [volume, playbackRate, setDuration, pause, setCurrentTime]
@@ -61,52 +65,49 @@ export function useVideoPlayer() {
     if (!el) return;
 
     if (isPlaying) {
-      if (Math.abs(el.currentTime - currentTime) > driftToleranceSeconds) {
-        el.currentTime = currentTime;
+      const targetTime = usePlaybackStore.getState().currentTime;
+      if (Math.abs(el.currentTime - targetTime) > driftToleranceSeconds) {
+        el.currentTime = targetTime;
       }
       el.play().catch((error) => {
         console.warn("Video playback failed", error);
         pause();
       });
 
+      const publishTime = () => {
+        const nextTime = el.currentTime;
+        if (Math.abs(nextTime - lastPublishedTimeRef.current) >= 1 / 240) {
+          lastPublishedTimeRef.current = nextTime;
+          setCurrentTime(nextTime);
+        }
+      };
+
       const tick = () => {
-        setCurrentTime(el.currentTime);
-        const frameAwareVideo = el as HTMLVideoElement & {
-          requestVideoFrameCallback?: (callback: FrameRequestCallback) => number;
-          cancelVideoFrameCallback?: (handle: number) => void;
-        };
-        if (frameAwareVideo.requestVideoFrameCallback) {
-          videoFrameRef.current = frameAwareVideo.requestVideoFrameCallback(tick);
-        } else {
+        publishTime();
+        if (!el.paused && !el.ended) {
           animFrameRef.current = requestAnimationFrame(tick);
         }
       };
-      tick();
+      publishTime();
+      animFrameRef.current = requestAnimationFrame(tick);
     } else {
       el.pause();
       cancelAnimationFrame(animFrameRef.current);
-      const frameAwareVideo = el as HTMLVideoElement & {
-        cancelVideoFrameCallback?: (handle: number) => void;
-      };
-      frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
     }
 
     return () => {
       cancelAnimationFrame(animFrameRef.current);
-      const frameAwareVideo = el as HTMLVideoElement & {
-        cancelVideoFrameCallback?: (handle: number) => void;
-      };
-      frameAwareVideo.cancelVideoFrameCallback?.(videoFrameRef.current);
     };
-  }, [currentTime, driftToleranceSeconds, isPlaying, pause, setCurrentTime]);
+  }, [driftToleranceSeconds, isPlaying, pause, setCurrentTime]);
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
+    if (isPlaying) return;
     if (Math.abs(el.currentTime - currentTime) > driftToleranceSeconds) {
       el.currentTime = currentTime;
     }
-  }, [currentTime, driftToleranceSeconds]);
+  }, [currentTime, driftToleranceSeconds, isPlaying]);
 
   // Volume sync
   useEffect(() => {
@@ -129,16 +130,16 @@ export function useVideoPlayer() {
     [setCurrentTime]
   );
 
-  // Frame step (1/30s)
+  // Frame step using the current sequence frame rate.
   const frameForward = useCallback(() => {
     const ct = videoRef.current?.currentTime || 0;
-    seekTo(Math.min((videoRef.current?.duration || 0), ct + 1 / 30));
-  }, [seekTo]);
+    seekTo(Math.min((videoRef.current?.duration || 0), ct + 1 / safeSequenceFps));
+  }, [safeSequenceFps, seekTo]);
 
   const frameBack = useCallback(() => {
     const ct = videoRef.current?.currentTime || 0;
-    seekTo(Math.max(0, ct - 1 / 30));
-  }, [seekTo]);
+    seekTo(Math.max(0, ct - 1 / safeSequenceFps));
+  }, [safeSequenceFps, seekTo]);
 
   return {
     videoRef,

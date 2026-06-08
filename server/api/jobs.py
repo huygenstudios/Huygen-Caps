@@ -665,7 +665,7 @@ async def export_video(
     resolution: str = Form("1080p"),
     export_width: int | None = Form(None),
     export_height: int | None = Form(None),
-    export_fps: int = Form(30),
+    export_fps: int = Form(60),
     include_audio: bool = Form(True),
     quality: str = Form("standard"),
     bitrate: str = Form("auto"),

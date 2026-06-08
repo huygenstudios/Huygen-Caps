@@ -104,8 +104,8 @@ export default function MobileEditorShell() {
           {isPlaying ? <Pause size={20} /> : <Play size={20} />}
         </button>
         <div className="mobile-time-stack">
-          <span>{formatTimecode(currentTime)}</span>
-          <span>{formatTimecode(duration)}</span>
+          <span>{formatTimecode(currentTime, sequenceSettings.fps)}</span>
+          <span>{formatTimecode(duration, sequenceSettings.fps)}</span>
         </div>
         <button className="mobile-icon-action" disabled={!canUndo} onClick={undo} title="Undo">
           <Undo2 size={18} />

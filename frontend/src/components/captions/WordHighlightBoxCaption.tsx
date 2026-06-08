@@ -106,7 +106,7 @@ export default function WordHighlightBoxCaption({
   caption,
   currentTime,
   styleConfig,
-  fps = 30,
+  fps = 60,
   scale = 1,
   transition = false,
   canvasSize,
