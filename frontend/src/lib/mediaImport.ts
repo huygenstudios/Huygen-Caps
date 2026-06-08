@@ -22,7 +22,7 @@ function addBaseVideoIfNeeded(mediaFile: MediaFile) {
   usePlaybackStore.getState().setDuration(mediaFile.duration);
 
   if (!hasVideoClip) {
-    timelineStore.ensureBaseVideoClip(mediaFile);
+    timelineStore.ensureBaseVideoClip(mediaFile, { notify: false });
   }
 
   if (!hasLinkedAudioClip && latestTracks.some((track) => track.id === "a1" && !track.locked)) {

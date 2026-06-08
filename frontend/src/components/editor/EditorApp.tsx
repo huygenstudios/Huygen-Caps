@@ -2,7 +2,7 @@
 
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 
 import EditorWorkspaceShell from "@/components/editor/EditorWorkspaceShell";
 import ExportModal from "@/components/editor/ExportModal";
@@ -15,6 +15,7 @@ import { useTimelineStore } from "@/store/timelineStore";
 
 export default function EditorApp() {
   useKeyboardShortcuts();
+  const notifiedVideoRestoreKeysRef = useRef<Set<string> | null>(null);
 
   const initDefaultTracks = useTimelineStore((s) => s.initDefaultTracks);
   const tracks = useTimelineStore((s) => s.tracks);
@@ -39,7 +40,21 @@ export default function EditorApp() {
       track.visible && (track.clips || []).some((clip) => clip.type === "video" && clip.mediaId === activeVideo.id && clip.visible !== false)
     );
     if (!hasVideoClip) {
-      ensureBaseVideoClip(activeVideo);
+      if (!notifiedVideoRestoreKeysRef.current) {
+        const storedKeys = window.sessionStorage.getItem("huygen-restored-video-notices");
+        try {
+          notifiedVideoRestoreKeysRef.current = new Set(storedKeys ? JSON.parse(storedKeys) as string[] : []);
+        } catch {
+          notifiedVideoRestoreKeysRef.current = new Set();
+        }
+      }
+      const restoreKey = `${activeVideo.id}:${activeVideo.name}:${activeVideo.size}`;
+      const shouldNotify = !notifiedVideoRestoreKeysRef.current.has(restoreKey);
+      ensureBaseVideoClip(activeVideo, { notify: shouldNotify });
+      if (shouldNotify) {
+        notifiedVideoRestoreKeysRef.current.add(restoreKey);
+        window.sessionStorage.setItem("huygen-restored-video-notices", JSON.stringify(Array.from(notifiedVideoRestoreKeysRef.current)));
+      }
     }
   }, [activeMediaId, ensureBaseVideoClip, mediaFiles, tracks]);
 
