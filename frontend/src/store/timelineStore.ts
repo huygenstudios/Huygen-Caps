@@ -35,7 +35,7 @@ interface TimelineState {
   toggleTrackVisibility: (id: string) => void;
   toggleTrackMute: (id: string) => void;
   addClip: (trackId: string, clip: Omit<TimelineClip, "id" | "trackId">) => void;
-  ensureBaseVideoClip: (mediaFile: MediaFile) => void;
+  ensureBaseVideoClip: (mediaFile: MediaFile, options?: { notify?: boolean }) => void;
   updateClip: (clipId: string, updates: Partial<TimelineClip>) => void;
   moveClipToTrack: (clipId: string, targetTrackId: string, nextStart?: number) => void;
   removeClipsByMediaId: (mediaId: string) => void;
@@ -201,7 +201,7 @@ export const useTimelineStore = create<TimelineState>((set) => ({
       };
     }),
 
-  ensureBaseVideoClip: (mediaFile) =>
+  ensureBaseVideoClip: (mediaFile, options) =>
     set((s) => {
       if (mediaFile.type !== "video") return s;
 
@@ -232,7 +232,7 @@ export const useTimelineStore = create<TimelineState>((set) => ({
             ? { ...track, visible: true, clips: [...(track.clips || []), repairedClip] }
             : track
         ),
-        notice: "Restored the missing video clip to V1.",
+        notice: options?.notify ? "Video clip restored to timeline." : s.notice,
       };
     }),
 

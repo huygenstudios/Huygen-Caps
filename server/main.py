@@ -25,8 +25,11 @@ if ffmpeg_exe and os.path.exists(ffmpeg_exe):
 # 2. Add project root to path so `ai_pipeline` can be imported
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import shutil
@@ -82,6 +85,28 @@ app = FastAPI(
     version="5.0.0",
     lifespan=lifespan
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    error_text = str(exc).lower()
+    if request.url.path.startswith("/api/jobs") and "error parsing the body" in error_text:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Could not parse upload. Please reselect the video and try again."},
+        )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    detail = str(exc.detail)
+    if request.url.path.startswith("/api/jobs") and "error parsing the body" in detail.lower():
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Could not parse upload. Please reselect the video and try again."},
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # CORS configuration for Frontend interaction
 default_origins = [
