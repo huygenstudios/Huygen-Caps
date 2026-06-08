@@ -17,13 +17,31 @@ export default function EditorApp() {
   useKeyboardShortcuts();
 
   const initDefaultTracks = useTimelineStore((s) => s.initDefaultTracks);
+  const tracks = useTimelineStore((s) => s.tracks);
+  const ensureBaseVideoClip = useTimelineStore((s) => s.ensureBaseVideoClip);
   const colorMode = useEditorStore((s) => s.colorMode);
   const setColorMode = useEditorStore((s) => s.setColorMode);
+  const mediaFiles = useEditorStore((s) => s.mediaFiles);
+  const activeMediaId = useEditorStore((s) => s.activeMediaId);
 
   useEffect(() => {
     const tracks = useTimelineStore.getState().tracks;
     if (tracks.length === 0) initDefaultTracks();
   }, [initDefaultTracks]);
+
+  useEffect(() => {
+    if (tracks.length === 0) return;
+    const activeVideo = mediaFiles.find((file) => file.id === activeMediaId && file.type === "video")
+      || mediaFiles.find((file) => file.type === "video");
+    if (!activeVideo) return;
+
+    const hasVideoClip = tracks.some((track) =>
+      track.visible && (track.clips || []).some((clip) => clip.type === "video" && clip.mediaId === activeVideo.id && clip.visible !== false)
+    );
+    if (!hasVideoClip) {
+      ensureBaseVideoClip(activeVideo);
+    }
+  }, [activeMediaId, ensureBaseVideoClip, mediaFiles, tracks]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("huygen-caps-theme");

@@ -409,6 +409,8 @@ export type CaptionWordAnimation = "none" | "pop" | "bounce";
 export type CaptionWordEffect = "none" | "reveal" | "highlight" | "bounce" | "paint" | "pop" | "fade";
 export type CaptionMaxLines = "auto" | 1 | 2 | 3;
 export type KineticAnimateBy = "word" | "letter";
+export type CaptionFontStyle = "normal" | "italic";
+export type CaptionTextCase = "none" | "uppercase" | "lowercase" | "title" | "sentence" | "capitalize";
 
 export interface BuildPresetFontSizeConfig {
   bigFontSizePx: number;
@@ -422,6 +424,11 @@ export interface CaptionStyleConfig {
   smallFontFamily?: string;
   fontSize: number;
   fontWeight: number | string;
+  fontStyle?: CaptionFontStyle;
+  bigFontWeight?: number | string;
+  bigFontStyle?: CaptionFontStyle;
+  smallFontWeight?: number | string;
+  smallFontStyle?: CaptionFontStyle;
   textColor: string;
   activeWordColor: string;
   backgroundEnabled: boolean;
@@ -434,6 +441,7 @@ export interface CaptionStyleConfig {
   letterSpacing: number;
   lineHeight: number;
   textTransform: "none" | "uppercase";
+  textCase?: CaptionTextCase;
   textShadowEnabled: boolean;
   textStrokeEnabled: boolean;
   textStrokeColor: string;

@@ -115,10 +115,48 @@ export function normalizeCaptionWord(word: AlignedWord): AlignedWord {
   };
 }
 
+export function normalizedCaptionWordKey(text: string) {
+  return (text || "")
+    .toLocaleLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\u00c0-\u024f]+/gi, "");
+}
+
+export function sanitizeAlignedWords(words: AlignedWord[]): AlignedWord[] {
+  const ordered = words
+    .filter((word) => getWordDisplayText(word) && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  const sanitized: AlignedWord[] = [];
+
+  for (const word of ordered) {
+    const key = normalizedCaptionWordKey(getWordDisplayText(word));
+    const duplicateIndex = sanitized.findIndex((candidate) => {
+      if (normalizedCaptionWordKey(getWordDisplayText(candidate)) !== key) return false;
+      const startDelta = Math.abs(candidate.start - word.start);
+      const endDelta = Math.abs(candidate.end - word.end);
+      const overlap = Math.min(candidate.end, word.end) - Math.max(candidate.start, word.start);
+      const shortest = Math.max(0.001, Math.min(candidate.end - candidate.start, word.end - word.start));
+      return (startDelta <= 0.025 && endDelta <= 0.025) || overlap / shortest >= 0.8;
+    });
+
+    if (duplicateIndex === -1) {
+      sanitized.push(word);
+      continue;
+    }
+
+    const existing = sanitized[duplicateIndex];
+    const existingConfidence = Number(existing.score ?? existing.confidence ?? 0);
+    const nextConfidence = Number(word.score ?? word.confidence ?? 0);
+    if (nextConfidence > existingConfidence) {
+      sanitized[duplicateIndex] = word;
+    }
+  }
+
+  return sanitized;
+}
+
 export function normalizeCaptionWords(caption: Caption): AlignedWord[] {
-  return (caption.words || [])
-    .map(normalizeCaptionWord)
-    .filter((word) => getWordDisplayText(word) && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start);
+  return sanitizeAlignedWords((caption.words || []).map(normalizeCaptionWord));
 }
 
 function synthesizeCaptionWords(caption: Caption): AlignedWord[] {
