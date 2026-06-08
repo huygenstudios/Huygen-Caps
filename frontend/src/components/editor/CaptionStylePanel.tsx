@@ -5,10 +5,10 @@ import { Palette, RotateCcw } from "lucide-react";
 import { alignedWordsToCaptions, captionsToTranscriptSegments, getAlignedWordsFromSegments, segmentsToCaptions } from "@/lib/captionUtils";
 import { validateCaptionCoverage } from "@/lib/captionCoverage";
 import { GOLDEN_RATIO } from "@/lib/captionGoldenRatio";
-import { BUILD_BIG_FONT_SIZE_PX, BUILD_SMALL_FONT_SIZE_PX, CREATOR_FONTS } from "@/lib/captionStyleConfig";
+import { BUILD_BIG_FONT_SIZE_PX, BUILD_SMALL_FONT_SIZE_PX, CREATOR_FONTS, FONT_VARIANTS } from "@/lib/captionStyleConfig";
 import { CAPTION_PRESET_LIST, PRESET_CAPABILITIES } from "@/lib/captionStylePresets";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
-import { CaptionAlignment, CaptionEntranceAnimation, CaptionStyleConfig, CaptionStylePresetId, CaptionWordAnimation } from "@/lib/types";
+import { CaptionAlignment, CaptionEntranceAnimation, CaptionStyleConfig, CaptionStylePresetId, CaptionTextCase, CaptionWordAnimation } from "@/lib/types";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { useTimelineStore } from "@/store/timelineStore";
@@ -57,6 +57,26 @@ const BUILD_LAYOUT_OPTIONS: { label: string; value: NonNullable<CaptionStyleConf
   { label: "Left Anchor", value: "left_anchor" },
   { label: "Right Anchor", value: "right_anchor" },
 ];
+const TEXT_CASE_OPTIONS: { label: string; value: CaptionTextCase }[] = [
+  { label: "Original", value: "none" },
+  { label: "UPPERCASE", value: "uppercase" },
+  { label: "lowercase", value: "lowercase" },
+  { label: "Title Case", value: "title" },
+  { label: "Sentence case", value: "sentence" },
+  { label: "Cap Each Word", value: "capitalize" },
+];
+
+function variantValue(weight?: number | string, style?: string) {
+  return `${Math.round(Number(weight) || 400)}:${style === "italic" ? "italic" : "normal"}`;
+}
+
+function variantPatch(value: string, weightKey: "fontWeight" | "bigFontWeight" | "smallFontWeight", styleKey: "fontStyle" | "bigFontStyle" | "smallFontStyle") {
+  const [weight, style] = value.split(":");
+  return {
+    [weightKey]: Number(weight) || 400,
+    [styleKey]: style === "italic" ? "italic" : "normal",
+  } as Partial<CaptionStyleConfig>;
+}
 
 function chunkingPatchForMaxLines(maxLines: CaptionStyleConfig["maxLines"], currentMaxChars: number) {
   const safeChars = Math.max(18, Math.min(160, Math.round(currentMaxChars)));
@@ -503,7 +523,21 @@ export default function CaptionStylePanel() {
             </select>
           </label>
 
-          <SliderControl disabled={locked} label="Font weight" value={Number(captionStyleConfig.fontWeight) || 900} min={100} max={1000} step={50} onChange={(fontWeight) => update({ fontWeight })} />
+          <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <span>Variant</span>
+            <select
+              className="control-input"
+              value={variantValue(captionStyleConfig.fontWeight, captionStyleConfig.fontStyle)}
+              disabled={locked}
+              onChange={(event) => update(variantPatch(event.target.value, "fontWeight", "fontStyle"))}
+            >
+              {FONT_VARIANTS.map((variant) => (
+                <option key={`${variant.weight}-${variant.italic}`} value={variantValue(variant.weight, variant.italic ? "italic" : "normal")}>
+                  {variant.label}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <div className="grid grid-cols-3 gap-2">
             {(["left", "center", "right"] as CaptionAlignment[]).map((alignment) => (
@@ -520,6 +554,22 @@ export default function CaptionStylePanel() {
 
           {capabilities.maxLines && (
             <>
+              <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span>Text case</span>
+                <select
+                  className="control-input"
+                  value={captionStyleConfig.textCase || (captionStyleConfig.textTransform === "uppercase" ? "uppercase" : "none")}
+                  disabled={locked}
+                  onChange={(event) => {
+                    const textCase = event.target.value as CaptionTextCase;
+                    update({ textCase, textTransform: textCase === "uppercase" ? "uppercase" : "none" });
+                  }}
+                >
+                  {TEXT_CASE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
               <SliderControl
                 disabled={locked}
                 label="Font size"
@@ -712,11 +762,26 @@ export default function CaptionStylePanel() {
 
         {isBuildPreset && (
           <>
-            <Section title="Editorial Fonts">
+            <Section title="Build Typography">
               <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
                 <span>Big word font</span>
                 <select className="control-input" value={captionStyleConfig.bigFontFamily || captionStyleConfig.fontFamily} disabled={locked} onChange={(event) => update({ bigFontFamily: event.target.value })}>
                   {CREATOR_FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span>Big word variant</span>
+                <select
+                  className="control-input"
+                  value={variantValue(captionStyleConfig.bigFontWeight ?? captionStyleConfig.fontWeight, captionStyleConfig.bigFontStyle ?? captionStyleConfig.fontStyle)}
+                  disabled={locked}
+                  onChange={(event) => update(variantPatch(event.target.value, "bigFontWeight", "bigFontStyle"))}
+                >
+                  {FONT_VARIANTS.map((variant) => (
+                    <option key={`${variant.weight}-${variant.italic}`} value={variantValue(variant.weight, variant.italic ? "italic" : "normal")}>
+                      {variant.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
@@ -725,11 +790,24 @@ export default function CaptionStylePanel() {
                   {CREATOR_FONTS.map((font) => <option key={font} value={font}>{font}</option>)}
                 </select>
               </label>
-            </Section>
-
-            <Section title="Build Font Sizes">
+              <label className="grid gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span>Small word variant</span>
+                <select
+                  className="control-input"
+                  value={variantValue(captionStyleConfig.smallFontWeight ?? captionStyleConfig.fontWeight, captionStyleConfig.smallFontStyle ?? captionStyleConfig.fontStyle)}
+                  disabled={locked}
+                  onChange={(event) => update(variantPatch(event.target.value, "smallFontWeight", "smallFontStyle"))}
+                >
+                  {FONT_VARIANTS.map((variant) => (
+                    <option key={`${variant.weight}-${variant.italic}`} value={variantValue(variant.weight, variant.italic ? "italic" : "normal")}>
+                      {variant.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <SliderControl disabled={locked} label="Big word size" value={captionStyleConfig.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX} min={42} max={400} step={1} suffix="px" onChange={(bigFontSizePx) => update({ bigFontSizePx })} />
               <SliderControl disabled={locked} label="Small word size" value={captionStyleConfig.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX} min={20} max={160} step={1} suffix="px" onChange={(smallFontSizePx) => update({ smallFontSizePx })} />
+              <SliderControl disabled={locked} label="Tracking" value={captionStyleConfig.letterSpacing} min={-2} max={8} step={0.1} suffix="px" onChange={(letterSpacing) => update({ letterSpacing })} />
             </Section>
 
             <Section title="Editorial Layout">

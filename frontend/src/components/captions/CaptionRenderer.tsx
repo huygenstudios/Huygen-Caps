@@ -12,13 +12,14 @@ import {
 import {
   BUILD_BIG_FONT_SIZE_PX,
   BUILD_SMALL_FONT_SIZE_PX,
+  applyCaptionTextCase,
   backgroundRgba,
   directionalShadow,
   normalizeCaptionStyleConfig,
   normalizeModernMinimalistStyleConfig,
   resolveFontFamily,
 } from "@/lib/captionStyleConfig";
-import { getCaptionDisplayText, getRenderableCaptionWords, getWordDisplayText } from "@/lib/captionUtils";
+import { getCaptionDisplayText, getRenderableCaptionWords, getWordDisplayText, normalizedCaptionWordKey } from "@/lib/captionUtils";
 import ViralWordHighlightCaption from "./ViralWordHighlightCaption";
 import WordHighlightBoxCaption from "./WordHighlightBoxCaption";
 
@@ -253,6 +254,18 @@ function buildTimedWords(activeCaption: Caption): TimedCaptionWord[] {
   });
 }
 
+function captionTextTransform(config: CaptionStyleConfig) {
+  return config.textCase && config.textCase !== "none" ? "none" : config.textTransform;
+}
+
+function captionWordText(word: TimedCaptionWord | { word?: string; displayedWord?: string; originalWord?: string }, config: CaptionStyleConfig) {
+  return applyCaptionTextCase(word.displayedWord || word.word || word.originalWord || "", config.textCase);
+}
+
+function captionBlockText(caption: Caption, config: CaptionStyleConfig) {
+  return applyCaptionTextCase(getCaptionDisplayText(caption), config.textCase);
+}
+
 function classifyMrBeastWord(word: string, config: CaptionStyleConfig) {
   if (!config.smartHighlightEnabled) return config.textColor;
   const clean = word.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -307,6 +320,7 @@ function renderMrBeastStyle(
         }}
       >
         {words.map((word, index) => {
+          const displayText = captionWordText(word, config);
           const ageFrames = (currentTime - word.start) * fps;
           const visible = currentTime >= word.start;
           const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
@@ -321,9 +335,10 @@ function renderMrBeastStyle(
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontSize,
                 fontWeight: config.fontWeight,
+                fontStyle: config.fontStyle,
                 letterSpacing: `${config.letterSpacing}px`,
                 color: classifyMrBeastWord(word.word, config),
-                textTransform: "uppercase",
+                textTransform: captionTextTransform(config),
                 WebkitTextStroke: strokeWidth ? `${strokeWidth}px ${config.textStrokeColor}` : undefined,
                 paintOrder: strokeWidth ? "stroke fill" : undefined,
                 textShadow: shadow,
@@ -333,7 +348,7 @@ function renderMrBeastStyle(
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {word.word}
+              {displayText}
             </span>
           );
         })}
@@ -377,6 +392,7 @@ function renderAppleCinematic(
         }}
       >
         {words.map((word, index) => {
+          const displayText = captionWordText(word, config);
           const progress = easeOutExpo((currentTime - word.start) / revealDuration);
           const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
           return (
@@ -390,10 +406,11 @@ function renderAppleCinematic(
                 filter: config.entranceAnimation === "flip" ? entrance.filter || "none" : `blur(${(1 - progress) * blur}px)`,
                 WebkitTextStroke: stroke,
                 paintOrder: stroke ? "stroke fill" : undefined,
+                fontStyle: config.fontStyle,
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {word.word}
+              {displayText}
             </span>
           );
         })}
@@ -466,6 +483,7 @@ const BUILD_REVEAL_MIN_STEP_SECONDS = 0.11;
 const BUILD_REVEAL_MAX_STEP_SECONDS = 0.38;
 const BUILD_REVEAL_FLAT_START_EPSILON = 0.035;
 const BUILD_SUPPORT_MIN_RATIO = 0.42;
+const EDITORIAL_FUTURE_WORD_EPSILON_SECONDS = 0;
 
 const BUILD_CONNECTOR_WORDS = new Set([
   "a",
@@ -602,7 +620,7 @@ function buildEditorialRevealWords(words: TimedCaptionWord[], captionStart: numb
     const desiredStart = flatTiming
       ? safeCaptionStart + step * index
       : Math.max(word.start, index === 0 ? safeCaptionStart : cursor);
-    const start = Math.min(Math.max(safeCaptionStart, desiredStart), safeCaptionEnd - 0.02);
+    const start = Math.min(Math.max(safeCaptionStart, word.start, desiredStart), safeCaptionEnd - 0.02);
     const nextNaturalStart = words[index + 1]?.start;
     const nextScheduledStart = index + 1 < words.length
       ? Math.min(safeCaptionEnd, Math.max(start + BUILD_REVEAL_MIN_STEP_SECONDS, flatTiming ? safeCaptionStart + step * (index + 1) : nextNaturalStart ?? start + step))
@@ -620,10 +638,18 @@ function buildEditorialRevealWords(words: TimedCaptionWord[], captionStart: numb
   });
 }
 
-function estimateWordBox(word: string, fontSize: number, config: CaptionStyleConfig, wordScale = 1) {
+function editorialFontWeight(config: CaptionStyleConfig, isAnchor: boolean) {
+  return Number(isAnchor ? config.bigFontWeight ?? config.fontWeight : config.smallFontWeight ?? config.fontWeight) || Number(config.fontWeight) || 900;
+}
+
+function editorialFontStyle(config: CaptionStyleConfig, isAnchor: boolean) {
+  return isAnchor ? config.bigFontStyle || config.fontStyle || "normal" : config.smallFontStyle || config.fontStyle || "normal";
+}
+
+function estimateWordBox(word: string, fontSize: number, config: CaptionStyleConfig, wordScale = 1, fontWeight?: number) {
   const token = word.trim();
   const charCount = Math.max(1, token.length);
-  const factor = Number(config.fontWeight) >= 800 ? 0.64 : 0.58;
+  const factor = Number(fontWeight ?? config.fontWeight) >= 800 ? 0.64 : 0.58;
   const effectiveFontSize = fontSize * wordScale;
   const width = Math.max(
     effectiveFontSize * 0.78,
@@ -685,7 +711,8 @@ function makeWordPlacement(
   config: CaptionStyleConfig,
   wordScale = 1
 ): EditorialWordPlacement {
-  const size = estimateWordBox(word.word, fontSize, config, wordScale);
+  const isAnchor = role === "anchor";
+  const size = estimateWordBox(word.word, fontSize, config, wordScale, editorialFontWeight(config, isAnchor));
   return {
     id: `${index}:${word.start}:${word.word}`,
     index,
@@ -697,8 +724,43 @@ function makeWordPlacement(
     fontSize,
     scale: wordScale,
     role,
-    isAnchor: role === "anchor",
+    isAnchor,
   };
+}
+
+function timeSafeEditorialWords(words: TimedCaptionWord[], currentTime: number, config: CaptionStyleConfig) {
+  const validUntil = currentTime + EDITORIAL_FUTURE_WORD_EPSILON_SECONDS;
+  const spokenWords = words.filter((word) => word.start <= validUntil);
+  const selected: TimedCaptionWord[] = [];
+
+  for (const word of spokenWords) {
+    const key = normalizedCaptionWordKey(word.word);
+    const duplicateIndex = selected.findIndex((candidate) => {
+      if (normalizedCaptionWordKey(candidate.word) !== key) return false;
+      const overlap = Math.min(candidate.end, word.end) - Math.max(candidate.start, word.start);
+      const shortest = Math.max(0.001, Math.min(candidate.end - candidate.start, word.end - word.start));
+      return overlap / shortest >= 0.75 || Math.abs(candidate.start - word.start) <= 0.025;
+    });
+
+    const displayWord = {
+      ...word,
+      word: applyCaptionTextCase(word.word, config.textCase),
+    };
+
+    if (duplicateIndex === -1) {
+      selected.push(displayWord);
+      continue;
+    }
+
+    const existing = selected[duplicateIndex];
+    const existingDistance = Math.abs(currentTime - existing.start);
+    const nextDistance = Math.abs(currentTime - word.start);
+    if (nextDistance < existingDistance) {
+      selected[duplicateIndex] = displayWord;
+    }
+  }
+
+  return selected;
 }
 
 function isValidBuildPlacement(
@@ -1015,7 +1077,8 @@ function renderModernMinimalistLockup(
   const wordGroup = selectEditorialWordGroup(allWords, activeCaption, currentTime);
   if (!wordGroup) return null;
 
-  const words = wordGroup.words;
+  const words = timeSafeEditorialWords(wordGroup.words, currentTime, config);
+  if (!words.length) return null;
   const anyRevealed = words.some((word) => currentTime >= word.start && currentTime < wordGroup.end);
   if (!anyRevealed) return null;
 
@@ -1107,11 +1170,12 @@ function renderModernMinimalistLockup(
                 display: "inline-block",
                 fontFamily: resolveFontFamily(placement.isAnchor ? (config.bigFontFamily || config.fontFamily) : (config.smallFontFamily || config.fontFamily)),
                 fontSize: placement.fontSize,
-                fontWeight: Number(config.fontWeight) || 900,
+                fontWeight: editorialFontWeight(config, placement.isAnchor),
+                fontStyle: editorialFontStyle(config, placement.isAnchor),
                 color: isActive ? config.activeWordColor : config.textColor,
                 letterSpacing: `${config.letterSpacing}px`,
                 lineHeight,
-                textTransform: config.textTransform,
+                textTransform: config.textCase && config.textCase !== "none" ? "none" : config.textTransform,
                 textShadow,
                 WebkitTextStroke: stroke,
                 paintOrder: stroke ? "stroke fill" : undefined,
@@ -1179,6 +1243,7 @@ function renderKineticWords(
     <div style={positionStyle}>
       <div className="max-w-full leading-snug" style={{ textAlign: config.alignment, ...SAFE_CAPTION_TEXT_STYLE }}>
         {tokens.map((word, index) => {
+          const displayText = captionWordText(word, config);
           const progress = Math.max(0, Math.min(1, (currentTime - word.start) / 0.18));
           const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
           const ageFrames = Math.max(0, (currentTime - word.start) * fps);
@@ -1192,18 +1257,19 @@ function renderKineticWords(
                 fontSize,
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontWeight: config.fontWeight,
+                fontStyle: config.fontStyle,
                 color: config.textColor || "#fff",
                 textShadow,
                 WebkitTextStroke: config.textStrokeEnabled ? `${config.textStrokeWidth * scale}px ${config.textStrokeColor}` : undefined,
                 paintOrder: config.textStrokeEnabled ? "stroke fill" : undefined,
                 letterSpacing: `${config.letterSpacing}px`,
-                textTransform: config.textTransform,
+                textTransform: captionTextTransform(config),
                 opacity: Number(entrance.opacity ?? 1) * progress,
                 transform: combineTransforms(entrance.transform || "", `translateY(${(1 - progress) * 10}px) scale(${0.92 + progress * 0.08})`, motion),
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {word.word}
+              {displayText}
             </span>
           );
         })}
@@ -1232,6 +1298,7 @@ function renderAttentionPunch(
     <div style={positionStyle}>
       <div className="flex max-w-full flex-wrap gap-x-[0.28em] leading-tight" style={{ justifyContent: justifyFromAlignment(config.alignment), ...SAFE_CAPTION_TEXT_STYLE }}>
         {words.map((word, index) => {
+          const displayText = captionWordText(word, config);
           const active = index === activeIndex;
           const spoken = currentTime >= word.start;
           const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
@@ -1248,9 +1315,10 @@ function renderAttentionPunch(
                 fontSize,
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontWeight: config.fontWeight,
+                fontStyle: config.fontStyle,
                 color: active ? config.activeWordColor : config.textColor,
                 letterSpacing: `${config.letterSpacing}px`,
-                textTransform: config.textTransform,
+                textTransform: captionTextTransform(config),
                 WebkitTextStroke: config.textStrokeEnabled ? `${config.textStrokeWidth * scale}px ${config.textStrokeColor}` : undefined,
                 textShadow: wordShadow,
                 opacity: spoken ? entrance.opacity ?? 1 : 0,
@@ -1263,7 +1331,7 @@ function renderAttentionPunch(
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {word.word}
+              {displayText}
             </span>
           );
         })}
@@ -1368,7 +1436,7 @@ export default function CaptionRenderer({
       };
   const fallbackFontFamily = useConfigSurface ? resolveFontFamily(resolvedConfig.fontFamily) : themeStyle.fontFamily;
   const fallbackFontWeight = useConfigSurface ? resolvedConfig.fontWeight : themeStyle.bold ? 700 : 400;
-  const fallbackTextTransform = useConfigSurface ? resolvedConfig.textTransform : themeStyle.textTransform || "none";
+  const fallbackTextTransform = useConfigSurface ? captionTextTransform(resolvedConfig) : themeStyle.textTransform || "none";
   const fallbackLetterSpacing = useConfigSurface ? `${resolvedConfig.letterSpacing}px` : themeStyle.letterSpacing || "normal";
   const fallbackAlignment = useConfigSurface ? resolvedConfig.alignment : "center";
   const fallbackMaxLines = useConfigSurface && resolvedConfig.maxLines !== "auto" ? resolvedConfig.maxLines : fallbackLayout?.lineClamp;
@@ -1406,7 +1474,7 @@ export default function CaptionRenderer({
                 style={{
                   fontFamily: fallbackFontFamily,
                   fontWeight: fallbackFontWeight,
-                  fontStyle: themeStyle.italic ? "italic" : "normal",
+                  fontStyle: useConfigSurface ? resolvedConfig.fontStyle : themeStyle.italic ? "italic" : "normal",
                   textShadow,
                   textTransform: fallbackTextTransform,
                   letterSpacing: fallbackLetterSpacing,
@@ -1433,7 +1501,7 @@ export default function CaptionRenderer({
                     : {}),
                 }}
               >
-                {getWordDisplayText(word)}
+                {useConfigSurface ? applyCaptionTextCase(getWordDisplayText(word), resolvedConfig.textCase) : getWordDisplayText(word)}
               </span>
             );
           })}
@@ -1451,7 +1519,7 @@ export default function CaptionRenderer({
           fontSize,
           fontFamily: fallbackFontFamily,
           fontWeight: fallbackFontWeight,
-          fontStyle: themeStyle.italic ? "italic" : "normal",
+          fontStyle: useConfigSurface ? resolvedConfig.fontStyle : themeStyle.italic ? "italic" : "normal",
           textShadow,
           textTransform: fallbackTextTransform,
           letterSpacing: fallbackLetterSpacing,
@@ -1470,7 +1538,7 @@ export default function CaptionRenderer({
             : {}),
         }}
       >
-        {getCaptionDisplayText(activeCaption)}
+        {useConfigSurface ? captionBlockText(activeCaption, resolvedConfig) : getCaptionDisplayText(activeCaption)}
       </div>
     </div>
   );
