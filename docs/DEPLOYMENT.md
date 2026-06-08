@@ -29,8 +29,20 @@ Set these in the Render dashboard:
 NODE_ENV=production
 STT_PROVIDER=auto
 MAX_UPLOAD_SIZE_MB=500
+PUBLIC_APP_URL=<your public app URL>
+CORS_ORIGINS=<comma-separated allowed frontend origins>
+EXPORT_CONCURRENCY=1
 MAX_CONCURRENT_EXPORTS=1
 MAX_EXPORT_DURATION_SECONDS=300
+EXPORT_BROWSER_TIMEOUT_MS=180000
+EXPORT_FRAME_TIMEOUT_MS=30000
+EXPORT_MAX_RETRIES=2
+EXPORT_DEFAULT_FPS=60
+EXPORT_MAX_FPS=60
+EXPORT_ENABLE_LAYER_PREFLIGHT=true
+EXPORT_RENDER_SAFE_MODE=true
+EXPORT_MAX_LONG_EDGE=1920
+EXPORT_FFMPEG_THREADS=1
 TEMP_DIR=/tmp/huygen-caps
 UPLOAD_DIR=/tmp/huygen-caps/uploads
 EXPORT_DIR=/tmp/huygen-caps/exports
@@ -52,14 +64,14 @@ OPENAI_API_KEY=
 GROQ_API_KEY=
 ```
 
-Do not set `NEXT_PUBLIC_API_URL` for the single-service Docker deployment. The frontend will call same-origin `/api/*`, which avoids production browsers calling `localhost` or `127.0.0.1`.
+Do not commit real `.env` files or secrets. Set production values in the Render dashboard. For the single-service Docker deployment, leave `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_API_URL` blank so the frontend calls same-origin `/api/*`; this avoids production browsers calling `localhost` or `127.0.0.1`.
 
 ## Separate Frontend/Backend Deployment
 
 Only use a separate frontend service if you intentionally split the app. In that case:
 
-- Backend Render service URL goes into frontend `NEXT_PUBLIC_API_URL`.
-- `NEXT_PUBLIC_API_URL` must be an HTTPS backend URL, not localhost.
+- Backend Render service URL goes into frontend `NEXT_PUBLIC_API_BASE_URL` or the legacy `NEXT_PUBLIC_API_URL`.
+- The public API base must be an HTTPS backend URL, not localhost.
 - Backend `CORS_ORIGINS` must include the frontend URL.
 - Backend still binds to `0.0.0.0:$PORT`.
 

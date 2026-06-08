@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..database import get_db
-from ..headless_export import ExportStageError, export_headless
+from ..headless_export import EXPORT_FPS, ExportStageError, export_headless
 from ..progress import manager
 from ..settings import (
     EXPORT_DIR,
@@ -560,7 +560,7 @@ async def start_export_job(
     resolution: str = Form("1080p"),
     export_width: int | None = Form(None),
     export_height: int | None = Form(None),
-    export_fps: int = Form(30),
+    export_fps: int = Form(EXPORT_FPS),
     include_audio: bool = Form(True),
     quality: str = Form("standard"),
     bitrate: str = Form("auto"),
@@ -586,7 +586,7 @@ async def start_export_job(
         duration_source = duration_mode
     _validate_duration(duration_override)
 
-    export_fps = max(1, min(120, int(export_fps or 30)))
+    export_fps = max(1, min(120, int(export_fps or EXPORT_FPS)))
     export_mode = "captions_only" if captions_only else export_mode
     if export_mode not in {"full_video", "captions_only", "captions_only_solid_background"}:
         return JSONResponse(

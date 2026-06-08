@@ -312,13 +312,13 @@ export default function ProgramMonitor({ chrome = "full" }: { chrome?: "full" | 
         </button>
 
         <div className="ml-2 rounded px-2 py-0.5 font-mono text-xs" style={{ background: "var(--timecode-bg)", color: "var(--timecode-text)" }}>
-          {formatTimecode(currentTime)}
+          {formatTimecode(currentTime, sequenceSettings.fps)}
         </div>
         <span className="mx-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
           /
         </span>
         <div className="rounded px-2 py-0.5 font-mono text-xs" style={{ background: "var(--timecode-bg)", color: "var(--timecode-muted)" }}>
-          {formatTimecode(duration)}
+          {formatTimecode(duration, sequenceSettings.fps)}
         </div>
 
         <div className="flex-1" />

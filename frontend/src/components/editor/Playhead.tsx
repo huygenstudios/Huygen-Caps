@@ -16,6 +16,7 @@ export default function Playhead() {
   const draggingRef = useRef(false);
 
   const x = timeToTimelinePixel(currentTime, pixelsPerSecond, scrollLeft);
+  const transform = `translate3d(${x}px, 0, 0)`;
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -48,10 +49,10 @@ export default function Playhead() {
 
   return (
     <>
-      <div className="playhead-line" style={{ left: x }} />
+      <div className="playhead-line" style={{ transform }} />
       <div
         className="playhead-head"
-        style={{ left: x - 5 }}
+        style={{ transform }}
         onMouseDown={handleMouseDown}
       />
     </>

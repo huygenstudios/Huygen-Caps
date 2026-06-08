@@ -119,13 +119,13 @@ function wait(ms: number) {
 
 const MAX_EXPORT_IMAGE_DATA_URL_BYTES = 12 * 1024 * 1024;
 
-function fileToDataUrl(file: File): Promise<string> {
+function fileToDataUrl(file: Blob, name: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Could not read image file: ${file.name}`));
+    reader.onerror = () => reject(new Error(`Could not read image file: ${name}`));
     reader.onload = () => {
       if (typeof reader.result !== "string") {
-        reject(new Error(`Could not read image file as a data URL: ${file.name}`));
+        reject(new Error(`Could not read image file as a data URL: ${name}`));
         return;
       }
       resolve(reader.result);
@@ -160,12 +160,20 @@ async function buildExportCompositionJson({
       if (!media) continue;
 
       if (clip.type === "image" && media.type === "image") {
-        if (media.file.size > MAX_EXPORT_IMAGE_DATA_URL_BYTES) {
+        const sourceFile = (media as MediaFile & { file?: Blob }).file;
+        if (!(sourceFile instanceof Blob) || sourceFile.size <= 0) {
+          throw new Error(`Image layer "${track.label || track.name || track.id}: ${media.name}" is no longer available for export. Please re-import the image and try again.`);
+        }
+        if (sourceFile.size > MAX_EXPORT_IMAGE_DATA_URL_BYTES) {
           throw new Error(
-            `${media.name} is too large for image-layer MP4 export. Keep image overlays under ${Math.round(
+            `Image layer "${track.label || track.name || track.id}: ${media.name}" is too large for MP4 export. Keep image overlays under ${Math.round(
               MAX_EXPORT_IMAGE_DATA_URL_BYTES / (1024 * 1024)
             )} MB.`
           );
+        }
+        const dataUrl = await fileToDataUrl(sourceFile, media.name);
+        if (!dataUrl.startsWith("data:image/")) {
+          throw new Error(`Image layer "${track.label || track.name || track.id}: ${media.name}" could not be packaged for export. Please re-import the image and try again.`);
         }
         layers.push({
           id: clip.id,
@@ -174,7 +182,7 @@ async function buildExportCompositionJson({
           mediaId: media.id,
           name: media.name,
           type: "image",
-          dataUrl: await fileToDataUrl(media.file),
+          dataUrl,
           start: Math.max(0, clip.start),
           end: Math.min(exportDuration, clip.end),
           zIndex: track.zIndex || 0,
@@ -188,7 +196,7 @@ async function buildExportCompositionJson({
       }
 
       if (clip.type === "video" || media.type === "video") {
-        unsupported.push(media.name);
+        unsupported.push(`${track.label || track.name || track.id}: ${media.name}`);
       }
     }
   }
@@ -196,13 +204,13 @@ async function buildExportCompositionJson({
   if (unsupported.length) {
     const unsupportedNames = Array.from(new Set(unsupported));
     throw new Error(
-      `Some overlay types are not supported in MP4 export yet. Image overlays are supported; video overlays are planned. Unsupported: ${unsupportedNames.join(", ")}.`
+      `Video overlay export is not supported yet. Hide these layers before exporting: ${unsupportedNames.join(", ")}.`
     );
   }
 
   return JSON.stringify({
     version: 1,
-    layers,
+    layers: layers.sort((a, b) => a.zIndex - b.zIndex),
   });
 }
 
@@ -318,6 +326,7 @@ export default function ExportModal() {
   );
   const exportDimensions = resolveExportDimensions(exportSettings, sequenceSettings);
   const exportFps = resolveExportFps(exportSettings, sequenceSettings);
+  const requestExportFps = exportSettings.quality === "low_bitrate" ? Math.min(exportFps, 30) : exportFps;
   const durationInfo = determineExportDuration({
     exportSettings,
     sequenceSettings,
@@ -462,7 +471,7 @@ export default function ExportModal() {
       setExporting(false);
       return;
     }
-    if (exportFps < 1 || exportFps > 120) {
+    if (requestExportFps < 1 || requestExportFps > 120) {
       setExportError("Export FPS must be between 1 and 120.");
       setExporting(false);
       return;
@@ -495,7 +504,8 @@ export default function ExportModal() {
         mode: mp4Mode,
         width: exportDimensions.width,
         height: exportDimensions.height,
-        fps: exportFps,
+        fps: requestExportFps,
+        selectedFps: exportFps,
         duration: exportDuration,
         durationSource: durationInfo.source,
         captions: payloadCaptions.length,
@@ -513,7 +523,7 @@ export default function ExportModal() {
         {
           width: exportDimensions.width,
           height: exportDimensions.height,
-          fps: exportFps,
+          fps: requestExportFps,
           includeAudio,
           captionsOnly: mp4Mode === "captions_only",
           quality: exportSettings.quality,
@@ -547,7 +557,7 @@ export default function ExportModal() {
               throw new Error("Export completed but did not return a download URL.");
             }
             setDownloadUrl(resolveBackendUrl(toAttachmentDownloadUrl(status.downloadUrl)));
-            setDownloadName(status.filename || `huygen_caps_${mp4Mode}_${exportDimensions.width}x${exportDimensions.height}_${exportFps}fps.mp4`);
+            setDownloadName(status.filename || `huygen_caps_${mp4Mode}_${exportDimensions.width}x${exportDimensions.height}_${requestExportFps}fps.mp4`);
             setExportStatus("Export complete. MP4 is ready to download.");
             setExportPercent(100);
             setExporting(false);
@@ -650,7 +660,7 @@ export default function ExportModal() {
                   <div className="grid grid-cols-2 gap-2">
                     <Field label="FPS">
                       <select className="control-input" value={exportSettings.fps} onChange={(event) => setExportSettings({ fps: event.target.value === "sequence" ? "sequence" : (Number(event.target.value) as ExportFrameRate) })}>
-                        <option value="sequence">Same as sequence</option>
+                        <option value="sequence">Same as sequence ({sequenceSettings.fps} fps)</option>
                         <option value={24}>24</option>
                         <option value={25}>25</option>
                         <option value={30}>30</option>
@@ -708,7 +718,7 @@ export default function ExportModal() {
                   </p>
                   <div className="grid gap-1 border-t pt-2 font-mono" style={{ borderColor: "var(--border)" }}>
                     <div className="flex justify-between"><span>Size</span><span>{exportDimensions.width}x{exportDimensions.height}</span></div>
-                    <div className="flex justify-between"><span>FPS</span><span>{exportFps}</span></div>
+                    <div className="flex justify-between"><span>FPS</span><span>{requestExportFps}{exportSettings.quality === "low_bitrate" && exportFps !== requestExportFps ? " / Draft" : ""}</span></div>
                     <div className="flex justify-between"><span>Duration</span><span>{exportDuration.toFixed(2)}s / {durationInfo.source}</span></div>
                     <div className="flex justify-between"><span>Captions</span><span>{captionsForExport.length}</span></div>
                   </div>

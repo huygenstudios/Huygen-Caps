@@ -25,8 +25,11 @@ if ffmpeg_exe and os.path.exists(ffmpeg_exe):
 # 2. Add project root to path so `ai_pipeline` can be imported
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import shutil
@@ -83,8 +86,34 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    error_text = str(exc).lower()
+    if request.url.path.startswith("/api/jobs") and "error parsing the body" in error_text:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Could not parse upload. Please reselect the video and try again."},
+        )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    detail = str(exc.detail)
+    if request.url.path.startswith("/api/jobs") and "error parsing the body" in detail.lower():
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Could not parse upload. Please reselect the video and try again."},
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+def _is_production() -> bool:
+    return os.getenv("NODE_ENV", "").strip().lower() == "production" or bool(os.getenv("RENDER"))
+
+
 # CORS configuration for Frontend interaction
-default_origins = [
+local_dev_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3001",
@@ -94,9 +123,13 @@ default_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-configured_origins = env_list("FRONTEND_URL", []) + env_list("CORS_ORIGINS", [])
-allow_origins = list(dict.fromkeys(default_origins + configured_origins))
+configured_origins = env_list("PUBLIC_APP_URL", []) + env_list("FRONTEND_URL", []) + env_list("CORS_ORIGINS", [])
+allow_origins = list(dict.fromkeys(configured_origins + ([] if _is_production() else local_dev_origins)))
 allow_all_origins = "*" in allow_origins
+if allow_all_origins and _is_production():
+    logger.warning("cors_wildcard_ignored_in_production")
+    allow_origins = [origin for origin in allow_origins if origin != "*"]
+    allow_all_origins = False
 
 app.add_middleware(
     CORSMiddleware,

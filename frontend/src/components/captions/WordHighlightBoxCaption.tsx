@@ -9,6 +9,7 @@ import {
   resolveSafeCaptionLayout,
 } from "@/lib/captionLayoutSafety";
 import {
+  applyCaptionTextCase,
   backgroundRgba,
   colorToRgba,
   directionalShadow,
@@ -106,7 +107,7 @@ export default function WordHighlightBoxCaption({
   caption,
   currentTime,
   styleConfig,
-  fps = 30,
+  fps = 60,
   scale = 1,
   transition = false,
   canvasSize,
@@ -208,9 +209,10 @@ export default function WordHighlightBoxCaption({
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontSize,
                   fontWeight: config.fontWeight,
+                  fontStyle: config.fontStyle,
                   letterSpacing: `${config.letterSpacing}px`,
                   lineHeight: config.lineHeight,
-                  textTransform: config.textTransform,
+                  textTransform: config.textCase && config.textCase !== "none" ? "none" : config.textTransform,
                   color: hasActiveBackground
                     ? readableTextColor(highlightBackgroundColor)
                     : isPaintEffect && isVisible
@@ -245,7 +247,7 @@ export default function WordHighlightBoxCaption({
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {getWordDisplayText(word)}
+              {applyCaptionTextCase(getWordDisplayText(word), config.textCase)}
             </span>
           );
         })}

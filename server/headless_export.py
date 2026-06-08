@@ -49,8 +49,6 @@ BITRATE_PRESETS = {
     "high": "16M",
 }
 
-EXPORT_FPS = 30
-
 
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name, "").strip().lower()
@@ -67,6 +65,21 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _int_env_any(names: list[str], default: int) -> int:
+    for name in names:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            continue
+        try:
+            return int(raw)
+        except ValueError:
+            continue
+    return default
+
+
+EXPORT_FPS = max(1, min(120, _int_env("EXPORT_DEFAULT_FPS", 60)))
 
 
 def _render_safe_default() -> bool:
@@ -130,6 +143,73 @@ def _tail(text: str, limit: int = 3000) -> str:
     return text[-limit:]
 
 
+def _composition_layers(composition: object) -> list[dict[str, object]]:
+    if not isinstance(composition, dict):
+        return []
+    layers = composition.get("layers", [])
+    return layers if isinstance(layers, list) else []
+
+
+def _layer_label(layer: dict[str, object]) -> str:
+    track_id = str(layer.get("trackId") or layer.get("track_id") or "").strip()
+    name = str(layer.get("name") or layer.get("mediaId") or layer.get("id") or "unnamed layer").strip()
+    return f"{track_id} {name}".strip()
+
+
+def _preflight_composition_layers(composition: object, duration: float) -> list[dict[str, object]]:
+    layers = _composition_layers(composition)
+    for index, layer in enumerate(layers, start=1):
+        if not isinstance(layer, dict):
+            raise ExportStageError("render_input", f"Composition layer {index} is invalid.")
+        layer_type = layer.get("type")
+        label = _layer_label(layer)
+        if layer_type == "video":
+            raise ExportStageError(
+                "render_input",
+                f"Video overlay layer is not supported for export yet: {label}. Hide that layer or export without it.",
+            )
+        if layer_type != "image":
+            raise ExportStageError("render_input", f"Unsupported composition layer type '{layer_type}' for {label}.")
+        data_url = layer.get("dataUrl")
+        if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+            raise ExportStageError(
+                "render_input",
+                f"Image layer '{label}' is missing backend-readable image data. Re-import the image and try again.",
+            )
+        try:
+            start = float(layer.get("start") or 0)
+            end = float(layer.get("end") or duration)
+        except (TypeError, ValueError):
+            raise ExportStageError("render_input", f"Image layer '{label}' has invalid timing.")
+        if start < 0 or end <= start or start >= duration:
+            raise ExportStageError("render_input", f"Image layer '{label}' has no valid visible export range.")
+    return layers
+
+
+def _active_layer_labels(layers: list[dict[str, object]], time_seconds: float, captions: list[object], source_label: str) -> str:
+    active = [source_label]
+    for layer in layers:
+        try:
+            start = float(layer.get("start") or 0)
+            end = float(layer.get("end") or 0)
+        except (TypeError, ValueError):
+            continue
+        if start <= time_seconds <= end:
+            active.append(_layer_label(layer))
+    for caption in captions:
+        if not isinstance(caption, dict):
+            continue
+        try:
+            start = float(caption.get("start") or 0)
+            end = float(caption.get("end") or 0)
+        except (TypeError, ValueError):
+            continue
+        if start <= time_seconds < end:
+            active.append("captions")
+            break
+    return ", ".join(dict.fromkeys(active))
+
+
 def check_export_runtime() -> dict[str, object]:
     """Runtime export diagnostics for /api/health/export."""
     ensure_runtime_dirs()
@@ -169,11 +249,14 @@ def check_export_runtime() -> dict[str, object]:
         "bundled_render_page_url": bundled_render_page_url(),
         "frontend_dist_available": frontend_dist_available(),
         "export_prefer_bundled_render": _bool_env("EXPORT_PREFER_BUNDLED_RENDER", True),
-        "export_frame_capture_retries": _int_env("EXPORT_FRAME_CAPTURE_RETRIES", 3),
+        "export_browser_timeout_ms": _int_env("EXPORT_BROWSER_TIMEOUT_MS", 180000),
+        "export_frame_timeout_ms": _int_env("EXPORT_FRAME_TIMEOUT_MS", 30000),
+        "export_frame_capture_retries": _int_env_any(["EXPORT_MAX_RETRIES", "EXPORT_FRAME_CAPTURE_RETRIES"], 2),
+        "export_enable_layer_preflight": _bool_env("EXPORT_ENABLE_LAYER_PREFLIGHT", True),
         "export_render_page_recycle_frames": _int_env("EXPORT_RENDER_PAGE_RECYCLE_FRAMES", 450),
         "render_safe_mode": _bool_env("EXPORT_RENDER_SAFE_MODE", _render_safe_default()),
-        "export_max_long_edge": _int_env("EXPORT_MAX_LONG_EDGE", 1280 if _render_safe_default() else 0),
-        "export_max_fps": _int_env("EXPORT_MAX_FPS", 24 if _render_safe_default() else 120),
+        "export_max_long_edge": _int_env("EXPORT_MAX_LONG_EDGE", 1920 if _render_safe_default() else 0),
+        "export_max_fps": _int_env("EXPORT_MAX_FPS", 60 if _render_safe_default() else 120),
         "export_ffmpeg_threads": _int_env("EXPORT_FFMPEG_THREADS", 1 if _render_safe_default() else 0),
     }
 
@@ -369,6 +452,7 @@ async def export_headless(
         ),
         default=0.0,
     )
+    composition_layers: list[dict[str, object]] = []
     if composition_json and composition_json.strip():
         try:
             parsed_composition = json.loads(composition_json)
@@ -379,6 +463,10 @@ async def export_headless(
         layers = parsed_composition.get("layers", [])
         if not isinstance(layers, list):
             raise ExportStageError("render_input", "Composition JSON layers must be a list.")
+        if _bool_env("EXPORT_ENABLE_LAYER_PREFLIGHT", True):
+            composition_layers = _preflight_composition_layers(parsed_composition, float(duration_override or 0) or captions_duration or 24 * 60 * 60)
+        else:
+            composition_layers = _composition_layers(parsed_composition)
 
     media_exists = os.path.exists(video_path)
     if is_captions_only and include_audio and not media_exists:
@@ -412,16 +500,13 @@ async def export_headless(
 
     requested_width, requested_height = width, height
     render_safe_mode = _bool_env("EXPORT_RENDER_SAFE_MODE", _render_safe_default())
-    max_long_edge = max(0, _int_env("EXPORT_MAX_LONG_EDGE", 1280 if render_safe_mode else 0))
-    max_export_fps = max(1, _int_env("EXPORT_MAX_FPS", 24 if render_safe_mode else 120))
+    max_long_edge = max(0, _int_env("EXPORT_MAX_LONG_EDGE", 1920 if render_safe_mode else 0))
+    max_export_fps = max(1, _int_env("EXPORT_MAX_FPS", 60 if render_safe_mode else 120))
     ffmpeg_threads = max(0, _int_env("EXPORT_FFMPEG_THREADS", 1 if render_safe_mode else 0))
-    safe_quality = os.getenv("EXPORT_SAFE_QUALITY", "standard").strip() or "standard"
 
     width, height = _constrain_export_dimensions(width, height, max_long_edge)
     if export_fps > max_export_fps:
         export_fps = max_export_fps
-    if render_safe_mode and quality in {"best", "high"} and bitrate != "custom":
-        quality = safe_quality
     crf = QUALITY_CRF.get(quality, QUALITY_CRF["standard"])
 
     output_path = os.path.join(output_dir, f"{job_id}_{output_suffix}_{width}x{height}.mp4")
@@ -447,6 +532,7 @@ async def export_headless(
         renderSafeMode=render_safe_mode,
         maxLongEdge=max_long_edge,
         ffmpegThreads=ffmpeg_threads,
+        compositionLayers=len(composition_layers),
         outputPath=output_path,
     )
     if (width, height) != (requested_width, requested_height) or export_fps != requested_fps or quality != requested_quality:
@@ -525,8 +611,15 @@ async def export_headless(
     page = None
     ffmpeg_proc = None
     stderr_chunks: list[bytes] = []
-    frame_capture_retries = max(1, _int_env("EXPORT_FRAME_CAPTURE_RETRIES", 3))
+    browser_timeout_ms = max(1000, _int_env("EXPORT_BROWSER_TIMEOUT_MS", 180000))
+    frame_timeout_ms = max(1000, _int_env("EXPORT_FRAME_TIMEOUT_MS", 30000))
+    frame_capture_retries = max(1, _int_env_any(["EXPORT_MAX_RETRIES", "EXPORT_FRAME_CAPTURE_RETRIES"], 2))
     render_page_recycle_frames = max(0, _int_env("EXPORT_RENDER_PAGE_RECYCLE_FRAMES", 450))
+    if composition_layers and render_page_recycle_frames:
+        render_page_recycle_frames = min(
+            render_page_recycle_frames,
+            max(60, _int_env("EXPORT_LAYERED_RENDER_PAGE_RECYCLE_FRAMES", 240)),
+        )
     async with async_playwright() as p:
         async def close_browser_safely() -> None:
             nonlocal browser
@@ -610,7 +703,7 @@ async def export_headless(
                 page.on("pageerror", lambda exc: capture_page_log("pageerror", str(exc)))
                 page.on("requestfailed", lambda request: capture_page_log("requestfailed", f"{request.url} {request.failure}"))
 
-                response = await page.goto(candidate_url, wait_until="networkidle", timeout=30000)
+                response = await page.goto(candidate_url, wait_until="networkidle", timeout=browser_timeout_ms)
                 if response is None:
                     raise ExportStageError("composition_load", f"Render page did not return a response: {candidate_url}")
                 if response.status >= 400:
@@ -619,7 +712,7 @@ async def export_headless(
                         f"Render page returned HTTP {response.status}: {candidate_url}",
                     )
 
-                await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=10000)
+                await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=browser_timeout_ms)
                 render_page_url = candidate_url
                 loaded_render_page = True
                 break
@@ -652,7 +745,7 @@ async def export_headless(
                     type="png",
                     omit_background=True,
                     clip={"x": 0, "y": 0, "width": width, "height": height},
-                    timeout=10000,
+                    timeout=frame_timeout_ms,
                 )
             except Exception as viewport_exc:
                 try:
@@ -660,7 +753,7 @@ async def export_headless(
                     return await element.screenshot(
                         type="png",
                         omit_background=True,
-                        timeout=5000,
+                        timeout=frame_timeout_ms,
                     )
                 except Exception as locator_exc:
                     try:
@@ -734,11 +827,11 @@ async def export_headless(
             page.on("console", lambda msg: capture_page_log("console", msg.text))
             page.on("pageerror", lambda exc: capture_page_log("pageerror", str(exc)))
             page.on("requestfailed", lambda request: capture_page_log("requestfailed", f"{request.url} {request.failure}"))
-            response = await page.goto(render_page_url, wait_until="networkidle", timeout=30000)
+            response = await page.goto(render_page_url, wait_until="networkidle", timeout=browser_timeout_ms)
             if response is None or response.status >= 400:
                 status = "no response" if response is None else f"HTTP {response.status}"
                 raise ExportStageError("composition_load", f"Render page reload failed during export recovery: {status} {render_page_url}")
-            await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=10000)
+            await page.wait_for_function("() => window.__RENDER_PAGE_LOADED__ === true", timeout=browser_timeout_ms)
             await inject_caption_data()
             await page.evaluate("(time) => window.setCaptionTime(time)", current_time)
 
@@ -1048,8 +1141,30 @@ async def export_headless(
                     ffmpeg_proc.stdin.close()
                 except Exception:
                     pass
-            logger.exception("Frame capture error at frame %s", frame_idx)
-            raise ExportStageError("render_frames", f"Frame capture failed at frame {frame_idx + 1}/{total_frames}: {e}", e) from e
+            failed_time = frame_idx / export_fps
+            active_layers = _active_layer_labels(
+                composition_layers,
+                failed_time,
+                parsed_captions,
+                Path(video_path).name if video_path else "base video",
+            )
+            logger.exception(
+                "Frame capture error at frame %s time=%.3f active_layers=%s",
+                frame_idx,
+                failed_time,
+                active_layers,
+            )
+            technical = f"{type(e).__name__}: {e}".strip()
+            raise ExportStageError(
+                "render_frames",
+                (
+                    f"Export renderer crashed while capturing frame {frame_idx + 1}/{total_frames}. "
+                    f"Active layers: {active_layers}. "
+                    "Try hiding unsupported layers or lowering export quality. "
+                    f"Technical: {technical}"
+                ),
+                e,
+            ) from e
         finally:
             # Close FFmpeg stdin and wait for it to finish
             if ffmpeg_proc and ffmpeg_proc.stdin:

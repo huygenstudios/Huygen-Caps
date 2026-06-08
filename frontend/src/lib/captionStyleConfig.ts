@@ -1,4 +1,4 @@
-import { CaptionStyleConfig } from "./types";
+import { CaptionFontStyle, CaptionStyleConfig, CaptionTextCase } from "./types";
 
 export const CREATOR_FONTS = [
   "Komika Axis",
@@ -57,6 +57,33 @@ export const FONT_STACKS: Record<string, string> = {
 export const BUILD_BIG_FONT_SIZE_PX = 220;
 export const BUILD_SMALL_FONT_SIZE_PX = 104;
 
+export type FontVariant = {
+  label: string;
+  weight: number;
+  italic: boolean;
+};
+
+export const FONT_VARIANTS: FontVariant[] = [
+  { label: "Thin", weight: 100, italic: false },
+  { label: "Thin Italic", weight: 100, italic: true },
+  { label: "ExtraLight", weight: 200, italic: false },
+  { label: "ExtraLight Italic", weight: 200, italic: true },
+  { label: "Light", weight: 300, italic: false },
+  { label: "Light Italic", weight: 300, italic: true },
+  { label: "Regular", weight: 400, italic: false },
+  { label: "Italic", weight: 400, italic: true },
+  { label: "Medium", weight: 500, italic: false },
+  { label: "Medium Italic", weight: 500, italic: true },
+  { label: "SemiBold", weight: 600, italic: false },
+  { label: "SemiBold Italic", weight: 600, italic: true },
+  { label: "Bold", weight: 700, italic: false },
+  { label: "Bold Italic", weight: 700, italic: true },
+  { label: "ExtraBold", weight: 800, italic: false },
+  { label: "ExtraBold Italic", weight: 800, italic: true },
+  { label: "Black", weight: 900, italic: false },
+  { label: "Black Italic", weight: 900, italic: true },
+];
+
 export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   presetName: "Word Highlight Box",
   fontFamily: "Poppins",
@@ -64,6 +91,11 @@ export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   smallFontFamily: "Poppins",
   fontSize: 54,
   fontWeight: 900,
+  fontStyle: "normal",
+  bigFontWeight: 900,
+  bigFontStyle: "normal",
+  smallFontWeight: 900,
+  smallFontStyle: "normal",
   textColor: "#FFFFFF",
   activeWordColor: "#FFD43B",
   backgroundEnabled: true,
@@ -76,6 +108,7 @@ export const DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG: CaptionStyleConfig = {
   letterSpacing: 0,
   lineHeight: 1.12,
   textTransform: "none",
+  textCase: "none",
   textShadowEnabled: false,
   textStrokeEnabled: false,
   textStrokeColor: "#000000",
@@ -147,16 +180,22 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   fontFamily: "Inter",
   bigFontFamily: "Inter",
   smallFontFamily: "Inter",
-  fontSize: 112,
+  fontSize: 64,
   fontWeight: 900,
+  fontStyle: "normal",
+  bigFontWeight: 900,
+  bigFontStyle: "normal",
+  smallFontWeight: 700,
+  smallFontStyle: "normal",
   textColor: "#FFFFFF",
   activeWordColor: "#FFFFFF",
   backgroundEnabled: false,
   backgroundOpacity: 0,
   backgroundShadow: false,
   backgroundBorderEnabled: false,
-  lineHeight: 0.95,
+  lineHeight: 1.14,
   textTransform: "none",
+  textCase: "none",
   textShadowEnabled: false,
   textStrokeEnabled: false,
   textShadowColor: "#000000",
@@ -173,7 +212,7 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   entranceAnimation: "slide",
   safeAreaEnabled: true,
   positionX: 50,
-  positionY: 50,
+  positionY: 61.8,
   scale: 1,
   rotation: 0,
   opacity: 1,
@@ -182,14 +221,14 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   maxLines: 2,
   asymmetricScaleEnabled: false,
   asymmetricScaleStrength: 0,
-  bigFontSizePx: BUILD_BIG_FONT_SIZE_PX,
-  smallFontSizePx: BUILD_SMALL_FONT_SIZE_PX,
+  bigFontSizePx: 64,
+  smallFontSizePx: 40,
   anchorSizeMultiplier: 1.55,
   supportSizeMultiplier: 0.28,
   layoutMode: "auto",
   layoutAsymmetry: 0.45,
   layoutSafeMarginPercent: 8,
-  collisionPadding: 8,
+  collisionPadding: 13,
   showBuildWordBounds: false,
   tightness: 0.75,
   hardCutReveal: false,
@@ -209,6 +248,28 @@ function safeColor(value: unknown, fallback: string) {
 
 function safeFont(value: unknown) {
   return typeof value === "string" && value in FONT_STACKS ? value : DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.fontFamily;
+}
+
+function safeFontStyle(value: unknown): CaptionFontStyle {
+  return value === "italic" ? "italic" : "normal";
+}
+
+function safeFontWeight(value: unknown, fallback: number | string) {
+  return Math.round(clamp(value, 100, 1000, Number(fallback) || 900) / 50) * 50;
+}
+
+function safeTextCase(value: unknown, fallback: CaptionTextCase = "none"): CaptionTextCase {
+  if (
+    value === "none" ||
+    value === "uppercase" ||
+    value === "lowercase" ||
+    value === "title" ||
+    value === "sentence" ||
+    value === "capitalize"
+  ) {
+    return value;
+  }
+  return fallback;
 }
 
 function safeLayoutMode(value: unknown): CaptionStyleConfig["layoutMode"] {
@@ -251,6 +312,20 @@ function safeWordEffect(value: unknown) {
 
 export function resolveFontFamily(fontFamily: string) {
   return FONT_STACKS[fontFamily] || FONT_STACKS[DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG.fontFamily];
+}
+
+export function applyCaptionTextCase(text: string, textCase?: CaptionTextCase) {
+  if (!textCase || textCase === "none") return text;
+  const lower = text.toLocaleLowerCase();
+  if (textCase === "uppercase") return text.toLocaleUpperCase();
+  if (textCase === "lowercase") return lower;
+  if (textCase === "sentence") {
+    return lower.replace(/(^\s*[a-z\u00c0-\u024f])|([.!?]\s+[a-z\u00c0-\u024f])/g, (match) => match.toLocaleUpperCase());
+  }
+  if (textCase === "title" || textCase === "capitalize") {
+    return lower.replace(/\b([a-z\u00c0-\u024f])/g, (match) => match.toLocaleUpperCase());
+  }
+  return text;
 }
 
 function safeEntranceAnimation(value: unknown): CaptionStyleConfig["entranceAnimation"] {
@@ -306,7 +381,7 @@ export function normalizeCaptionStyleConfig(
     wordEffect === "highlight" && !raw?.activeWordBackgroundColor ? activeWordColor : merged.activeWordBackgroundColor,
     defaults.activeWordBackgroundColor
   );
-  const bigFontSizePx = clamp(merged.bigFontSizePx, 80, 400, defaults.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX);
+  const bigFontSizePx = clamp(merged.bigFontSizePx, 42, 400, defaults.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX);
   const smallFontSizePx = Math.min(
     bigFontSizePx,
     clamp(merged.smallFontSizePx, 20, 160, defaults.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX)
@@ -318,7 +393,12 @@ export function normalizeCaptionStyleConfig(
     bigFontFamily: safeFont(merged.bigFontFamily || merged.fontFamily),
     smallFontFamily: safeFont(merged.smallFontFamily || merged.fontFamily),
     fontSize: clamp(merged.fontSize, 0, 180, defaults.fontSize),
-    fontWeight: Math.round(clamp(merged.fontWeight, 100, 1000, Number(defaults.fontWeight) || 900) / 50) * 50,
+    fontWeight: safeFontWeight(merged.fontWeight, defaults.fontWeight),
+    fontStyle: safeFontStyle(merged.fontStyle),
+    bigFontWeight: safeFontWeight(merged.bigFontWeight ?? merged.fontWeight, defaults.bigFontWeight ?? defaults.fontWeight),
+    bigFontStyle: safeFontStyle(merged.bigFontStyle ?? merged.fontStyle),
+    smallFontWeight: safeFontWeight(merged.smallFontWeight ?? merged.fontWeight, defaults.smallFontWeight ?? defaults.fontWeight),
+    smallFontStyle: safeFontStyle(merged.smallFontStyle ?? merged.fontStyle),
     textColor: safeColor(merged.textColor, defaults.textColor),
     activeWordColor,
     backgroundEnabled: Boolean(merged.backgroundEnabled),
@@ -331,6 +411,7 @@ export function normalizeCaptionStyleConfig(
     letterSpacing: clamp(merged.letterSpacing, -2, 8, defaults.letterSpacing),
     lineHeight: clamp(merged.lineHeight, 0.9, 1.6, defaults.lineHeight),
     textTransform: merged.textTransform === "uppercase" ? "uppercase" : "none",
+    textCase: safeTextCase(merged.textCase, merged.textTransform === "uppercase" ? "uppercase" : "none"),
     textShadowEnabled: Boolean(merged.textShadowEnabled),
     textStrokeEnabled: Boolean(merged.textStrokeEnabled),
     textStrokeColor: safeColor(merged.textStrokeColor, defaults.textStrokeColor),

@@ -51,7 +51,7 @@ export default function ExportSettingsPanel() {
           <div className="grid grid-cols-2 gap-2">
             <Field label="Resolution">
               <select className="control-input" value={exportSettings.resolutionPreset} onChange={(event) => setExportSettings({ resolutionPreset: event.target.value as ExportResolutionPreset })}>
-                <option value="sequence">Same as sequence</option>
+                <option value="sequence">Same as sequence ({sequenceSettings.fps} fps)</option>
                 {Object.entries(SEQUENCE_RESOLUTION_PRESETS).map(([id, preset]) => (
                   <option key={id} value={id}>
                     {preset.label}

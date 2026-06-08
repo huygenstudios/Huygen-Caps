@@ -1,7 +1,7 @@
 /* Timeline Store — timeline zoom, scroll, tracks */
 
 import { create } from "zustand";
-import { TimelineClip, TimelineTrack } from "@/lib/types";
+import { MediaFile, TimelineClip, TimelineTrack } from "@/lib/types";
 import {
   canDropOnTrack,
   canMoveClipToTrack,
@@ -35,6 +35,7 @@ interface TimelineState {
   toggleTrackVisibility: (id: string) => void;
   toggleTrackMute: (id: string) => void;
   addClip: (trackId: string, clip: Omit<TimelineClip, "id" | "trackId">) => void;
+  ensureBaseVideoClip: (mediaFile: MediaFile, options?: { notify?: boolean }) => void;
   updateClip: (clipId: string, updates: Partial<TimelineClip>) => void;
   moveClipToTrack: (clipId: string, targetTrackId: string, nextStart?: number) => void;
   removeClipsByMediaId: (mediaId: string) => void;
@@ -197,6 +198,41 @@ export const useTimelineStore = create<TimelineState>((set) => ({
               }
             : track
         ),
+      };
+    }),
+
+  ensureBaseVideoClip: (mediaFile, options) =>
+    set((s) => {
+      if (mediaFile.type !== "video") return s;
+
+      const hasVideoClip = s.tracks.some((track) =>
+        (track.clips || []).some((clip) => clip.type === "video" && clip.mediaId === mediaFile.id)
+      );
+      if (hasVideoClip) return s;
+
+      const videoTrack = s.tracks.find((track) => track.id === "v1" && canDropOnTrack(track, "video"))
+        || s.tracks.find((track) => track.type === "video" && canDropOnTrack(track, "video"));
+      if (!videoTrack) return s;
+
+      const duration = Math.max(0.1, mediaFile.duration || 5);
+      const repairedClip: TimelineClip = {
+        id: `clip_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        trackId: videoTrack.id,
+        type: "video",
+        mediaId: mediaFile.id,
+        start: 0,
+        end: duration,
+        visible: true,
+        transform: normalizeClipTransform({ xPercent: 50, yPercent: 50, scale: 1, rotation: 0, opacity: 1 }),
+      };
+
+      return {
+        tracks: s.tracks.map((track) =>
+          track.id === videoTrack.id
+            ? { ...track, visible: true, clips: [...(track.clips || []), repairedClip] }
+            : track
+        ),
+        notice: options?.notify ? "Video clip restored to timeline." : s.notice,
       };
     }),
 

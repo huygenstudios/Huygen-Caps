@@ -8,7 +8,7 @@ import {
   buildSafeCaptionPositionStyle,
   resolveSafeCaptionLayout,
 } from "@/lib/captionLayoutSafety";
-import { normalizeCaptionStyleConfig, resolveFontFamily } from "@/lib/captionStyleConfig";
+import { applyCaptionTextCase, normalizeCaptionStyleConfig, resolveFontFamily } from "@/lib/captionStyleConfig";
 import { getActiveWordIndex, getRenderableCaptionWords, getWordDisplayText, wordActivationProgressFrames } from "@/lib/captionUtils";
 
 interface Props {
@@ -103,7 +103,7 @@ function combineTransforms(...parts: string[]) {
 export default function ViralWordHighlightCaption({
   caption,
   currentTime,
-  fps = 30,
+  fps = 60,
   scale = 1,
   transition = false,
   styleConfig,
@@ -152,8 +152,9 @@ export default function ViralWordHighlightCaption({
                 fontFamily: resolveFontFamily(config.fontFamily),
                 fontSize,
                 fontWeight: config.fontWeight,
+                fontStyle: config.fontStyle,
                 letterSpacing: 0,
-                textTransform: "uppercase",
+                textTransform: config.textCase && config.textCase !== "none" ? "none" : config.textTransform,
                 color: isActive ? "#22f4b8" : isVisible ? "#ffffff" : "transparent",
                 opacity: (() => {
                   const entrance = wordEntranceStyle(word.start, currentTime, fps, config);
@@ -177,7 +178,7 @@ export default function ViralWordHighlightCaption({
                 ...SAFE_CAPTION_TEXT_STYLE,
               }}
             >
-              {getWordDisplayText(word)}
+              {applyCaptionTextCase(getWordDisplayText(word), config.textCase)}
             </span>
           );
         })}

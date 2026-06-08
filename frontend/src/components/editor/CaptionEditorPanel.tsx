@@ -140,6 +140,9 @@ function formatGenerateError(message: string) {
   if (lower.includes("sarvam") && (lower.includes("401") || lower.includes("403") || lower.includes("invalid") || lower.includes("unauthorized"))) {
     return "Sarvam API key is invalid or missing. Update SARVAM_API_KEY in the backend environment, then restart the server.";
   }
+  if (lower.includes("there was an error parsing the body") || lower.includes("request was malformed")) {
+    return "Upload failed because the video request was malformed. Please reselect the video and try again.";
+  }
   if (message.includes("<!DOCTYPE html") || message.includes("<html")) {
     if (message.includes("This page could not be found") || message.includes("404")) {
       return "Backend API returned a frontend 404 page. Make sure FastAPI is reachable and NEXT_PUBLIC_API_URL is correct.";
@@ -559,6 +562,10 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     if (!activeMedia || isGenerating) return;
     if (activeMedia.type !== "video") {
       setGenerateError("Import an MP4 or MOV video before generating subtitles.");
+      return;
+    }
+    if (!(activeMedia.file instanceof File) || activeMedia.file.size <= 0) {
+      setGenerateError("Upload failed because the selected video file is missing. Please reselect the video and try again.");
       return;
     }
 

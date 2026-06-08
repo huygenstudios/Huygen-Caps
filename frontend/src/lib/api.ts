@@ -122,7 +122,12 @@ interface HeadlessExportOptions {
   compositionJson?: string;
 }
 
-const configuredApiBase = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+const configuredApiBase = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.VITE_API_BASE_URL ||
+  ""
+).trim().replace(/\/+$/, "");
 
 function isLocalHost(hostname: string) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
@@ -205,6 +210,12 @@ async function readError(res: Response) {
       : detail
       ? JSON.stringify(detail)
       : fallback;
+  if (message.toLowerCase().includes("there was an error parsing the body")) {
+    return {
+      message: "Upload failed because the video request was malformed. Please reselect the video and try again.",
+      details: payload,
+    };
+  }
   return { message, details: payload };
 }
 
@@ -272,9 +283,14 @@ export async function uploadVideo(
   languageMode: string = "auto_mixed_indian",
   signal?: AbortSignal
 ): Promise<UploadJobResponse> {
+  if (!(file instanceof File) || file.size <= 0) {
+    throw new ApiError("Upload failed because the selected video file is missing. Please reselect the video and try again.");
+  }
+
   const formData = new FormData();
-  formData.append("file", file);
+  formData.append("file", file, file.name || "video.mp4");
   formData.append("languageMode", languageMode);
+  formData.append("target_lang", languageMode);
 
   return apiFetch<UploadJobResponse>(
     "/api/jobs",

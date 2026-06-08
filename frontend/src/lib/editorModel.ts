@@ -38,7 +38,7 @@ export const ASPECT_RATIO_PRESETS: Record<
 export const DEFAULT_SEQUENCE_SETTINGS: SequenceSettings = {
   width: 1080,
   height: 1920,
-  fps: 30,
+  fps: 60,
   aspectRatio: "9:16",
   resolutionPreset: "1080x1920",
   backgroundColor: "#101010",
@@ -92,7 +92,7 @@ export function normalizeClipTransform(transform?: Partial<ClipTransform>): Clip
 
 function normalizeFps(value: unknown): VideoFrameRate {
   const fps = Number(value);
-  return FRAME_RATE_PRESETS.includes(fps as VideoFrameRate) ? (fps as VideoFrameRate) : 30;
+  return FRAME_RATE_PRESETS.includes(fps as VideoFrameRate) ? (fps as VideoFrameRate) : DEFAULT_SEQUENCE_SETTINGS.fps;
 }
 
 export function inferAspectRatio(width: number, height: number): SequenceAspectRatio {
