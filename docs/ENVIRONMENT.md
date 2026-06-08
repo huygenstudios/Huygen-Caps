@@ -9,14 +9,26 @@ Do not commit real `.env` files or API keys.
 | `PORT` | Yes in production | backend | `8000` | Render-provided | HTTP port. Render injects this automatically. |
 | `FRONTEND_URL` | No | backend | `http://localhost:3000` | frontend URL if split | Single frontend origin for CORS. |
 | `CORS_ORIGINS` | No | backend | `http://localhost:3000,http://127.0.0.1:3000` | frontend URL if split | Comma-separated CORS origins. |
-| `NEXT_PUBLIC_API_URL` | No | frontend | blank or `http://127.0.0.1:8000` | blank for single service | Public backend URL. Never set this to localhost in production. |
+| `PUBLIC_APP_URL` | No | backend | blank | public app URL from dashboard | Public app origin used by backend integrations and docs. |
+| `NEXT_PUBLIC_API_BASE_URL` | No | frontend | blank or `http://127.0.0.1:8000` | blank for single service | Preferred public backend URL. Never set this to localhost in production. |
+| `NEXT_PUBLIC_API_URL` | No | frontend | blank or `http://127.0.0.1:8000` | blank for single service | Legacy public backend URL alias. |
+| `NEXT_PUBLIC_APP_URL` | No | frontend | blank | public app URL from dashboard | Public app origin for frontend metadata. |
 | `STT_PROVIDER` | Yes for generation | backend | `auto` | `auto` | `auto`, `sarvam`, `openai_whisper`, `groq_whisper`, or `whisper`. |
 | `SARVAM_API_KEY` | One provider key required | backend | blank | secret | Sarvam STT key. Recommended for Indian code-mixed speech. |
 | `OPENAI_API_KEY` | One provider key required | backend | blank | secret | OpenAI Whisper key. |
 | `GROQ_API_KEY` | One provider key required | backend | blank | secret | Groq Whisper key. |
 | `MAX_UPLOAD_SIZE_MB` | No | backend | `500` | `500` | Upload size limit. |
-| `MAX_CONCURRENT_EXPORTS` | No | backend | `1` | `1` | Maximum background MP4 exports running at the same time. Keep `1` on small Render instances. |
+| `EXPORT_CONCURRENCY` | No | backend | `1` | `1` | Preferred maximum background MP4 exports running at the same time. Keep `1` on small Render instances. |
+| `MAX_CONCURRENT_EXPORTS` | No | backend | `1` | `1` | Legacy export concurrency alias. |
 | `MAX_EXPORT_DURATION_SECONDS` | No | backend | `300` | `300` | Rejects unexpectedly long exports before Chromium/FFmpeg work starts. |
+| `EXPORT_BROWSER_TIMEOUT_MS` | No | backend export | `180000` | `180000` | Timeout for loading/recovering the headless render page. |
+| `EXPORT_FRAME_TIMEOUT_MS` | No | backend export | `30000` | `30000` | Timeout for a single frame capture. |
+| `EXPORT_MAX_RETRIES` | No | backend export | `2` | `2` | Frame capture retry count. |
+| `EXPORT_DEFAULT_FPS` | No | backend export | `60` | `60` | Default MP4 export FPS when the request omits one. |
+| `EXPORT_MAX_FPS` | No | backend export | `60` | `60` | Upper bound for export FPS. |
+| `EXPORT_MAX_LONG_EDGE` | No | backend export | `1920` | `1920` | Optional long-edge cap. Default preserves 1080x1920 exports. |
+| `EXPORT_ENABLE_LAYER_PREFLIGHT` | No | backend export | `true` | `true` | Validates visible export layers before launching frame capture. |
+| `EXPORT_LAYERED_RENDER_PAGE_RECYCLE_FRAMES` | No | backend export | `240` | `240` | Refreshes the headless page more often when image layers are present. |
 | `TEMP_DIR` | No | backend | `/tmp/huygen-caps` on Linux, system temp on Windows | `/tmp/huygen-caps` | Runtime temp root. |
 | `UPLOAD_DIR` | No | backend | `${TEMP_DIR}/uploads` | `/tmp/huygen-caps/uploads` | Uploaded media storage. |
 | `EXPORT_DIR` | No | backend | `${TEMP_DIR}/exports` | `/tmp/huygen-caps/exports` | Exported MP4 storage served at `/exports`. |
@@ -27,7 +39,7 @@ Do not commit real `.env` files or API keys.
 
 ## Production API URL Rule
 
-For the default Docker/Render deployment, leave `NEXT_PUBLIC_API_URL` blank. The browser will call the same origin:
+For the default Docker/Render deployment, leave `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_API_URL` blank. The browser will call the same origin:
 
 ```text
 /api/jobs
@@ -35,7 +47,7 @@ For the default Docker/Render deployment, leave `NEXT_PUBLIC_API_URL` blank. The
 /api/export/jobs
 ```
 
-If you split frontend and backend, set `NEXT_PUBLIC_API_URL` to the backend Render HTTPS URL and add the frontend URL to backend CORS.
+If you split frontend and backend, set `NEXT_PUBLIC_API_BASE_URL` to the backend Render HTTPS URL and add the frontend URL to backend CORS.
 
 ## Secrets
 

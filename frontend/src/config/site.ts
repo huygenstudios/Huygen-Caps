@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 export const siteConfig = {
   siteName: "Huygen Caps",
   companyName: "Huygen Studios",
-  domain: process.env.PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "https://huygencaps.com",
+  domain: process.env.NEXT_PUBLIC_APP_URL || process.env.PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "https://huygencaps.com",
   defaultTitle: "Huygen Caps - Auto Subtitle Generator & AI Caption Maker",
   defaultDescription:
     "Generate accurate subtitles, create animated word-by-word captions, edit timing, and export ready-to-post videos for Reels, Shorts and TikToks.",

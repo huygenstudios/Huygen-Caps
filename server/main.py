@@ -108,8 +108,12 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         )
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
+def _is_production() -> bool:
+    return os.getenv("NODE_ENV", "").strip().lower() == "production" or bool(os.getenv("RENDER"))
+
+
 # CORS configuration for Frontend interaction
-default_origins = [
+local_dev_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3001",
@@ -119,9 +123,13 @@ default_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-configured_origins = env_list("FRONTEND_URL", []) + env_list("CORS_ORIGINS", [])
-allow_origins = list(dict.fromkeys(default_origins + configured_origins))
+configured_origins = env_list("PUBLIC_APP_URL", []) + env_list("FRONTEND_URL", []) + env_list("CORS_ORIGINS", [])
+allow_origins = list(dict.fromkeys(configured_origins + ([] if _is_production() else local_dev_origins)))
 allow_all_origins = "*" in allow_origins
+if allow_all_origins and _is_production():
+    logger.warning("cors_wildcard_ignored_in_production")
+    allow_origins = [origin for origin in allow_origins if origin != "*"]
+    allow_all_origins = False
 
 app.add_middleware(
     CORSMiddleware,

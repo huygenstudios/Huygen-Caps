@@ -483,7 +483,8 @@ const BUILD_REVEAL_MIN_STEP_SECONDS = 0.11;
 const BUILD_REVEAL_MAX_STEP_SECONDS = 0.38;
 const BUILD_REVEAL_FLAT_START_EPSILON = 0.035;
 const BUILD_SUPPORT_MIN_RATIO = 0.42;
-const EDITORIAL_FUTURE_WORD_EPSILON_SECONDS = 0;
+const EDITORIAL_AUTO_FIT_MIN_SCALE = 0.72;
+const EDITORIAL_LOCKUP_SCALE_ATTEMPTS = [1, 0.96, 0.92, 0.88, 0.84, 0.8, 0.76, EDITORIAL_AUTO_FIT_MIN_SCALE];
 
 const BUILD_CONNECTOR_WORDS = new Set([
   "a",
@@ -728,12 +729,10 @@ function makeWordPlacement(
   };
 }
 
-function timeSafeEditorialWords(words: TimedCaptionWord[], currentTime: number, config: CaptionStyleConfig) {
-  const validUntil = currentTime + EDITORIAL_FUTURE_WORD_EPSILON_SECONDS;
-  const spokenWords = words.filter((word) => word.start <= validUntil);
+function timeSafeEditorialWords(words: TimedCaptionWord[], _currentTime: number, config: CaptionStyleConfig) {
   const selected: TimedCaptionWord[] = [];
 
-  for (const word of spokenWords) {
+  for (const word of words) {
     const key = normalizedCaptionWordKey(word.word);
     const duplicateIndex = selected.findIndex((candidate) => {
       if (normalizedCaptionWordKey(candidate.word) !== key) return false;
@@ -753,9 +752,9 @@ function timeSafeEditorialWords(words: TimedCaptionWord[], currentTime: number, 
     }
 
     const existing = selected[duplicateIndex];
-    const existingDistance = Math.abs(currentTime - existing.start);
-    const nextDistance = Math.abs(currentTime - word.start);
-    if (nextDistance < existingDistance) {
+    const existingDuration = Math.max(0, existing.end - existing.start);
+    const nextDuration = Math.max(0, word.end - word.start);
+    if (nextDuration > existingDuration) {
       selected[duplicateIndex] = displayWord;
     }
   }
@@ -852,8 +851,6 @@ function buildFallbackStackLayout(
     [anchorIndex],
     supportIndexes.slice(split),
   ].filter((row) => row.length > 0);
-  const lockupScaleAttempts = [1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36, 0.3, 0.24, 0.2, 0.16, 0.12, 0.08];
-
   const buildRows = (globalScale: number) => rows.map((row) => {
     const items = row.map((index) => {
       const isAnchor = index === anchorIndex;
@@ -868,8 +865,8 @@ function buildFallbackStackLayout(
     };
   });
 
-  let resolvedRows = buildRows(lockupScaleAttempts[lockupScaleAttempts.length - 1]);
-  for (const lockupScale of lockupScaleAttempts) {
+  let resolvedRows = buildRows(EDITORIAL_LOCKUP_SCALE_ATTEMPTS[EDITORIAL_LOCKUP_SCALE_ATTEMPTS.length - 1]);
+  for (const lockupScale of EDITORIAL_LOCKUP_SCALE_ATTEMPTS) {
     const candidateRows = buildRows(lockupScale);
     const candidateHeight = candidateRows.reduce((total, row) => total + row.height, 0) + Math.max(0, candidateRows.length - 1) * rowGap;
     const candidateWidth = Math.max(1, ...candidateRows.map((row) => row.width));
@@ -944,8 +941,6 @@ function buildEditorialLockupLayout(
   const mode = modeInput === "auto" ? autoBuildLayoutMode(activeCaption.id, groupIndex) : modeInput;
   const anchorIndex = chooseAnchorIndex(words);
   const anchorWord = words[anchorIndex];
-  const lockupScaleAttempts = [1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36, 0.3, 0.24, 0.2, 0.16, 0.12, 0.08];
-
   const modeAnchorCenter = (currentMode: ResolvedBuildLayoutMode) => {
     const midX = (bounds.left + bounds.right) / 2;
     const midY = (bounds.top + bounds.bottom) / 2;
@@ -999,7 +994,7 @@ function buildEditorialLockupLayout(
     return null;
   };
 
-  for (const lockupScale of lockupScaleAttempts) {
+  for (const lockupScale of EDITORIAL_LOCKUP_SCALE_ATTEMPTS) {
     const anchorFont = configuredBigFontSize * lockupScale;
     const supportFont = configuredSmallFontSize * lockupScale;
     const baseAnchor = modeAnchorCenter(mode);

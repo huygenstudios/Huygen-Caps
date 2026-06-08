@@ -122,7 +122,12 @@ interface HeadlessExportOptions {
   compositionJson?: string;
 }
 
-const configuredApiBase = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+const configuredApiBase = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.VITE_API_BASE_URL ||
+  ""
+).trim().replace(/\/+$/, "");
 
 function isLocalHost(hostname: string) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";

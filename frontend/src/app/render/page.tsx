@@ -118,10 +118,10 @@ async function preloadImageLayers(layers: CompositionImageLayer[]) {
   await Promise.all(
     layers.map(
       (layer) =>
-        new Promise<void>((resolve) => {
+        new Promise<void>((resolve, reject) => {
           const image = new Image();
           image.onload = () => resolve();
-          image.onerror = () => resolve();
+          image.onerror = () => reject(new Error(`Image layer failed to load: ${layer.name || layer.id}`));
           image.src = layer.dataUrl;
         })
     )
