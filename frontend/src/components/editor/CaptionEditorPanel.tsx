@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
   ChevronLeft,
+  Combine,
   Download,
   Eye,
   EyeOff,
@@ -14,6 +15,7 @@ import {
   MoreVertical,
   Plus,
   Search,
+  Scissors,
   Sparkles,
   Trash2,
   Wand2,
@@ -159,12 +161,6 @@ function tokenizeCaptionForDisplay(caption: Caption) {
     .split(/\s+/)
     .map((token) => token.trim())
     .filter(Boolean);
-}
-
-function shouldAppendSpace(tokens: string[], index: number) {
-  if (index >= tokens.length - 1) return false;
-  const next = tokens[index + 1] || "";
-  return !/^[,.;!?)]$/.test(next);
 }
 
 function resolveActiveWordIndex(caption: Caption, currentTime: number) {
@@ -313,6 +309,9 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     selectCaption,
     updateCaption,
     addCaption,
+    deleteCaption,
+    splitCaption,
+    mergeCaptions,
     clearAll,
     setCaptions,
     setCaptionDocument,
@@ -377,13 +376,12 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
   const sortedCaptions = useMemo(() => [...captions].sort((a, b) => a.start - b.start), [captions]);
   const selectedCaptionId = useMemo(() => Array.from(selectedIds)[0] || null, [selectedIds]);
   const captionClockTime = currentTime + captionTimingConfig.globalOffsetSeconds;
-  const { activePlaybackChunkId, activePlaybackWordId, activePlaybackWordIndex } = useMemo(() => {
-    const activeCaption = sortedCaptions.find((caption) => captionClockTime >= caption.start && captionClockTime < caption.end) || null;
+  const { activePlaybackChunkId, activePlaybackWordId } = useMemo(() => {
+    const activeCaption = sortedCaptions.find((caption) => captionClockTime >= caption.start && captionClockTime <= caption.end) || null;
     if (!activeCaption) {
       return {
         activePlaybackChunkId: null as string | null,
         activePlaybackWordId: null as string | null,
-        activePlaybackWordIndex: null as number | null,
       };
     }
 
@@ -391,7 +389,6 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     return {
       activePlaybackChunkId: activeCaption.id,
       activePlaybackWordId: activeWordIndexForCaption >= 0 ? `${activeCaption.id}:${activeWordIndexForCaption}` : null,
-      activePlaybackWordIndex: activeWordIndexForCaption >= 0 ? activeWordIndexForCaption : null,
     };
   }, [captionClockTime, sortedCaptions]);
   const visibleCaptions = useMemo(() => {
@@ -414,12 +411,22 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
   );
 
   useEffect(() => {
+    if (captions.length > 0 && flow === "setup" && !isGenerating) {
+      setFlow("list");
+    }
+  }, [captions.length, flow, isGenerating]);
+
+  useEffect(() => {
     if (flow !== "list") return;
     if (!activePlaybackChunkId) {
       lastAutoScrolledCaptionRef.current = null;
       return;
     }
     if (lastAutoScrolledCaptionRef.current === activePlaybackChunkId) return;
+    if (editingCaptionId) return;
+
+    const focused = document.activeElement;
+    if (focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement) return;
 
     const container = listContainerRef.current;
     const row = rowRefs.current[activePlaybackChunkId];
@@ -438,7 +445,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     }
 
     lastAutoScrolledCaptionRef.current = activePlaybackChunkId;
-  }, [activePlaybackChunkId, flow]);
+  }, [activePlaybackChunkId, editingCaptionId, flow]);
 
   useEffect(() => {
     if (!editingCaptionId) return;
@@ -734,6 +741,39 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
       updateCaption(captionId, { [field]: parsed });
     },
     [updateCaption]
+  );
+
+  const handleDeleteCaption = useCallback(
+    (captionId: string) => {
+      deleteCaption(captionId);
+      setEditingCaptionId((current) => (current === captionId ? null : current));
+    },
+    [deleteCaption]
+  );
+
+  const handleSplitCaption = useCallback(
+    (caption: Caption) => {
+      if (isCaptionLocked(caption, tracks)) return;
+      splitCaption(caption.id, caption.start + Math.max(0.1, (caption.end - caption.start) / 2));
+    },
+    [splitCaption, tracks]
+  );
+
+  const handleMergeCaption = useCallback(
+    (caption: Caption) => {
+      const selected = Array.from(useCaptionStore.getState().selectedIds);
+      if (selected.length > 1) {
+        mergeCaptions(selected);
+        return;
+      }
+
+      const currentIndex = sortedCaptions.findIndex((candidate) => candidate.id === caption.id);
+      const previous = currentIndex > 0 ? sortedCaptions[currentIndex - 1] : null;
+      if (previous) {
+        mergeCaptions([previous.id, caption.id]);
+      }
+    },
+    [mergeCaptions, sortedCaptions]
   );
 
   const syncPayload = useCallback(
@@ -1159,9 +1199,9 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
       </div>
 
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2" style={{ borderColor: "var(--border)" }}>
-        <button className="icon-button" onClick={() => setFlow("setup")} title="Back">
-          <ChevronLeft size={15} />
-        </button>
+        <span className="text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)" }}>
+          {captions.length} row{captions.length === 1 ? "" : "s"}
+        </span>
         <div className="min-w-0 flex-1" />
         <button className="icon-button" onClick={exportSRT} title="Download SRT" disabled={!captions.length}>
           <Download size={15} />
@@ -1178,7 +1218,22 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         </button>
       </div>
 
-      <div className="space-y-2 border-b p-3" style={{ borderColor: "var(--border)" }}>
+      <div className="shrink-0 space-y-2 border-b p-3" style={{ borderColor: "var(--border)" }}>
+        <label className="flex min-w-0 items-center gap-2 rounded px-2 py-2" style={{ background: "var(--bg-control)", border: "1px solid var(--border)" }}>
+          <Search size={13} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+          <input
+            className="w-full border-0 bg-transparent text-xs outline-none"
+            value={captionSearch}
+            placeholder="Search subtitles"
+            onChange={(event) => setCaptionSearch(event.target.value)}
+            style={{ color: "var(--text-primary)" }}
+          />
+        </label>
+        <details className="brutal-box p-2">
+          <summary className="cursor-pointer text-[10px] font-bold uppercase" style={{ color: "var(--text-primary)" }}>
+            Subtitle timing tools
+          </summary>
+          <div className="mt-2 grid gap-2">
         <div className="flex items-center justify-between gap-2">
           <label className="flex flex-1 items-center gap-2 text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
             <span>Chars per subtitle:</span>
@@ -1316,16 +1371,8 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             </div>
           )}
         </div>
-        <label className="flex min-w-0 items-center gap-2 rounded px-2 py-2" style={{ background: "var(--bg-control)", border: "1px solid var(--border)" }}>
-          <Search size={13} className="shrink-0" style={{ color: "var(--text-muted)" }} />
-          <input
-            className="w-full border-0 bg-transparent text-xs outline-none"
-            value={captionSearch}
-            placeholder="Search subtitles"
-            onChange={(event) => setCaptionSearch(event.target.value)}
-            style={{ color: "var(--text-primary)" }}
-          />
-        </label>
+          </div>
+        </details>
       </div>
 
       {generateError && (
@@ -1337,7 +1384,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
       <div ref={listContainerRef} className="min-h-0 flex-1 overflow-y-auto bg-white text-black">
         {visibleCaptions.length === 0 ? (
           <div className="p-6 text-center text-xs text-neutral-500">
-            No subtitle rows yet.
+            {captions.length > 0 ? "No matching subtitles" : "No subtitle rows yet."}
           </div>
         ) : (
           visibleCaptions.map((caption) => {
@@ -1345,10 +1392,8 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             const timingWarning = validateCaptionTiming(caption);
             const selected = selectedCaptionId === caption.id;
             const playbackActive = activePlaybackChunkId === caption.id;
-            const combinedActive = selected && playbackActive;
-            const isEditingRow = editingCaptionId === caption.id;
-            const playbackWordIndex = playbackActive ? activePlaybackWordIndex ?? -1 : -1;
-            const tokens = tokenizeCaptionForDisplay(caption);
+            const canMerge = Array.from(selectedIds).length > 1 || sortedCaptions.findIndex((candidate) => candidate.id === caption.id) > 0;
+            const duration = Math.max(0, caption.end - caption.start);
             return (
               <div
                 key={caption.id}
@@ -1360,92 +1405,90 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
                     delete rowRefs.current[caption.id];
                   }
                 }}
-                className="grid cursor-pointer grid-cols-[82px_1fr_82px] items-start gap-2 border-b px-3 py-2 text-xs"
+                className="grid cursor-pointer gap-2 border-b px-3 py-2 text-xs"
                 style={{
-                  background: combinedActive ? "#FFEAB2" : selected ? "#FFF7C7" : playbackActive ? "#EAF4FF" : "#FFFFFF",
-                  borderColor: "#ECECEC",
-                  boxShadow: playbackActive ? "inset 3px 0 0 #2B6CB0" : undefined,
+                  gridTemplateColumns: "1fr auto",
+                  background: playbackActive ? "#F2E8FF" : selected ? "#FFF7C7" : "#FFFFFF",
+                  borderColor: playbackActive ? "#A855F7" : "#ECECEC",
+                  boxShadow: playbackActive ? "inset 4px 0 0 #A855F7" : selected ? "inset 4px 0 0 #F5B21A" : undefined,
                 }}
                 onClick={() => handleRowSelect(caption.id, caption.start)}
               >
-                <input
-                  key={`${caption.id}-start-${caption.start}`}
-                  className="w-full border-0 bg-transparent font-mono text-[11px] outline-none"
-                  defaultValue={formatSubtitleTime(caption.start)}
-                  disabled={locked}
-                  onClick={(event) => event.stopPropagation()}
-                  onBlur={(event) => updateCaptionTime(caption.id, "start", event.target.value)}
-                  title="Start time"
-                />
-                <div className="flex items-start gap-2">
-                  {isEditingRow ? (
-                    <textarea
-                      className="min-h-8 flex-1 resize-y border-0 bg-transparent px-1 py-0 text-sm leading-relaxed outline-none disabled:opacity-60"
-                      value={caption.text}
-                      disabled={locked}
-                      onClick={(event) => event.stopPropagation()}
-                      onFocus={() => {
-                        setEditingCaptionId(caption.id);
-                      }}
-                      onBlur={() => {
-                        setEditingCaptionId((current) => (current === caption.id ? null : current));
-                      }}
-                      onChange={(event) => updateCaptionText(caption.id, event.target.value)}
-                      placeholder="Subtitle text"
-                    />
-                  ) : (
-                    <div
-                      className="min-h-8 flex-1 px-1 py-0.5 text-sm leading-relaxed"
-                      style={{ color: "#111111" }}
-                      title={locked ? undefined : "Double-click to edit subtitle text"}
-                      onDoubleClick={(event) => {
-                        if (locked) return;
-                        event.stopPropagation();
-                        if (!selected) {
-                          handleRowSelect(caption.id, caption.start);
-                        }
-                        setEditingCaptionId(caption.id);
-                      }}
-                    >
-                      {tokens.length === 0 ? (
-                        <span style={{ color: "#8A8A8A" }}>Subtitle text</span>
-                      ) : (
-                        tokens.map((token, tokenIndex) => {
-                          const wordActive = playbackActive && tokenIndex === playbackWordIndex;
-                          return (
-                            <span
-                              key={`${caption.id}-token-${tokenIndex}`}
-                              style={{
-                                display: "inline-block",
-                                borderRadius: 4,
-                                padding: wordActive ? "0 2px" : "0",
-                                background: wordActive ? "#FFE79A" : "transparent",
-                                boxShadow: wordActive ? "inset 0 -1px 0 rgba(0,0,0,0.2)" : "none",
-                              }}
-                            >
-                              {token}
-                              {shouldAppendSpace(tokens, tokenIndex) ? " " : ""}
-                            </span>
-                          );
-                        })
-                      )}
+                <div className="min-w-0 space-y-2">
+                  <textarea
+                    className="min-h-16 w-full resize-y rounded border px-2 py-1 text-sm leading-relaxed outline-none disabled:opacity-60"
+                    style={{ borderColor: playbackActive ? "#A855F7" : "#D9D9D9", background: "#FFFFFF", color: "#111111" }}
+                    value={caption.text}
+                    disabled={locked}
+                    onClick={(event) => event.stopPropagation()}
+                    onFocus={() => {
+                      setEditingCaptionId(caption.id);
+                      handleRowSelect(caption.id, caption.start);
+                    }}
+                    onBlur={() => {
+                      setEditingCaptionId((current) => (current === caption.id ? null : current));
+                    }}
+                    onChange={(event) => updateCaptionText(caption.id, event.target.value)}
+                    placeholder="Subtitle text"
+                  />
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="grid gap-1 text-[10px] font-semibold uppercase text-neutral-500">
+                      Start
+                      <input
+                        key={`${caption.id}-start-${caption.start}`}
+                        className="rounded border border-neutral-300 bg-white px-1 py-1 font-mono text-[11px] text-neutral-900 outline-none"
+                        defaultValue={formatSubtitleTime(caption.start)}
+                        disabled={locked}
+                        onClick={(event) => event.stopPropagation()}
+                        onFocus={() => setEditingCaptionId(caption.id)}
+                        onBlur={(event) => {
+                          updateCaptionTime(caption.id, "start", event.target.value);
+                          setEditingCaptionId((current) => (current === caption.id ? null : current));
+                        }}
+                        title="Start time"
+                      />
+                    </label>
+                    <label className="grid gap-1 text-[10px] font-semibold uppercase text-neutral-500">
+                      End
+                      <input
+                        key={`${caption.id}-end-${caption.end}`}
+                        className="rounded border border-neutral-300 bg-white px-1 py-1 font-mono text-[11px] text-neutral-900 outline-none"
+                        defaultValue={formatSubtitleTime(caption.end)}
+                        disabled={locked}
+                        onClick={(event) => event.stopPropagation()}
+                        onFocus={() => setEditingCaptionId(caption.id)}
+                        onBlur={(event) => {
+                          updateCaptionTime(caption.id, "end", event.target.value);
+                          setEditingCaptionId((current) => (current === caption.id ? null : current));
+                        }}
+                        title="End time"
+                      />
+                    </label>
+                    <div className="grid gap-1 text-[10px] font-semibold uppercase text-neutral-500">
+                      Duration
+                      <div className="rounded border border-neutral-200 bg-neutral-50 px-1 py-1 font-mono text-[11px] text-neutral-700">
+                        {duration.toFixed(2)}s
+                      </div>
+                    </div>
+                  </div>
+                  {(caption.timingNeedsReview || timingWarning) && (
+                    <div className="flex items-center gap-1 text-[11px] text-amber-600" title={timingWarning || caption.timingWarning || "Needs review"}>
+                      <AlertTriangle size={13} />
+                      <span className="truncate">{timingWarning || caption.timingWarning || "Needs review"}</span>
                     </div>
                   )}
-                  {(caption.timingNeedsReview || timingWarning) && (
-                    <span className="mt-1 shrink-0 text-amber-500" title={timingWarning || caption.timingWarning || "Needs review"}>
-                      <AlertTriangle size={14} />
-                    </span>
-                  )}
                 </div>
-                <input
-                  key={`${caption.id}-end-${caption.end}`}
-                  className="w-full border-0 bg-transparent text-right font-mono text-[11px] outline-none"
-                  defaultValue={formatSubtitleTime(caption.end)}
-                  disabled={locked}
-                  onClick={(event) => event.stopPropagation()}
-                  onBlur={(event) => updateCaptionTime(caption.id, "end", event.target.value)}
-                  title="End time"
-                />
+                <div className="flex w-8 flex-col items-center gap-1">
+                  <button className="icon-button" type="button" title="Split subtitle" disabled={locked || duration <= 0.2} onClick={(event) => { event.stopPropagation(); handleSplitCaption(caption); }}>
+                    <Scissors size={13} />
+                  </button>
+                  <button className="icon-button" type="button" title="Merge subtitle" disabled={locked || !canMerge} onClick={(event) => { event.stopPropagation(); handleMergeCaption(caption); }}>
+                    <Combine size={13} />
+                  </button>
+                  <button className="icon-button" type="button" title="Delete subtitle" disabled={locked} onClick={(event) => { event.stopPropagation(); handleDeleteCaption(caption.id); }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               </div>
             );
           })
@@ -1463,7 +1506,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
 
   return (
     <>
-      {flow === "setup" && captions.length === 0 ? setupPanel : flow === "setup" ? setupPanel : listPanel}
+      {captions.length === 0 && flow === "setup" ? setupPanel : listPanel}
       <ConfirmDialog
         open={showResetDialog}
         title="Reset all subtitles?"

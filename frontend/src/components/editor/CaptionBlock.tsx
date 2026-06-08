@@ -133,7 +133,7 @@ export default function CaptionBlock({ caption, track }: Props) {
       onClick={(event) => {
         event.stopPropagation();
         selectCaption(caption.id, event.ctrlKey || event.metaKey);
-        setRightPanelTab("effect-controls");
+        setRightPanelTab("caption-editor");
       }}
       onDoubleClick={() => {
         if (!track.locked) setEditingId(caption.id);
