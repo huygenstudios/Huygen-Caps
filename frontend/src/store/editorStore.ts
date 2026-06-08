@@ -1,6 +1,7 @@
 /* Editor Store — global editor state */
 
 import { create } from "zustand";
+import { getGoldenRatioEditorialDefaults } from "@/lib/captionGoldenRatio";
 import { DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG, normalizeCaptionStyleConfig } from "@/lib/captionStyleConfig";
 import { getCaptionPreset } from "@/lib/captionStylePresets";
 import { DEFAULT_CAPTION_CHUNKING_CONFIG, DEFAULT_CAPTION_TIMING_CONFIG } from "@/lib/captionUtils";
@@ -123,7 +124,10 @@ export const useEditorStore = create<EditorState>((set) => ({
     set((state) => {
       recordProjectHistory("Caption style preset");
       const preset = getCaptionPreset(presetId);
-      const captionStyleConfig = normalizeCaptionStyleConfig(preset.defaultStyleConfig);
+      const captionStyleConfig =
+        presetId === "modern_minimalist_lockup"
+          ? getGoldenRatioEditorialDefaults(state.sequenceSettings.width, state.sequenceSettings.height)
+          : normalizeCaptionStyleConfig(preset.defaultStyleConfig);
       const captionChunkingConfig =
         presetId === "modern_minimalist_lockup"
           ? state.captionChunkingConfig
@@ -169,7 +173,10 @@ export const useEditorStore = create<EditorState>((set) => ({
     set((state) => {
       recordProjectHistory("Reset caption style");
       const preset = getCaptionPreset(presetId || (state.theme as CaptionStylePresetId) || "word_highlight_box");
-      const captionStyleConfig = normalizeCaptionStyleConfig(preset.defaultStyleConfig);
+      const captionStyleConfig =
+        preset.id === "modern_minimalist_lockup"
+          ? getGoldenRatioEditorialDefaults(state.sequenceSettings.width, state.sequenceSettings.height)
+          : normalizeCaptionStyleConfig(preset.defaultStyleConfig);
       return {
         captionStyleConfig,
         theme: preset.id,

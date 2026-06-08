@@ -147,7 +147,7 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   fontFamily: "Inter",
   bigFontFamily: "Inter",
   smallFontFamily: "Inter",
-  fontSize: 112,
+  fontSize: 64,
   fontWeight: 900,
   textColor: "#FFFFFF",
   activeWordColor: "#FFFFFF",
@@ -155,7 +155,7 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   backgroundOpacity: 0,
   backgroundShadow: false,
   backgroundBorderEnabled: false,
-  lineHeight: 0.95,
+  lineHeight: 1.14,
   textTransform: "none",
   textShadowEnabled: false,
   textStrokeEnabled: false,
@@ -173,7 +173,7 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   entranceAnimation: "slide",
   safeAreaEnabled: true,
   positionX: 50,
-  positionY: 50,
+  positionY: 61.8,
   scale: 1,
   rotation: 0,
   opacity: 1,
@@ -182,14 +182,14 @@ export const MODERN_MINIMALIST_BASE_CONFIG: CaptionStyleConfig = {
   maxLines: 2,
   asymmetricScaleEnabled: false,
   asymmetricScaleStrength: 0,
-  bigFontSizePx: BUILD_BIG_FONT_SIZE_PX,
-  smallFontSizePx: BUILD_SMALL_FONT_SIZE_PX,
+  bigFontSizePx: 64,
+  smallFontSizePx: 40,
   anchorSizeMultiplier: 1.55,
   supportSizeMultiplier: 0.28,
   layoutMode: "auto",
   layoutAsymmetry: 0.45,
   layoutSafeMarginPercent: 8,
-  collisionPadding: 8,
+  collisionPadding: 13,
   showBuildWordBounds: false,
   tightness: 0.75,
   hardCutReveal: false,
@@ -306,7 +306,7 @@ export function normalizeCaptionStyleConfig(
     wordEffect === "highlight" && !raw?.activeWordBackgroundColor ? activeWordColor : merged.activeWordBackgroundColor,
     defaults.activeWordBackgroundColor
   );
-  const bigFontSizePx = clamp(merged.bigFontSizePx, 80, 400, defaults.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX);
+  const bigFontSizePx = clamp(merged.bigFontSizePx, 42, 400, defaults.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX);
   const smallFontSizePx = Math.min(
     bigFontSizePx,
     clamp(merged.smallFontSizePx, 20, 160, defaults.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX)

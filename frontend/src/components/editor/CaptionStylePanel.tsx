@@ -4,8 +4,8 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Palette, RotateCcw } from "lucide-react";
 import { alignedWordsToCaptions, captionsToTranscriptSegments, getAlignedWordsFromSegments, segmentsToCaptions } from "@/lib/captionUtils";
 import { validateCaptionCoverage } from "@/lib/captionCoverage";
-import { BUILD_BIG_FONT_SIZE_PX, BUILD_SMALL_FONT_SIZE_PX, CREATOR_FONTS, DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG } from "@/lib/captionStyleConfig";
-import { CAPTION_PRESET_LIST, PRESET_CAPABILITIES, getCaptionStylePreset } from "@/lib/captionStylePresets";
+import { BUILD_BIG_FONT_SIZE_PX, BUILD_SMALL_FONT_SIZE_PX, CREATOR_FONTS } from "@/lib/captionStyleConfig";
+import { CAPTION_PRESET_LIST, PRESET_CAPABILITIES } from "@/lib/captionStylePresets";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
 import { CaptionAlignment, CaptionEntranceAnimation, CaptionStyleConfig, CaptionStylePresetId, CaptionWordAnimation } from "@/lib/types";
 import { useCaptionStore } from "@/store/captionStore";
@@ -480,6 +480,11 @@ export default function CaptionStylePanel() {
               </button>
             ))}
           </div>
+          {isBuildPreset && (
+            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              Golden Ratio defaults: balanced size + lower-golden placement
+            </div>
+          )}
         </Section>
 
         <Section title="Text">
@@ -514,7 +519,20 @@ export default function CaptionStylePanel() {
 
           {capabilities.maxLines && (
             <>
-              <SliderControl disabled={locked} label="Font size" value={captionStyleConfig.fontSize} min={8} max={120} onChange={(fontSize) => update({ fontSize })} />
+              <SliderControl
+                disabled={locked}
+                label="Font size"
+                value={captionStyleConfig.fontSize}
+                min={isBuildPreset ? 42 : 8}
+                max={120}
+                onChange={(fontSize) =>
+                  update(
+                    isBuildPreset
+                      ? { fontSize, bigFontSizePx: fontSize, smallFontSizePx: Math.round(fontSize / 1.61803398875) }
+                      : { fontSize }
+                  )
+                }
+              />
               <SliderControl disabled={locked} label="Line height" value={captionStyleConfig.lineHeight} min={0.9} max={1.6} step={0.05} suffix="x" onChange={(lineHeight) => update({ lineHeight })} />
               <div className="grid gap-2">
                 <span className="text-[11px]" style={{ color: "var(--text-muted)" }} title="Controls how many lines subtitles can use. 1 line keeps captions on one line by shortening chunks. 2 lines is best for reels. Auto lets the app decide.">
@@ -709,7 +727,7 @@ export default function CaptionStylePanel() {
             </Section>
 
             <Section title="Build Font Sizes">
-              <SliderControl disabled={locked} label="Big word size" value={captionStyleConfig.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX} min={80} max={400} step={1} suffix="px" onChange={(bigFontSizePx) => update({ bigFontSizePx })} />
+              <SliderControl disabled={locked} label="Big word size" value={captionStyleConfig.bigFontSizePx || BUILD_BIG_FONT_SIZE_PX} min={42} max={400} step={1} suffix="px" onChange={(bigFontSizePx) => update({ bigFontSizePx })} />
               <SliderControl disabled={locked} label="Small word size" value={captionStyleConfig.smallFontSizePx || BUILD_SMALL_FONT_SIZE_PX} min={20} max={160} step={1} suffix="px" onChange={(smallFontSizePx) => update({ smallFontSizePx })} />
             </Section>
 
@@ -780,7 +798,14 @@ export default function CaptionStylePanel() {
           </div>
         </details>
 
-        <button className="btn-ghost w-full" disabled={locked} onClick={() => update(getCaptionStylePreset(activePresetId) || DEFAULT_WORD_HIGHLIGHT_BOX_CONFIG)}>
+        <button
+          className="btn-ghost w-full"
+          disabled={locked}
+          onClick={() => {
+            resetCaptionStyleConfig(activePresetId);
+            setThemeForAll(activePresetId);
+          }}
+        >
           Reset Defaults
         </button>
       </div>
