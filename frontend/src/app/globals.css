@@ -1395,7 +1395,7 @@ input[type="checkbox"] {
 
 .caption-block.lang-en { background: var(--caption-en); }
 .caption-block.lang-hinglish { background: var(--caption-hing); }
-.caption-block.lang-telgish { background: var(--caption-tel); }
+.caption-block.lang-tenglish { background: var(--caption-tel); }
 .caption-block.lang-auto { background: var(--accent-purple); }
 
 .playhead-line {

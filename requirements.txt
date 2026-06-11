@@ -17,3 +17,10 @@ python-multipart
 aiofiles
 python-dotenv
 playwright
+
+# === External Storage ===
+boto3
+
+# === Auth & Telemetry ===
+PyJWT
+httpx

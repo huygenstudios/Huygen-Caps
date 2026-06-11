@@ -10,13 +10,18 @@ services:
     environment:
       NODE_ENV: production
       PORT: 10000
-      TEMP_DIR: /tmp/huygen-caps
-      UPLOAD_DIR: /tmp/huygen-caps/uploads
-      EXPORT_DIR: /tmp/huygen-caps/exports
-      DB_PATH: /tmp/huygen-caps/database.sqlite
+      TEMP_DIR: /data/tmp
+      UPLOAD_DIR: /data/uploads
+      EXPORT_DIR: /data/exports
+      DB_PATH: /data/database.sqlite
+    volumes:
+      - huygen_data:/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:10000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
+
+volumes:
+  huygen_data:

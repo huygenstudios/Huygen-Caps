@@ -4,11 +4,12 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileText, Film, Loader2, Save, X } from "lucide-react";
-import { getExportJobStatus, resolveBackendUrl, startHeadlessExportJob } from "@/lib/api";
+import { getExportJobStatus, resolveBackendUrl, startHeadlessExportJob, retryExportJob } from "@/lib/api";
 import { captionBelongsOnTrack, determineExportDuration, normalizeClipTransform, resolveExportDimensions, resolveExportFps } from "@/lib/editorModel";
 import { applyCaptionTimingOffset, downloadFile } from "@/lib/captionUtils";
 import { ExportDurationSource, ExportFormat, ExportFrameRate, ExportQualityPreset, ExportResolutionPreset, MediaFile, ProjectData, TimelineTrack } from "@/lib/types";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
+import { usePersistentJobs } from "@/hooks/usePersistentJobs";
 import { useCaptionStore } from "@/store/captionStore";
 import { useEditorStore } from "@/store/editorStore";
 import { useTimelineStore } from "@/store/timelineStore";
@@ -259,6 +260,8 @@ export default function ExportModal() {
   const [exportError, setExportError] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadName, setDownloadName] = useState("");
+  const { jobState, updateJobState } = usePersistentJobs();
+  const currentExportJobId = jobState.activeExportJobId || jobState.lastExportJobId || "";
   const [selectedExportType, setSelectedExportType] = useState<SelectedExportType>(
     exportSettings.mode === "captions_only" ? "mp4_captions_only" : "mp4_full_video"
   );
@@ -312,8 +315,29 @@ export default function ExportModal() {
       if (downloadUrl.startsWith("blob:")) URL.revokeObjectURL(downloadUrl);
       setDownloadUrl("");
       setDownloadName("");
+    } else {
+      // Re-hydrate state if modal opens and we have an active or completed job
+      if (jobState.activeExportJobId) {
+        setExporting(true);
+        setExportStatus("Exporting in background...");
+        pollExportStatus(jobState.activeExportJobId, exportSettings.format, exportSettings.mode);
+      } else if (jobState.lastKnownExportStatus === "completed" && jobState.lastExportJobId && !downloadUrl) {
+        // Fetch to get the download URL since we don't store it globally
+        getExportJobStatus(jobState.lastExportJobId).then(status => {
+          if (status.status === "completed" && status.downloadUrl) {
+            setDownloadUrl(resolveBackendUrl(toAttachmentDownloadUrl(status.downloadUrl)));
+            setDownloadName(status.filename || `huygen_caps_${exportSettings.mode}_${exportSettings.width}x${exportSettings.height}_${exportSettings.fps}fps.mp4`);
+            setExportStatus("Export complete. MP4 is ready to download.");
+            setExportPercent(100);
+            setExporting(false);
+          }
+        }).catch(err => console.warn("Failed to fetch completed job URL", err));
+      } else if (jobState.lastKnownExportStatus === "failed") {
+        setExportError(jobState.lastError || "Export failed in background");
+      }
     }
-  }, [downloadUrl, showExportModal]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showExportModal, jobState.activeExportJobId, jobState.lastKnownExportStatus, jobState.lastExportJobId]); // removed downloadUrl from deps to avoid loop
 
   if (!showExportModal) return null;
 
@@ -367,6 +391,68 @@ export default function ExportModal() {
         includeAudio: false,
         backgroundColor: normalizeHexInput(exportSettings.backgroundColor) || "#00ff00",
       });
+    }
+  };
+
+
+  const pollExportStatus = async (exportJobId: string, format: ExportFormat, mp4Mode: string) => {
+      let missedPolls = 0;
+      while (!pollCancelledRef.current) {
+        await wait(1500);
+        try {
+          const status = await getExportJobStatus(exportJobId);
+          missedPolls = 0;
+          const nextPercent = Math.max(0, Math.min(100, status.progress || 0));
+          setExportPercent(nextPercent);
+          setExportStatus(status.message || status.stage || status.status);
+
+          if (status.status === "completed") {
+            if (!status.downloadUrl) {
+              throw new Error("Export completed but did not return a download URL.");
+            }
+            setDownloadUrl(resolveBackendUrl(toAttachmentDownloadUrl(status.downloadUrl)));
+            setDownloadName(status.filename || `huygen_caps_${mp4Mode}_${exportDimensions.width}x${exportDimensions.height}_${requestExportFps}fps.mp4`);
+            setExportStatus("Export complete. MP4 is ready to download.");
+            setExportPercent(100);
+            setExporting(false);
+            return;
+          }
+
+          if (status.status === "failed") {
+            pollCancelledRef.current = true;
+            setExportError(formatExportError(`Export failed during ${status.stage}: ${status.error || status.message || "backend export failed"}`));
+            setExportStatus("Export failed");
+            setExportPercent(-1);
+            setExporting(false);
+            return;
+          }
+        } catch (pollError) {
+          missedPolls += 1;
+          if (missedPolls >= 5) {
+            throw pollError;
+          }
+          setExportStatus("Waiting for backend export status...");
+        }
+      }
+  };
+
+  const handleRetry = async () => {
+    if (!currentExportJobId) return;
+    setExportError("");
+    setExportStatus("Retrying export...");
+    setExportPercent(0);
+    setExporting(true);
+    pollCancelledRef.current = false;
+    
+    try {
+      await retryExportJob(currentExportJobId);
+      await pollExportStatus(currentExportJobId, selectedOption.format, selectedMp4Mode);
+    } catch (err: unknown) {
+      pollCancelledRef.current = true;
+      setExportError(formatExportError(err));
+      setExportStatus("Export failed");
+      setExportPercent(-1);
+      setExporting(false);
     }
   };
 
@@ -542,44 +628,8 @@ export default function ExportModal() {
       );
       setExportStatus(started.message || "Export started...");
 
-      let missedPolls = 0;
-      while (!pollCancelledRef.current) {
-        await wait(1500);
-        try {
-          const status = await getExportJobStatus(started.statusUrl || started.jobId);
-          missedPolls = 0;
-          const nextPercent = Math.max(0, Math.min(100, status.progress || 0));
-          setExportPercent(nextPercent);
-          setExportStatus(status.message || status.stage || status.status);
-
-          if (status.status === "completed") {
-            if (!status.downloadUrl) {
-              throw new Error("Export completed but did not return a download URL.");
-            }
-            setDownloadUrl(resolveBackendUrl(toAttachmentDownloadUrl(status.downloadUrl)));
-            setDownloadName(status.filename || `huygen_caps_${mp4Mode}_${exportDimensions.width}x${exportDimensions.height}_${requestExportFps}fps.mp4`);
-            setExportStatus("Export complete. MP4 is ready to download.");
-            setExportPercent(100);
-            setExporting(false);
-            return;
-          }
-
-          if (status.status === "failed") {
-            pollCancelledRef.current = true;
-            setExportError(formatExportError(`Export failed during ${status.stage}: ${status.error || status.message || "backend export failed"}`));
-            setExportStatus("Export failed");
-            setExportPercent(-1);
-            setExporting(false);
-            return;
-          }
-        } catch (pollError) {
-          missedPolls += 1;
-          if (missedPolls >= 5) {
-            throw pollError;
-          }
-          setExportStatus("Waiting for backend export status...");
-        }
-      }
+      updateJobState({ activeExportJobId: started.jobId, lastKnownExportStatus: "queued", lastError: null });
+      await pollExportStatus(started.jobId, format, mp4Mode);
     } catch (err: unknown) {
       pollCancelledRef.current = true;
       setExportError(formatExportError(err));
@@ -743,7 +793,10 @@ export default function ExportModal() {
           ) : exportError ? (
             <div className="editor-notice error flex items-center justify-between gap-3">
               <span className="max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-words">{exportError}</span>
-              <button onClick={() => setExportError("")}>Clear</button>
+              <div className="flex gap-2 shrink-0">
+                {currentExportJobId && <button onClick={handleRetry} className="btn-secondary px-2 py-1">Retry</button>}
+                <button onClick={() => setExportError("")}>Clear</button>
+              </div>
             </div>
           ) : exporting ? (
             <div className="grid gap-2">

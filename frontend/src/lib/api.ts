@@ -1,4 +1,5 @@
 /* API client for Huygen Caps backend */
+import { supabase } from "./supabaseClient";
 
 import type { Language, JobResponse } from "@/lib/types";
 
@@ -35,6 +36,60 @@ export interface UploadJobResponse {
   target_lang: string;
   languageMode: Language;
   video_url?: string;
+}
+
+export async function getUserUsage(): Promise<{
+  authenticated: boolean;
+  user_id?: string;
+  plan_key: string;
+  generation_minutes_used: number;
+  generation_minutes_limit: number;
+  remaining_minutes: number;
+  exports_today: number;
+  exports_per_day: number;
+  remaining_exports: number;
+}> {
+  return apiFetch('/api/user/usage');
+}
+
+export async function getBillingPlans(): Promise<{
+  billing_enabled: boolean;
+  current_plan: string;
+  plans: Array<{
+    plan_key: string;
+    generation_minutes_monthly: number;
+    exports_per_day: number;
+    max_upload_duration_sec: number;
+    watermark_required: number;
+    hd_export_allowed: number;
+    retention_hours: number;
+  }>;
+}> {
+  return apiFetch('/api/billing/plans');
+}
+
+export async function getBillingMe(): Promise<{
+  authenticated: boolean;
+  billing_enabled: boolean;
+  current_plan?: string;
+  subscription_status?: string;
+  current_period_end?: string;
+  entitlements?: Record<string, unknown>;
+}> {
+  return apiFetch('/api/billing/me');
+}
+
+export async function createCheckout(planKey: string): Promise<{
+  razorpay_subscription_id: string;
+  short_url?: string;
+  razorpay_key_id: string;
+  plan_key: string;
+}> {
+  return apiFetch('/api/billing/checkout', {
+    method: 'POST',
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan_key: planKey }),
+  });
 }
 
 export interface ExportMp4Response {
@@ -219,6 +274,17 @@ async function readError(res: Response) {
   return { message, details: payload };
 }
 
+export function getAnonymousSessionId(): string {
+  if (typeof window === "undefined") return "anon_" + Math.random().toString(36).slice(2);
+
+  let sessionId = localStorage.getItem("capinsta_anon_session");
+  if (!sessionId) {
+    sessionId = "anon_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem("capinsta_anon_session", sessionId);
+  }
+  return sessionId;
+}
+
 async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
@@ -237,8 +303,24 @@ async function apiFetch<T>(
   }
 
   try {
+    const headers = new Headers(options.headers || {});
+    
+    // Add Anonymous Session ID
+    if (!headers.has("X-Anonymous-Session")) {
+      headers.set("X-Anonymous-Session", getAnonymousSessionId());
+    }
+
+    // Add Supabase Auth JWT if logged in
+    if (supabase) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token && !headers.has("Authorization")) {
+        headers.set("Authorization", `Bearer ${session.access_token}`);
+      }
+    }
+
     const res = await fetch(apiUrl(path), {
       ...options,
+      headers,
       signal: controller.signal,
     });
 
@@ -503,4 +585,45 @@ export async function getExportJobStatus(exportJobIdOrStatusUrl: string): Promis
     ? exportJobIdOrStatusUrl
     : `/api/export/jobs/${exportJobIdOrStatusUrl}`;
   return apiFetch<ExportJobStatusResponse>(path, {}, 15 * 1000, "json");
+}
+
+export async function retryExportJob(exportJobId: string): Promise<{ success: boolean; message: string }> {
+  return apiFetch<{ success: boolean; message: string }>(
+    `/api/export/jobs/${exportJobId}/retry`,
+    { method: "POST" },
+    15 * 1000,
+    "json"
+  );
+}
+
+export interface SubtitleImportResponse {
+  job_id: string;
+  captions: Partial<import("@/lib/types").Caption>[];
+  transcript: {
+    segments: import("@/lib/types").AlignedSegment[];
+    alignedWords?: import("@/lib/types").AlignedWord[];
+    metadata?: Record<string, unknown>;
+  };
+  report: {
+    caption_count: number;
+    format: string;
+    skipped_blocks?: number;
+    [key: string]: unknown;
+  };
+}
+
+export async function importSubtitleFile(
+  file: File,
+  languageMode: string,
+  scriptMode: string
+): Promise<SubtitleImportResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("languageMode", languageMode);
+  formData.append("scriptMode", scriptMode);
+
+  return apiFetch("/api/subtitles/import", {
+    method: "POST",
+    body: formData,
+  });
 }

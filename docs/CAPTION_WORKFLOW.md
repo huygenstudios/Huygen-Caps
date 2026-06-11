@@ -23,7 +23,7 @@ The setup panel exposes only the settings needed before generation:
 - Auto Subtitle
 - Cancel while a generation job is running
 
-Original language maps into the existing backend language modes. Telugu output uses the Telgish/Teluglish Roman caption mode, Hindi output uses Hinglish, and Auto Detect/Auto Mixed Indian uses the code-mixed mode.
+Original language maps into the existing backend language modes. Telugu output uses the Tenglish Roman caption mode, Hindi output uses Hinglish, and Auto Detect/Auto Mixed Indian uses the code-mixed mode.
 
 ## Subtitle Rows
 

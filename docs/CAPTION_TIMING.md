@@ -137,4 +137,4 @@ FFmpeg/FFprobe are required. WhisperX, stable-ts, and Silero are not installed b
 
 ## Known Limitations
 
-Hinglish, Telgish, and Auto Mixed Indian may use provider word timings when forced alignment cannot reliably map Romanized display text back to the spoken language. In that case, the app preserves the provider timing and marks any fallback words as `estimated` instead of pretending they are aligned.
+Hinglish, Tenglish, and Auto Mixed Indian may use provider word timings when forced alignment cannot reliably map Romanized display text back to the spoken language. In that case, the app preserves the provider timing and marks any fallback words as `estimated` instead of pretending they are aligned.

@@ -6,7 +6,7 @@ import { useTimelineStore } from "@/store/timelineStore";
 const MEDIA_ACCEPT = "video/*,audio/*,image/png,image/jpeg,image/webp";
 
 function addBaseVideoIfNeeded(mediaFile: MediaFile) {
-  if (mediaFile.type !== "video") return;
+  if (mediaFile.type === "image") return;
 
   const timelineStore = useTimelineStore.getState();
   if (timelineStore.tracks.length === 0) {
@@ -14,12 +14,31 @@ function addBaseVideoIfNeeded(mediaFile: MediaFile) {
   }
 
   const latestTracks = useTimelineStore.getState().tracks;
+  usePlaybackStore.getState().setDuration(mediaFile.duration);
+
+  if (mediaFile.type === "audio") {
+    const hasLinkedAudioClip = latestTracks.some(
+      (track) => track.type === "audio" && (track.clips || []).some((clip) => clip.mediaId === mediaFile.id)
+    );
+    if (!hasLinkedAudioClip && latestTracks.some((track) => track.id === "a1" && !track.locked)) {
+      timelineStore.addClip("a1", {
+        type: "audio",
+        mediaId: mediaFile.id,
+        start: 0,
+        end: mediaFile.duration || 5,
+        visible: true,
+        volume: 1,
+        muted: false,
+      });
+    }
+    return;
+  }
+
+  // video
   const hasVideoClip = latestTracks.some((track) => (track.clips || []).some((clip) => clip.type === "video"));
   const hasLinkedAudioClip = latestTracks.some(
     (track) => track.type === "audio" && (track.clips || []).some((clip) => clip.mediaId === mediaFile.id)
   );
-
-  usePlaybackStore.getState().setDuration(mediaFile.duration);
 
   if (!hasVideoClip) {
     timelineStore.ensureBaseVideoClip(mediaFile, { notify: false });

@@ -28,7 +28,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
@@ -36,7 +36,7 @@ import shutil
 
 # These imports will trigger ai_pipeline logic
 from .database import init_db
-from .api import captions, health, jobs, export_jobs
+from .api import captions, health, jobs, export_jobs, subtitles, user, billing
 from .settings import cleanup_old_runtime_files, ensure_runtime_dirs, env_list, frontend_dist_available, FRONTEND_DIST_DIR, EXPORT_DIR
 
 logger = logging.getLogger(__name__)
@@ -144,6 +144,9 @@ app.include_router(health.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(export_jobs.router, prefix="/api")
 app.include_router(captions.router, prefix="/api")
+app.include_router(subtitles.router, prefix="/api")
+app.include_router(user.router, prefix="/api")
+app.include_router(billing.router, prefix="/api")
 
 
 @app.get("/health", response_model=health.HealthResponse)
@@ -161,6 +164,10 @@ async def root_timing_health_check():
     return health.timing_health_payload()
 
 
+@app.get("/api")
+async def api_root():
+    return {"status": "ok", "service": "capinsta-api", "health": "/api/health"}
+
 ensure_runtime_dirs()
 app.mount("/exports", StaticFiles(directory=str(EXPORT_DIR)), name="exports")
 
@@ -172,7 +179,28 @@ if frontend_dist_available():
         app.mount("/_next/static", StaticFiles(directory=str(next_static_dir), html=False), name="next-static")
     if brand_static_dir.exists():
         app.mount("/brand", StaticFiles(directory=str(brand_static_dir), html=False), name="brand-static")
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True), name="frontend")
+    
+    # Serve Next.js exported static files explicitly
+    frontend_files = StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True)
+    app.mount("/", frontend_files, name="frontend")
+
+    @app.exception_handler(404)
+    async def not_found_spa_fallback(request: Request, exc: Exception):
+        # Allow API routes to return 404 naturally
+        if request.url.path.startswith("/api/") or request.url.path == "/api":
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        
+        # Check if the exact requested path exists as a .html file
+        path = request.url.path.strip("/")
+        html_path = FRONTEND_DIST_DIR / f"{path}.html"
+        if html_path.exists():
+            return FileResponse(html_path)
+        
+        # Fallback to Next.js 404 page
+        not_found_path = FRONTEND_DIST_DIR / "404.html"
+        if not_found_path.exists():
+            return FileResponse(not_found_path, status_code=404)
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 # Local dev can still run the Next.js app separately on port 3000.
 # Production Docker builds frontend/out and serves it from this FastAPI app.

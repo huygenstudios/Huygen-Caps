@@ -97,15 +97,24 @@ CONFIDENCE_HINGLISH      = 0.72
 MAX_WORD_DIFF_RATIO      = 0.40
 
 # -- Whisper Prompt Injection --
+# These prompts bias Whisper toward code-mixed vocabulary.
+# tenglish replaces the old "telgish" key; old key kept for backward compat.
 WHISPER_PROMPTS = {
+    "english":  "",
     "hindi":    "bahut, nahi, kya, kaise, phir, toh, aur, lekin, business, margin",
     "hinglish": "bahut achha, nahi yaar, kya kar rahe, phir bhi, toh theek hai",
-    "telgish":  "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
+    "telugu":   "nenu, meeru, cheppandi, vellanu, unnanu",
+    # Tenglish (was: telgish) — Telugu/Telugu-English in Roman letters
+    "tenglish": "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
     "auto_mixed_indian": "nenu today client call lo cheppanu, main kal client se baat ki, budget high undi but design premium ga undali",
-    "english":  "",
-    "hi":       "bahut, nahi, kya, kaise, phir, toh, aur, lekin, business, margin",
-    "en":       "",
-    "te":       "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
+    "auto_indian_mixed": "nenu today client call lo cheppanu, main kal client se baat ki, budget high undi but design premium ga undali",
+    "english_translation": "",  # no prompt — let provider produce English output
+    # Short-code aliases (used by some internal callers)
+    "hi": "bahut, nahi, kya, kaise, phir, toh, aur, lekin, business, margin",
+    "en": "",
+    "te": "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
+    # MIGRATION COMPAT: old "telgish" key still resolved correctly
+    "telgish":  "nenu, meeru, cheppandi, vellanu, unnanu, client call lo, site ki, budget",
 }
 
 # -- Weak Segment Re-Transcription --

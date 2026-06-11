@@ -44,11 +44,11 @@ def _safe_float(value: Any, fallback: float = 0.0) -> float:
 
 def _language_hint(language_mode: str) -> str | None:
     mode = (language_mode or "").lower()
-    if mode in {"english", "en"}:
+    if mode in {"english", "en", "english_translation"}:
         return "en"
     if mode in {"hinglish", "hindi", "hi", "auto_mixed_indian"}:
         return "hi"
-    if mode in {"telgish", "teluglish", "telugu", "te"}:
+    if mode in {"tenglish", "telgish", "teluglish", "telugu", "te"}:
         return "te"
     return None
 

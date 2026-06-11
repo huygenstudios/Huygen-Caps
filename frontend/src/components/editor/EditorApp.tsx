@@ -1,4 +1,5 @@
 /* Huygen Caps - caption-first editor shell */
+/* Huygen Caps - caption-first editor shell */
 
 "use client";
 
@@ -6,6 +7,7 @@ import React, { useEffect, useRef } from "react";
 
 import EditorWorkspaceShell from "@/components/editor/EditorWorkspaceShell";
 import ExportModal from "@/components/editor/ExportModal";
+import JobStatusBanner from "@/components/editor/JobStatusBanner";
 import SequenceSettingsModal from "@/components/editor/SequenceSettingsModal";
 import Toolbar from "@/components/editor/Toolbar";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -79,6 +81,7 @@ export default function EditorApp() {
 
       <ExportModal />
       <SequenceSettingsModal />
+      <JobStatusBanner />
     </div>
   );
 }

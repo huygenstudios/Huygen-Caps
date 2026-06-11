@@ -20,6 +20,10 @@ class HealthResponse(BaseModel):
     dependencies: dict[str, bool | str] = Field(default_factory=dict)
     max_upload_mb: int
     render_page_url: str
+    export_concurrency: int = 1
+    storage_backend: str = "local"
+    razorpay_enabled: bool = False
+    deepgram_enabled: bool = False
     message: str | None = None
 
 def _has_key(name: str) -> bool:
@@ -49,6 +53,10 @@ def health_payload() -> HealthResponse:
         dependencies=deps,
         max_upload_mb=MAX_UPLOAD_SIZE_MB,
         render_page_url=default_render_page_url(),
+        export_concurrency=int(os.getenv("MAX_CONCURRENT_EXPORTS") or os.getenv("EXPORT_CONCURRENCY") or 1),
+        storage_backend=os.getenv("STORAGE_BACKEND", "local").lower(),
+        razorpay_enabled=os.getenv("RAZORPAY_BILLING_ENABLED", "false").lower() == "true",
+        deepgram_enabled=os.getenv("STT_DEEPGRAM_ENABLED", "false").lower() == "true",
         message=" ".join(warnings) if warnings else None,
     )
 

@@ -107,8 +107,8 @@ export default function CaptionBlock({ caption, track }: Props) {
   const langClass =
     caption.lang === "english"
       ? "lang-en"
-      : caption.lang === "telgish"
-      ? "lang-telgish"
+      : caption.lang === "tenglish"
+      ? "lang-tenglish"
       : caption.lang === "auto_mixed_indian"
       ? "lang-auto"
       : "lang-hinglish";

@@ -7,7 +7,7 @@ Supported caption modes:
 - Auto Mixed Indian: Telugu, Hindi, and English mixed naturally in the same sentence, rendered in Roman text
 - English
 - Hinglish
-- Telgish / Teluglish: Telugu or Telugu-English mixed speech rendered in Roman letters, for example `nenu site ki vellanu`
+- Tenglish: Telugu or Telugu-English mixed speech rendered in Roman letters, for example `nenu site ki vellanu`
 
 The app is optimized for Instagram Reels, YouTube Shorts, and TikTok.
 
@@ -42,7 +42,7 @@ The app is optimized for Instagram Reels, YouTube Shorts, and TikTok.
   - `STT_PROVIDER=openai_whisper` with `OPENAI_API_KEY`
   - `STT_PROVIDER=sarvam` with `SARVAM_API_KEY`
 
-Sarvam is recommended for production Telgish/Teluglish because Saaras v3 supports Telugu (`te-IN`), word timestamps, and `translit` Roman output. See the official Sarvam STT docs: https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe
+Sarvam is recommended for production Tenglish because Saaras v3 supports Telugu (`te-IN`), word timestamps, and `translit` Roman output. See the official Sarvam STT docs: https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe
 
 ## Environment
 
@@ -71,6 +71,9 @@ UPLOAD_DIR=/tmp/huygen-caps/uploads
 EXPORT_DIR=/tmp/huygen-caps/exports
 DB_PATH=/tmp/huygen-caps/database.sqlite
 RUNTIME_CLEANUP_HOURS=24
+STORAGE_BACKEND=local
+FREE_UPLOAD_TTL_HOURS=24
+FREE_EXPORT_TTL_HOURS=24
 NEXT_PUBLIC_API_BASE_URL=
 NEXT_PUBLIC_API_URL=
 NEXT_PUBLIC_APP_URL=
@@ -88,7 +91,7 @@ DEFAULT_GLOBAL_CAPTION_OFFSET=0
 FFMPEG_PATH=ffmpeg
 ```
 
-`STT_PROVIDER=auto` chooses Sarvam first for Hinglish, Telgish, and Auto Mixed Indian when `SARVAM_API_KEY` is configured, then OpenAI Whisper, then Groq Whisper. Telgish and Auto Mixed Indian fail clearly if no Telugu-capable provider key is configured.
+`STT_PROVIDER=auto` chooses Sarvam first for Hinglish, Tenglish, and Auto Mixed Indian when `SARVAM_API_KEY` is configured, then OpenAI Whisper, then Groq Whisper. Tenglish and Auto Mixed Indian fail clearly if no Telugu-capable provider key is configured.
 
 ## Install
 
@@ -123,6 +126,14 @@ npm run dev
 ```
 
 Open http://localhost:3000.
+
+## Billing & Subscriptions
+
+Capinsta supports Razorpay subscriptions. To enable:
+1. Set `RAZORPAY_BILLING_ENABLED=true` in `.env`.
+2. Provide your Razorpay keys (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`).
+3. Set your webhook secret and create a webhook in the Razorpay dashboard pointing to `POST /api/billing/razorpay/webhook` with the `subscription.charged`, `subscription.cancelled`, and other relevant events.
+4. Set your plan IDs mapping to `RAZORPAY_PLAN_CREATOR_ID` and `RAZORPAY_PLAN_PRO_ID`.
 
 Health check:
 
@@ -176,12 +187,12 @@ Export diagnostics are available at `/api/health/export` and `/health/export`. T
 
 Timing diagnostics are available at `/api/health/timing` and `/api/captions/jobs/{jobId}/timing-debug`. They report optional alignment provider availability, timing source counts, silence gaps, suspicious word timing, and the pause threshold used for chunking.
 
-Render storage note: Render web service disk is ephemeral unless you add persistent storage. Huygen Caps stores uploads, temporary files, the SQLite job DB, and exports in `/tmp/huygen-caps` for the current running instance. Use S3/R2 or another object store before relying on long-lived uploaded media or exports.
+Render storage note: Render web service disk is ephemeral unless you add persistent storage. Huygen Caps stores uploads, temporary files, the SQLite job DB, and exports in `/tmp/huygen-caps` for the current running instance. You can configure `STORAGE_BACKEND=r2` along with the `R2_*` variables to automatically upload files to Cloudflare R2 / S3. A cleanup script `scripts/cleanup_expired_storage.py` is provided to delete expired uploads and exports (default 24h TTL) from both the database and the active storage backend. Run this on a cron schedule to save space.
 
 ## Generate Test
 
 1. Import an MP4 or MOV.
-2. Select `Auto Mixed Indian`, `English`, `Hinglish`, or `Telgish / Teluglish`.
+2. Select `Auto Mixed Indian`, `English`, `Hinglish`, or `Tenglish`.
 3. Click `Generate Captions`.
 4. Confirm the editor shows processing progress.
 5. Confirm captions appear with word timings.
@@ -211,11 +222,11 @@ Hinglish:
 - Verify Roman output, not Devanagari.
 - Verify word timestamps and burned MP4 export.
 
-Telgish / Teluglish:
+Tenglish:
 
 - Use a Telugu-English mixed MP4.
-- Select `Telgish / Teluglish`.
-- Verify the request sends `languageMode=telgish`.
+- Select `Tenglish`.
+- Verify the request sends `languageMode=tenglish`.
 - Verify the backend accepts it.
 - Verify output is Roman text, not Telugu script.
 - Verify every visible word has start/end timing.
@@ -231,7 +242,7 @@ All provider output is normalized into a shared transcript shape with:
 - `segments`
 - `words` with `word`, `displayedWord`, `originalWord`, `start`, `end`, optional `confidence`, `languageHint`, and `timingSource`
 
-Hinglish, Telgish, and Auto Mixed Indian detect Telugu (`U+0C00-U+0C7F`) and Devanagari (`U+0900-U+097F`) script. Native-script words are romanized while English words, names, numbers, and punctuation are preserved. If Romanization fails and native script remains, generation fails instead of outputting unreadable captions.
+Hinglish, Tenglish, and Auto Mixed Indian detect Telugu (`U+0C00-U+0C7F`) and Devanagari (`U+0900-U+097F`) script. Native-script words are romanized while English words, names, numbers, and punctuation are preserved. If Romanization fails and native script remains, generation fails instead of outputting unreadable captions.
 
 ## Caption Chunking
 
@@ -290,7 +301,11 @@ Caption style cards are generated from a reusable preset registry and apply inst
 
 Modern Minimalist no longer uses the old asymmetric anchor/support lockup. Words reveal from word-level timestamps, previous words stay visible until the caption chunk ends, and then the whole phrase clears before the next chunk. For example: `completely`, then `completely / change`, then `completely / change your life`.
 
-Modern Minimalist defaults to huge bold white Inter text, centered in the sequence canvas, with no background rectangle, no container box-shadow, no stroke, and no heavy shadow. Optional text shadow applies to glyphs only, and optional background stays off unless the user enables it in Caption Style.
+Modern Minimalist defaults to huge bold white Inter text, centered in the sequence canvas, with no background rectangle, no container box-shadow, no stroke, and no heavy shadow. Optional text shadow applies to glyphs only, and optional background stays off unless the user enables it.
+
+- [x] **Stage 1J: Mobile Job Persistence & Benchmarks**
+- [x] **Stage 1K: Hostinger KVM 1 / Coolify Production Deployment Gate**
+- [x] **Stage 1K-B: Live Deployment Verification**
 
 ## Sequence Settings
 
@@ -458,9 +473,9 @@ FFmpeg missing:
 Missing `SARVAM_API_KEY`:
 
 - Use `STT_PROVIDER=auto` with `GROQ_API_KEY` or `OPENAI_API_KEY`, or add `SARVAM_API_KEY`.
-- Telgish with `STT_PROVIDER=sarvam` will fail clearly without this key.
+- Tenglish with `STT_PROVIDER=sarvam` will fail clearly without this key.
 
-Telgish / Auto Mixed provider error:
+Tenglish / Auto Mixed provider error:
 
 - Configure `SARVAM_API_KEY`, `OPENAI_API_KEY`, or `GROQ_API_KEY`.
 - For best Telugu-English mixed captions, prefer `STT_PROVIDER=auto` with `SARVAM_API_KEY`.
@@ -471,7 +486,7 @@ Word timings are not increasing:
 - The pipeline now repairs small non-monotonic word overlaps, for example near short words like `and`.
 - Repaired words are labeled in transcript JSON with a `timing_source` ending in `_repaired`.
 
-Telgish returning Telugu script:
+Tenglish returning Telugu script:
 
 - Prefer `STT_PROVIDER=sarvam` with Saaras v3 transliteration mode.
 - The Whisper fallback runs a Telugu Unicode romanization layer, but some loan words may need manual correction.

@@ -8,7 +8,7 @@ from threading import Thread
 from typing import Any, List
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -18,7 +18,14 @@ import aiofiles
 from ..database import get_db, DB_PATH
 from ..models import JobResponse, JobDetailResponse
 from ..progress import manager
-from ..settings import EXPORT_DIR, MAX_UPLOAD_SIZE_MB, UPLOAD_DIR, ensure_runtime_dirs
+from ..settings import (
+    EXPORT_DIR, MAX_UPLOAD_SIZE_MB, MAX_AUDIO_UPLOAD_BYTES,
+    MAX_AUDIO_DURATION_SECONDS, UPLOAD_DIR, ensure_runtime_dirs,
+    FREE_UPLOAD_TTL_HOURS, AUTH_REQUIRED_FOR_SAVE
+)
+from ..storage import get_storage
+from datetime import datetime, timedelta
+
 from ai_pipeline.renderer import generate_srt, generate_vtt
 from ai_pipeline.sync.aligned_words import aligned_word_quality, canonical_aligned_words_from_segments
 from ai_pipeline.sync.affine import retime_segments
@@ -27,6 +34,9 @@ from ai_pipeline.sync.high_quality import high_quality_alignment_status, run_hig
 from ai_pipeline.language_modes import SUPPORTED_LANGUAGE_MODES, normalize_language_mode
 from ai_pipeline.timing import DEFAULT_PAUSE_SPLIT_THRESHOLD, build_timing_report, classify_caption_gaps, normalize_timing_source
 
+from ..auth import get_current_user_optional
+from ..usage import record_usage_event, check_quota
+
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
 
@@ -34,6 +44,10 @@ ensure_runtime_dirs()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v"}
 ALLOWED_CONTENT_TYPES = {"video/mp4", "video/quicktime", "application/octet-stream"}
+ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+ALLOWED_AUDIO_CONTENT_TYPES = {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/ogg", "application/octet-stream"}
+MEDIA_KIND_BY_EXT = {".mp3": "audio", ".wav": "audio", ".m4a": "audio", ".ogg": "audio"}
+AUDIO_MIME_BY_EXT = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".ogg": "audio/ogg"}
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 WINDOWS_RESERVED_FILENAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -73,20 +87,27 @@ def _sanitize_upload_filename(filename: str, ext: str) -> str:
     return f"{stem}{ext}"
 
 
-def _validate_upload_metadata(file: UploadFile) -> str:
+def _validate_upload_metadata(file: UploadFile) -> tuple[str, str]:
+    """Returns (sanitized_filename, media_kind)."""
     filename = os.path.basename(file.filename or "")
     ext = Path(filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
-        raise HTTPException(status_code=400, detail=f"Unsupported file type. Upload MP4 or MOV ({allowed}).")
+    is_audio = ext in ALLOWED_AUDIO_EXTENSIONS
+    is_video = ext in ALLOWED_EXTENSIONS
 
-    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+    if not is_audio and not is_video:
+        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Upload MP4, MOV, MP3, or WAV ({allowed}).")
+
+    expected_types = ALLOWED_AUDIO_CONTENT_TYPES if is_audio else ALLOWED_CONTENT_TYPES
+    type_label = "audio" if is_audio else "video"
+    if file.content_type and file.content_type not in expected_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported media type '{file.content_type}'. Upload an MP4 or MOV video.",
+            detail=f"Unsupported media type '{file.content_type}'. Upload a {type_label} file.",
         )
 
-    return _sanitize_upload_filename(filename, ext)
+    media_kind = MEDIA_KIND_BY_EXT.get(ext, "video")
+    return _sanitize_upload_filename(filename, ext), media_kind
 
 
 def _stored_language_mode(value: str | None) -> str:
@@ -257,11 +278,17 @@ def _resolve_export_dimensions(resolution: str, export_width: int | None, export
 @router.post("", response_model=JobResponse)
 @router.post("/", response_model=JobResponse)
 async def create_job(
+    request: Request,
     languageMode: str = Form(None),
     target_lang: str = Form(None),
     file: UploadFile = File(...)
 ):
     """Uploads a video and starts a background captioning job."""
+    user_context = await get_current_user_optional(request)
+    if AUTH_REQUIRED_FOR_SAVE and not user_context.is_authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required to upload media.")
+    await check_quota(user_context)
+
     job_id = str(uuid.uuid4())
     requested_mode = languageMode or target_lang or "auto_mixed_indian"
     _log_stage(job_id, "request received", language_mode=requested_mode, upload_filename=file.filename)
@@ -275,13 +302,14 @@ async def create_job(
             detail=f"{exc} Supported modes: {', '.join(SUPPORTED_LANGUAGE_MODES)}.",
         )
 
-    filename = _validate_upload_metadata(file)
+    filename, media_kind = _validate_upload_metadata(file)
     _log_stage(
         job_id,
         "selected media found",
         filename=filename,
         content_type=file.content_type,
         language_mode=normalized_mode,
+        media_kind=media_kind,
     )
 
     try:
@@ -295,7 +323,7 @@ async def create_job(
     # Save file to disk
     file_path = str(UPLOAD_DIR / f"{job_id}_{filename}")
     _log_stage(job_id, "file path resolved", file_path=file_path)
-    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    max_bytes = (MAX_AUDIO_UPLOAD_BYTES if media_kind == "audio" else MAX_UPLOAD_SIZE_MB * 1024 * 1024)
     bytes_written = 0
     try:
         async with aiofiles.open(file_path, 'wb') as out_file:
@@ -319,15 +347,72 @@ async def create_job(
     finally:
         await file.close()
 
-    _log_stage(job_id, "file saved", file_path=file_path, bytes=bytes_written)
+    _log_stage(job_id, "file saved locally", file_path=file_path, bytes=bytes_written)
+
+    # Upload to storage backend
+    storage = get_storage()
+    object_key = f"uploads/{job_id}_{filename}"
+    expires_at = datetime.utcnow() + timedelta(hours=FREE_UPLOAD_TTL_HOURS)
+    try:
+        # Run storage upload in a thread since boto3 is synchronous
+        stored_obj = await run_in_threadpool(
+            storage.save_file,
+            file_path,
+            object_key,
+            file.content_type,
+            metadata={"expires_at": expires_at}
+        )
+    except Exception as e:
+        logger.error(f"Failed to upload to storage backend: {e}")
+        # Even if storage backend fails, we might still want to proceed locally for now
+        # or fail the job. Let's fail it to be safe and clean up.
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
+
+    # Validate audio duration for audio-only uploads
+    if media_kind == "audio":
+        try:
+            probe = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            probe_out, probe_err = await probe.communicate()
+            if probe.returncode == 0 and probe_out:
+                duration = float(probe_out.decode().strip())
+                if duration > MAX_AUDIO_DURATION_SECONDS:
+                    os.remove(file_path)
+                    await run_in_threadpool(storage.delete_file, object_key)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Audio duration {duration:.1f}s exceeds maximum of {MAX_AUDIO_DURATION_SECONDS}s.",
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _log_stage(job_id, "audio validation warning", detail=str(exc))
 
     # Insert initial job state
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with get_db() as db:
         await db.execute(
-            "INSERT INTO jobs (id, status, filename, target_lang) VALUES (?, ?, ?, ?)",
-            (job_id, "queued", filename, normalized_mode)
+            """INSERT INTO jobs (id, status, filename, target_lang, media_kind, storage_backend, object_key, expires_at, user_id) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, "queued", filename, normalized_mode, media_kind, storage.backend_name, object_key, expires_at, user_context.user_id),
         )
         await db.commit()
+
+    # Record usage event
+    await record_usage_event(
+        user_context=user_context,
+        event_type="upload",
+        media_duration_sec=0.0,
+        storage_backend=storage.backend_name,
+        job_id=job_id
+    )
 
     # Start background thread for heavy processing
     def pipeline_thread_target() -> None:
@@ -349,6 +434,7 @@ async def create_job(
         target_lang=normalized_mode,
         languageMode=normalized_mode,
         video_url=f"/api/jobs/{job_id}/video",
+        media_kind=media_kind,
     )
 
 @router.get("", response_model=List[JobDetailResponse])
@@ -369,7 +455,8 @@ async def list_jobs(db: aiosqlite.Connection = Depends(get_db)):
             languageMode=_stored_language_mode(r['target_lang']),
             error=r['error'],
             created_at=r['created_at'],
-            completed_at=r['completed_at']
+            completed_at=r['completed_at'],
+            media_kind=r['media_kind'] if 'media_kind' in r.keys() else 'video',
         ))
     return jobs
 
@@ -415,7 +502,8 @@ async def get_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
         },
         output_video_url=f"/api/jobs/{job_id}/export" if r['status'] == "completed" else None,
         created_at=r['created_at'],
-        completed_at=r['completed_at']
+        completed_at=r['completed_at'],
+        media_kind=r['media_kind'] if 'media_kind' in r.keys() else 'video',
     )
 
 
@@ -451,6 +539,7 @@ async def cancel_job(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
         target_lang=row["target_lang"],
         languageMode=_stored_language_mode(row["target_lang"]),
         video_url=f"/api/jobs/{job_id}/video",
+        media_kind=row['media_kind'] if 'media_kind' in row.keys() else 'video',
     )
 
 
@@ -640,19 +729,38 @@ async def high_quality_align(job_id: str, db: aiosqlite.Connection = Depends(get
 
 @router.get("/{job_id}/video")
 async def get_video(job_id: str, db: aiosqlite.Connection = Depends(get_db)):
-    """Stream the uploaded video file for browser playback."""
-    from fastapi.responses import FileResponse
+    """Stream the uploaded video or audio file for browser playback."""
+    from fastapi.responses import FileResponse, RedirectResponse
     
-    cursor = await db.execute("SELECT filename FROM jobs WHERE id = ?", (job_id,))
+    cursor = await db.execute("SELECT filename, media_kind, object_key, storage_backend FROM jobs WHERE id = ?", (job_id,))
     r = await cursor.fetchone()
     if not r:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    file_path = str(UPLOAD_DIR / f"{job_id}_{r['filename']}")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Video file not found")
+    object_key = r['object_key'] if 'object_key' in r.keys() else None
     
-    return FileResponse(file_path, media_type="video/mp4")
+    # Check if local file exists (fast path or local backend)
+    file_path = str(UPLOAD_DIR / f"{job_id}_{r['filename']}")
+    if os.path.exists(file_path):
+        media_kind = r['media_kind'] if 'media_kind' in r.keys() else 'video'
+        if media_kind == "audio":
+            ext = Path(r['filename']).suffix.lower()
+            mime = AUDIO_MIME_BY_EXT.get(ext, "audio/mpeg")
+            return FileResponse(file_path, media_type=mime)
+        return FileResponse(file_path, media_type="video/mp4")
+        
+    # Not local, check storage adapter
+    if not object_key:
+        raise HTTPException(status_code=404, detail="Media file not found locally or in remote storage")
+        
+    storage = get_storage()
+    if storage.exists(object_key):
+        url = storage.get_url(object_key)
+        if url:
+            # Redirect to R2 pre-signed URL or public URL
+            return RedirectResponse(url=url)
+            
+    raise HTTPException(status_code=404, detail="Media file not found")
 
 @router.post("/{job_id}/export")
 async def export_video(

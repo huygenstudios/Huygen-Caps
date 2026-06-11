@@ -29,6 +29,7 @@ out/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Runtime storage and generated media
 storage/

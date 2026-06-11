@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-06-11T14:05:54.867005",
+  "total_duration_sec": 4.249104738235474,
+  "passed": 7,
+  "total": 7,
+  "results": [
+    {
+      "script": "smoke_stt_language_modes.py",
+      "success": true,
+      "duration": 0.29195737838745117
+    },
+    {
+      "script": "smoke_storage_adapter.py",
+      "success": true,
+      "duration": 0.10541462898254395
+    },
+    {
+      "script": "smoke_audio_only_import.py",
+      "success": true,
+      "duration": 1.1219873428344727
+    },
+    {
+      "script": "smoke_subtitle_import.py",
+      "success": true,
+      "duration": 0.45069050788879395
+    },
+    {
+      "script": "smoke_billing_razorpay.py",
+      "success": true,
+      "duration": 1.090686321258545
+    },
+    {
+      "script": "smoke_export_queue.py",
+      "success": true,
+      "duration": 1.1486263275146484
+    },
+    {
+      "script": "smoke_mobile_job_state.py",
+      "success": true,
+      "duration": 0.03935885429382324
+    }
+  ]
+}

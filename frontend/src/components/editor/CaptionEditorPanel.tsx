@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileText,
   Info,
   Languages,
   MoreVertical,
@@ -32,8 +33,9 @@ import {
 import { addMediaSpeechToCoverageReport, validateCaptionCoverage } from "@/lib/captionCoverage";
 import { defaultCaptionTrackId, isCaptionLocked } from "@/lib/editorModel";
 import { AlignedSegment, AlignedWord, Caption, CaptionCoverageReport, CaptionDocument, Language } from "@/lib/types";
-import { applyCaptionSync, autoFixCaptionSync, cancelJob, getHealth, getJob, previewCaptionSync, runHighQualityAlignment, uploadVideo } from "@/lib/api";
+import { applyCaptionSync, autoFixCaptionSync, cancelJob, getHealth, getJob, importSubtitleFile, previewCaptionSync, runHighQualityAlignment, uploadVideo } from "@/lib/api";
 import { useCaptionExport } from "@/hooks/useCaptionExport";
+import { usePersistentJobs } from "@/hooks/usePersistentJobs";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { openMediaPicker } from "@/lib/mediaImport";
 import { useCaptionStore } from "@/store/captionStore";
@@ -46,8 +48,8 @@ interface CaptionEditorPanelProps {
   initialFlow?: "setup" | "list";
 }
 
-type OriginalLanguageOption = "auto_detect" | "english" | "telugu" | "hindi" | "auto_mixed_indian" | "hinglish" | "telgish";
-type TranslateOption = "same" | "english" | "telugu" | "hindi" | "telgish";
+type OriginalLanguageOption = "auto_detect" | "english" | "telugu" | "hindi" | "auto_mixed_indian" | "hinglish" | "tenglish";
+type TranslateOption = "same" | "english" | "telugu" | "hindi" | "tenglish";
 
 const ORIGINAL_LANGUAGE_OPTIONS: { value: OriginalLanguageOption; label: string }[] = [
   { value: "auto_detect", label: "Auto Detect" },
@@ -56,7 +58,7 @@ const ORIGINAL_LANGUAGE_OPTIONS: { value: OriginalLanguageOption; label: string 
   { value: "hindi", label: "Hindi" },
   { value: "auto_mixed_indian", label: "Auto Mixed Indian" },
   { value: "hinglish", label: "Hinglish" },
-  { value: "telgish", label: "Telgish / Teluglish" },
+  { value: "tenglish", label: "Tenglish" },
 ];
 
 const TRANSLATE_OPTIONS: { value: TranslateOption; label: string; disabled?: boolean }[] = [
@@ -64,16 +66,16 @@ const TRANSLATE_OPTIONS: { value: TranslateOption; label: string; disabled?: boo
   { value: "english", label: "English" },
   { value: "hindi", label: "Hindi / Hinglish" },
   { value: "telugu", label: "Telugu script (coming later)", disabled: true },
-  { value: "telgish", label: "Telgish / Telugu in English letters" },
+  { value: "tenglish", label: "Tenglish" },
 ];
 
 function languageModeFromSelection(original: OriginalLanguageOption, translate: TranslateOption): Language {
   if (translate === "english") return "english";
   if (translate === "hindi") return "hinglish";
-  if (translate === "telugu" || translate === "telgish") return "telgish";
+  if (translate === "telugu" || translate === "tenglish") return "tenglish";
   if (original === "english") return "english";
   if (original === "hindi" || original === "hinglish") return "hinglish";
-  if (original === "telugu" || original === "telgish") return "telgish";
+  if (original === "telugu" || original === "tenglish") return "tenglish";
   return "auto_mixed_indian";
 }
 
@@ -323,6 +325,9 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
   const { currentTime, showCaptionOverlay, toggleCaptionOverlay, setCurrentTime } = usePlaybackStore();
   const tracks = useTimelineStore((s) => s.tracks);
   const { exportSRT } = useCaptionExport();
+  const { jobState, updateJobState } = usePersistentJobs();
+  const isCaptionJobActive = !!jobState.activeCaptionJobId;
+
   const [flow, setFlow] = useState<"setup" | "list">(
     initialFlow === "setup"
       ? "setup"
@@ -338,7 +343,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
   const [generateError, setGenerateError] = useState("");
   const [captionSearch, setCaptionSearch] = useState("");
   const [originalLanguage, setOriginalLanguage] = useState<OriginalLanguageOption>(
-    language === "english" ? "english" : language === "hinglish" ? "hinglish" : language === "telgish" ? "telgish" : "auto_mixed_indian"
+    language === "english" ? "english" : language === "hinglish" ? "hinglish" : language === "tenglish" ? "tenglish" : "auto_mixed_indian"
   );
   const [translateTo, setTranslateTo] = useState<TranslateOption>("same");
   const [isRebuilding, setIsRebuilding] = useState(false);
@@ -548,6 +553,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     const jobToCancel = activeJobIdRef.current;
     setIsGenerating(false);
     setPipelineProgress("Cancelled", -1);
+    updateJobState({ activeCaptionJobId: null });
 
     if (jobToCancel) {
       void cancelJob(jobToCancel).catch((error) => {
@@ -556,16 +562,16 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         }
       });
     }
-  }, [setPipelineProgress]);
+  }, [setPipelineProgress, updateJobState]);
 
   const handleGenerate = useCallback(async () => {
-    if (!activeMedia || isGenerating) return;
-    if (activeMedia.type !== "video") {
-      setGenerateError("Import an MP4 or MOV video before generating subtitles.");
+    if (!activeMedia || isGenerating || isCaptionJobActive) return;
+    if (activeMedia.type !== "video" && activeMedia.type !== "audio") {
+      setGenerateError("Import a video or audio file before generating subtitles.");
       return;
     }
     if (!(activeMedia.file instanceof File) || activeMedia.file.size <= 0) {
-      setGenerateError("Upload failed because the selected video file is missing. Please reselect the video and try again.");
+      setGenerateError("Upload failed because the selected media file is missing. Please reselect and try again.");
       return;
     }
 
@@ -603,6 +609,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
       activeUploadAbortRef.current = null;
       activeJobIdRef.current = result.job_id;
       setJobId(result.job_id);
+      updateJobState({ activeCaptionJobId: result.job_id, lastKnownCaptionStatus: "queued", lastError: null });
 
       let pollFailures = 0;
       const pollInterval = window.setInterval(async () => {
@@ -618,6 +625,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
           if (job.status === "completed") {
             window.clearInterval(pollInterval);
             if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
+            updateJobState({ activeCaptionJobId: null });
             setPipelineProgress("Done", 100);
             const sourceSegments = job.transcript?.segments?.length ? job.transcript.segments : job.segments || [];
             if (sourceSegments.length) {
@@ -667,12 +675,14 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
           } else if (job.status === "cancelled") {
             window.clearInterval(pollInterval);
             if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
+            updateJobState({ activeCaptionJobId: null });
             cancelledRunIdsRef.current.add(runId);
             setPipelineProgress("Cancelled", -1);
             setIsGenerating(false);
           } else if (job.status === "failed") {
             window.clearInterval(pollInterval);
             if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
+            updateJobState({ activeCaptionJobId: null, lastError: job.error });
             setPipelineProgress("Failed", -1);
             setGenerateError(job.error || "Subtitle generation failed.");
             setIsGenerating(false);
@@ -686,6 +696,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
           if (pollFailures >= 3) {
             window.clearInterval(pollInterval);
             if (activePollIntervalRef.current === pollInterval) activePollIntervalRef.current = null;
+            updateJobState({ activeCaptionJobId: null });
             setPipelineProgress("Error", -1);
             setIsGenerating(false);
           }
@@ -707,6 +718,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     activeMedia,
     charsPerSubtitle,
     isGenerating,
+    isCaptionJobActive,
     originalLanguage,
     setCaptionChunkingConfig,
     setCaptionCharsPerSubtitle,
@@ -715,6 +727,99 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     setCaptionNeedsRebuild,
     setCaptions,
     setJobId,
+    setLanguage,
+    setPipelineProgress,
+    setTranscriptSegments,
+    theme,
+    translateTo,
+    updateJobState,
+  ]);
+
+  const handleImportSubtitle = useCallback(async () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".srt,.vtt,.ass";
+    input.style.display = "none";
+    document.body.appendChild(input);
+
+    const file = await new Promise<File | null>((resolve) => {
+      input.onchange = () => {
+        resolve(input.files?.[0] || null);
+        document.body.removeChild(input);
+      };
+      input.oncancel = () => {
+        resolve(null);
+        document.body.removeChild(input);
+      };
+      input.click();
+    });
+
+    if (!file) return;
+
+    const requestedLanguage = languageModeFromSelection(originalLanguage, translateTo);
+    setLanguage(requestedLanguage);
+    setIsGenerating(true);
+    setGenerateError("");
+    setPipelineProgress("Importing subtitle file...", 10);
+
+    try {
+      const response = await importSubtitleFile(file, requestedLanguage, "imported");
+      const { captions: importedCaptions, transcript, report } = response;
+
+      setTranscriptSegments(transcript.segments || []);
+      const originalAlignedWords = transcript.alignedWords || transcript.segments?.flatMap((seg) => seg.words || []) || [];
+
+      const config = {
+        ...useEditorStore.getState().captionChunkingConfig,
+        ...chunkingForChars(charsPerSubtitle, useEditorStore.getState().captionStyleConfig.maxLines),
+      };
+      setCaptionChunkingConfig(config);
+
+      const newCaptions = importedCaptions.map((caption) => ({
+        ...caption,
+        trackId: defaultCaptionTrackId(useTimelineStore.getState().tracks),
+        sourceMediaId: activeMedia?.id,
+        theme,
+      })) as Caption[];
+
+      const coverageReport = validateCaptionCoverage(newCaptions, originalAlignedWords);
+      setCaptions(newCaptions);
+      setCaptionDocument({
+        id: `caption_document_${response.job_id}`,
+        name: file.name.replace(/\.[^.]+$/, "") + " captions",
+        sourceMediaId: activeMedia?.id,
+        languageMode: requestedLanguage,
+        transcript: { segments: transcript.segments || [], alignedWords: originalAlignedWords, metadata: transcript.metadata },
+        originalAlignedWords,
+        chunks: newCaptions,
+        style: useEditorStore.getState().captionStyleConfig,
+        chunkingConfig: config,
+        timingConfig: useEditorStore.getState().captionTimingConfig,
+        coverageReport,
+      });
+      setCaptionCoverageReport(coverageReport);
+      setCoverageNotice(
+        `Imported ${report.caption_count} subtitle${report.caption_count === 1 ? "" : "s"} from ${report.format.toUpperCase()}${report.skipped_blocks ? ` (${report.skipped_blocks} skipped)` : ""}.`
+      );
+      setCaptionCharsPerSubtitle(charsPerSubtitle);
+      setCaptionNeedsRebuild(false);
+      setFlow("list");
+    } catch (error) {
+      setGenerateError(error instanceof Error ? error.message : "Subtitle import failed.");
+    } finally {
+      setIsGenerating(false);
+      setPipelineProgress("Done", 100);
+    }
+  }, [
+    activeMedia,
+    charsPerSubtitle,
+    originalLanguage,
+    setCaptionChunkingConfig,
+    setCaptionCharsPerSubtitle,
+    setCaptionCoverageReport,
+    setCaptionDocument,
+    setCaptionNeedsRebuild,
+    setCaptions,
     setLanguage,
     setPipelineProgress,
     setTranscriptSegments,
@@ -993,6 +1098,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     setPipelineProgress("", 0);
     setFlow("setup");
     setShowResetDialog(false);
+    updateJobState({ activeCaptionJobId: null });
   }, [
     clearAll,
     setCaptionCoverageReport,
@@ -1000,6 +1106,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
     setCaptionNeedsRebuild,
     setPipelineProgress,
     setTranscriptSegments,
+    updateJobState,
   ]);
 
   const addSubtitleLine = useCallback(() => {
@@ -1090,8 +1197,13 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
 
   const setupPanel = (
     <div className="flex h-full flex-col">
-      <div className="panel-header justify-center">
+      <div className="panel-header justify-center gap-2">
         <span>Subtitles</span>
+        {activeMedia?.type === "audio" && (
+          <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--accent)" }}>
+            Audio
+          </span>
+        )}
       </div>
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {captions.length > 0 && (
@@ -1104,7 +1216,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         <label className="grid gap-2 text-xs" style={{ color: "var(--text-primary)" }}>
           <span className="flex items-center justify-between">
             Original language
-            <InfoDot title="Choose the language spoken in the video. Use Auto Mixed Indian for Telugu + English or Hindi + English speech." />
+            <InfoDot title="Choose the language spoken in the media. Use Auto Mixed Indian for Telugu + English or Hindi + English speech." />
           </span>
           <select
             className="control-input"
@@ -1120,7 +1232,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
         <label className="grid gap-2 text-xs" style={{ color: "var(--text-primary)" }}>
           <span className="flex items-center justify-between">
             Translate video to
-            <InfoDot title="Choose if captions should stay in the same language or be translated/romanized." />
+            <InfoDot title="Choose if captions should stay in the original language or be translated/romanized." />
           </span>
           <select
             className="control-input"
@@ -1149,19 +1261,29 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             }}
           >
             <Plus size={14} />
-            Import Video
+            Import Video / Audio
           </button>
         )}
+
+        <button
+          className="btn-ghost flex w-full items-center justify-center gap-2"
+          onClick={handleImportSubtitle}
+          disabled={isGenerating || isCaptionJobActive}
+          title="Import an existing SRT, VTT, or ASS subtitle file to edit and style."
+        >
+          <FileText size={14} />
+          Import Subtitle File
+        </button>
 
         <button
           id="generate-captions-btn"
           className="btn-primary flex w-full items-center justify-center gap-2 py-3"
           onClick={handleGenerate}
-          disabled={!activeMedia || isGenerating}
-          title="Generates editable subtitles using speech recognition and timing alignment."
+          disabled={!activeMedia || isGenerating || isCaptionJobActive}
+          title={isCaptionJobActive ? "Caption generation already in progress" : "Generates editable subtitles using speech recognition and timing alignment."}
         >
           <Wand2 size={15} />
-          {isGenerating ? "Generating..." : "Auto Subtitle"}
+          {isGenerating || isCaptionJobActive ? "Generating..." : "Auto Subtitle"}
         </button>
 
         {isGenerating && (
@@ -1193,7 +1315,7 @@ export default function CaptionEditorPanel({ initialFlow }: CaptionEditorPanelPr
             <Sparkles size={13} style={{ color: "var(--accent)" }} />
             Caption workflow
           </div>
-          Import a video, choose the spoken language, pick an output mode, then generate editable subtitle rows.
+          Import a video, audio, or subtitle file (SRT, VTT, ASS), choose the spoken language, pick an output mode, then generate or edit subtitle rows.
         </div>
       </div>
     </div>

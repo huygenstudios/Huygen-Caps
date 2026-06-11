@@ -23,7 +23,7 @@ DEFAULT_PAUSE_SPLIT_THRESHOLD = 0.45
 MIN_WORD_DURATION_SECONDS = 0.02
 MIN_CADENCE_STEP_SECONDS = 0.075
 MAX_CADENCE_STEP_SECONDS = 0.35
-CODE_MIXED_MODES = {"telgish", "teluglish", "hinglish", "auto_mixed_indian"}
+CODE_MIXED_MODES = {"tenglish", "hinglish", "auto_mixed_indian"}
 _FALSE_ENV_VALUES = {"0", "false", "no", "off", "disabled"}
 _TRUE_ENV_VALUES = {"1", "true", "yes", "on", "enabled"}
 
@@ -790,9 +790,11 @@ class TranscriptAligner:
             "english": "en",
             "hinglish": "hi",
             "hindi": "hi",
+            "tenglish": "te",
             "telgish": "te",
             "teluglish": "te",
             "telugu": "te",
+            "english_translation": "en",
         }.get(str(language_mode).strip().lower())
 
         base_kwargs: dict[str, Any] = {

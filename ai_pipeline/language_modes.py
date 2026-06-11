@@ -1,6 +1,6 @@
 import re
 import unicodedata
-from typing import Iterable, Literal, TypedDict
+from typing import Any, Iterable, Literal, TypedDict
 
 try:
     from indic_transliteration import sanscript
@@ -10,19 +10,54 @@ except Exception:  # pragma: no cover - dependency fallback for partial installs
     _indic_transliterate = None
 
 
-CaptionLanguageMode = Literal["english", "hinglish", "telgish", "auto_mixed_indian"]
+# ---------------------------------------------------------------------------
+# Canonical language modes (v2 — June 2026)
+#
+# Product-facing name changes:
+#   "telgish" / "teluglish"  →  "tenglish"   (UI label: Tenglish)
+#   "auto_mixed_indian"      stays canonical; "auto_indian_mixed" is an alias
+#
+# New modes added: "telugu", "hindi", "english_translation"
+#
+# Backward-compat: old values "telgish" / "teluglish" still accepted by the
+# normalizer and aliased to "tenglish". Old DB rows / API clients continue
+# to work without a migration.
+#
+# Auto-mixed naming: the codebase canonical is "auto_mixed_indian".
+# "auto_indian_mixed" is accepted and normalized to "auto_mixed_indian".
+# The product roadmap prefers "auto_indian_mixed"; a future migration task
+# can swap the canonical globally once all references are updated.
+# ---------------------------------------------------------------------------
+
+CaptionLanguageMode = Literal[
+    "english",
+    "telugu",
+    "hindi",
+    "hinglish",
+    "tenglish",
+    "auto_mixed_indian",
+    "english_translation",
+]
 LanguageHint = Literal["english", "hindi", "telugu", "unknown"]
 
 SUPPORTED_LANGUAGE_MODES: tuple[CaptionLanguageMode, ...] = (
     "english",
+    "telugu",
+    "hindi",
     "hinglish",
-    "telgish",
+    "tenglish",
     "auto_mixed_indian",
+    "english_translation",
 )
 
-CODE_MIXED_LANGUAGE_MODES = {"hinglish", "telgish", "auto_mixed_indian"}
+# Modes that produce romanized (Latin-script) output from Indian speech.
+CODE_MIXED_LANGUAGE_MODES = {"hinglish", "tenglish", "auto_mixed_indian"}
 
-_LANGUAGE_ALIASES = {
+# ---------------------------------------------------------------------------
+# Alias map — maps incoming string → canonical CaptionLanguageMode
+# ---------------------------------------------------------------------------
+_LANGUAGE_ALIASES: dict[str, CaptionLanguageMode] = {
+    # ── blank / auto ────────────────────────────────────────────────────────
     "": "auto_mixed_indian",
     "auto": "auto_mixed_indian",
     "automixed": "auto_mixed_indian",
@@ -31,22 +66,42 @@ _LANGUAGE_ALIASES = {
     "mixedindian": "auto_mixed_indian",
     "auto_mixed": "auto_mixed_indian",
     "auto_mixed_indian": "auto_mixed_indian",
+    # New alias per spec (auto_indian_mixed → auto_mixed_indian)
+    "auto_indian_mixed": "auto_mixed_indian",
+    "autoindianmixed": "auto_mixed_indian",
+    # ── english ─────────────────────────────────────────────────────────────
     "en": "english",
     "eng": "english",
     "english": "english",
-    "hi": "hinglish",
-    "hindi": "hinglish",
+    # ── hindi (native Devanagari script) ────────────────────────────────────
+    "hi": "hindi",
+    "hin": "hindi",
+    "hindi": "hindi",
+    # ── hinglish (Hindi-English in Roman letters) ────────────────────────────
     "hinglish": "hinglish",
-    "te": "telgish",
-    "telugu": "telgish",
-    "telgish": "telgish",
-    "teluglish": "telgish",
+    # ── telugu (native Telugu script) ────────────────────────────────────────
+    "te": "tenglish",      # short code → Tenglish (romanized) by default
+    "telugu": "telugu",    # explicit native-script request
+    # ── tenglish (Telugu/Telugu-English in Roman letters) ────────────────────
+    "tenglish": "tenglish",
+    # MIGRATION COMPAT: old product names map to tenglish
+    "telgish": "tenglish",    # was the old canonical — keep for DB/API compat
+    "teluglish": "tenglish",  # alternate old spelling
+    "telugu_roman": "tenglish",  # spec alias: explicit romanized-Telugu request
+    # ── english_translation (Indian speech → English captions) ───────────────
+    "english_translation": "english_translation",
+    "englishtranslation": "english_translation",
+    "en_translation": "english_translation",
+    "translation": "english_translation",
 }
 
+# Provider capability error messages (updated to say "Tenglish")
 TELUGU_CAPABLE_PROVIDER_ERROR = (
-    "Auto Mixed Indian and Telgish modes require a configured transcription provider. "
+    "Auto Mixed Indian, Tenglish, Telugu, Hindi, and English Translation modes "
+    "require a configured transcription provider. "
     "Please set SARVAM_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY."
 )
+# Backward-compat alias (internal callers that still reference TELGISH_PROVIDER_ERROR)
 TELGISH_PROVIDER_ERROR = TELUGU_CAPABLE_PROVIDER_ERROR
 
 TELUGU_RE = re.compile(r"[\u0C00-\u0C7F]")
@@ -65,7 +120,10 @@ class NormalizedWordToken(TypedDict, total=False):
     romanized: bool
 
 
-TELGISH_CANONICAL = {
+# ---------------------------------------------------------------------------
+# Canonicalization tables (Tenglish)
+# ---------------------------------------------------------------------------
+TENGLISH_CANONICAL = {
     "sait": "site",
     "saite": "site",
     "kaal": "call",
@@ -92,6 +150,9 @@ TELGISH_CANONICAL = {
     "tO": "tho",
     "to": "tho",
 }
+
+# Backward-compat alias (internal code that references TELGISH_CANONICAL)
+TELGISH_CANONICAL = TENGLISH_CANONICAL
 
 HINGLISH_CANONICAL = {
     "maim": "main",
@@ -232,8 +293,9 @@ def romanize_if_needed(text: str, language_mode: str) -> str:
 
 def _canonicalize_word(word: str, language_mode: str) -> str:
     lookup = word.lower()
-    if language_mode in {"telgish", "auto_mixed_indian"}:
-        lookup = TELGISH_CANONICAL.get(lookup, lookup)
+    # Tenglish (was: telgish) — apply Telugu-romanization canonical table
+    if language_mode in {"tenglish", "auto_mixed_indian"}:
+        lookup = TENGLISH_CANONICAL.get(lookup, lookup)
     if language_mode in {"hinglish", "auto_mixed_indian"}:
         lookup = HINGLISH_CANONICAL.get(lookup, lookup)
     lookup = COMMON_CANONICAL.get(lookup, lookup)
@@ -288,3 +350,143 @@ def validate_roman_output(text: str, language_mode: str) -> None:
 
 def text_from_words(words: Iterable[str]) -> str:
     return SPACE_RE.sub(" ", " ".join(w for w in words if w)).strip()
+
+
+# ---------------------------------------------------------------------------
+# Central STT language configuration
+# ---------------------------------------------------------------------------
+
+class SttLanguageConfig(TypedDict, total=False):
+    provider: str
+    language_code: str
+    sarvam_mode: str
+    script_mode: str
+    display_mode: str
+    description: str
+    production_ready: bool
+    notes: str
+
+
+def get_stt_language_config(language_mode: str) -> SttLanguageConfig:
+    mode = normalize_language_mode(language_mode)
+    configs: dict[str, SttLanguageConfig] = {
+        "english": {
+            "provider": "sarvam",
+            "language_code": "en-IN",
+            "sarvam_mode": "transcribe",
+            "script_mode": "latin",
+            "display_mode": "english",
+            "description": "English speech to English captions",
+            "production_ready": True,
+        },
+        "telugu": {
+            "provider": "sarvam",
+            "language_code": "te-IN",
+            "sarvam_mode": "transcribe",
+            "script_mode": "native",
+            "display_mode": "telugu_native",
+            "description": "Telugu speech to Telugu native script captions",
+            "production_ready": True,
+        },
+        "hindi": {
+            "provider": "sarvam",
+            "language_code": "hi-IN",
+            "sarvam_mode": "transcribe",
+            "script_mode": "native",
+            "display_mode": "hindi_native",
+            "description": "Hindi speech to Devanagari captions",
+            "production_ready": True,
+        },
+        "hinglish": {
+            "provider": "sarvam",
+            "language_code": "hi-IN",
+            "sarvam_mode": "translit",
+            "script_mode": "roman",
+            "display_mode": "hinglish_roman",
+            "description": "Hindi-English speech in Roman/English letters",
+            "production_ready": True,
+        },
+        "tenglish": {
+            "provider": "sarvam",
+            "language_code": "te-IN",
+            "sarvam_mode": "translit",
+            "script_mode": "roman",
+            "display_mode": "tenglish_roman",
+            "description": "Telugu/Telugu-English speech in Roman/English letters",
+            "production_ready": True,
+        },
+        "auto_mixed_indian": {
+            "provider": "sarvam",
+            "language_code": "unknown",
+            "sarvam_mode": "translit",
+            "script_mode": "mixed",
+            "display_mode": "code_mixed",
+            "description": "Mixed Indian-language speech; preserves mixed words intelligently",
+            "production_ready": True,
+            "notes": "Current Sarvam code sends te-IN. The auto-detection path relies on Sarvam translit mode.",
+        },
+        "english_translation": {
+            "provider": "sarvam",
+            "language_code": "auto",
+            "sarvam_mode": "translit",
+            "script_mode": "latin",
+            "display_mode": "english_translation",
+            "description": "Translate supported Indic speech to English captions",
+            "production_ready": False,
+            "notes": "Currently routes to Sarvam translit mode; true translation pipeline is not implemented yet.",
+        },
+    }
+    config = configs.get(mode)
+    if config is None:
+        raise ValueError(f"Unsupported language mode for STT config: '{mode}'")
+    return config
+
+
+# ---------------------------------------------------------------------------
+# Lightweight transcript timing validation
+# ---------------------------------------------------------------------------
+
+class TimingValidationReport(TypedDict, total=False):
+    word_count: int
+    missing_timestamps: int
+    invalid_timestamps: int
+    non_monotonic_pairs: int
+    timing_quality: str
+
+
+def validate_transcript_timing(words: list[dict[str, Any]]) -> TimingValidationReport:
+    word_count = len(words)
+    missing = 0
+    invalid = 0
+    non_monotonic = 0
+    previous_end: float | None = None
+
+    for word in words:
+        start = float(word.get("start", -1))
+        end = float(word.get("end", -1))
+        if start < 0 or end < 0:
+            missing += 1
+            continue
+        if not (start >= 0 and end >= start):
+            invalid += 1
+            continue
+        if previous_end is not None and start < previous_end:
+            non_monotonic += 1
+        previous_end = max(previous_end or 0.0, end)
+
+    if word_count == 0:
+        quality = "good"
+    elif missing == word_count or invalid == word_count:
+        quality = "bad"
+    elif missing > 0 or invalid > 0 or non_monotonic > word_count * 0.1:
+        quality = "warning"
+    else:
+        quality = "good"
+
+    return {
+        "word_count": word_count,
+        "missing_timestamps": missing,
+        "invalid_timestamps": invalid,
+        "non_monotonic_pairs": non_monotonic,
+        "timing_quality": quality,
+    }

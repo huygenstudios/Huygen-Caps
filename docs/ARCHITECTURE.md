@@ -44,10 +44,13 @@ Uploads are saved under `UPLOAD_DIR`, then processed in a background thread thro
 
 Supported language modes are:
 
-- `auto_mixed_indian`
 - `english`
+- `telugu`
+- `hindi`
 - `hinglish`
-- `telgish`
+- `tenglish`
+- `auto_mixed_indian`
+- `english_translation`
 
 Transcripts are normalized into shared segment and word timing shapes before the frontend chunks them into editable captions.
 

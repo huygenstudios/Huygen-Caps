@@ -5,11 +5,13 @@ from typing import Any
 from .audio import Chunk
 from .language_modes import (
     final_text_requires_romanization,
+    get_stt_language_config,
     normalize_caption_text,
     normalize_language_mode,
     normalize_word_token_with_metadata,
     text_from_words,
     validate_roman_output,
+    validate_transcript_timing,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +144,7 @@ def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, A
     if not word or start is None or end is None:
         return None
 
+    stt_config = get_stt_language_config(language_mode)
     normalized = {
         "word": word,
         "displayedWord": word,
@@ -149,6 +152,8 @@ def _normalize_word(raw_word: dict[str, Any], language_mode: str) -> dict[str, A
         "start": round(start, 3),
         "end": round(end, 3),
         "score": _as_float(raw_word.get("score")) if raw_word.get("score") is not None else 0.0,
+        "languageMode": normalize_language_mode(language_mode),
+        "scriptMode": stt_config.get("script_mode", "unknown"),
     }
     if word_meta.get("originalWord"):
         normalized["originalWord"] = word_meta["originalWord"]
@@ -554,6 +559,19 @@ def normalize_aligned_segments(segments: list[dict[str, Any]], language_mode: st
 
     repair_word_timestamps(normalized_segments)
     validate_word_timestamps(normalized_segments)
+
+    all_words = [word for seg in normalized_segments for word in (seg.get("words") or [])]
+    if all_words:
+        timing_report = validate_transcript_timing(all_words)
+        logger.info(
+            "aligned segment timing validation quality=%s word_count=%s missing=%s invalid=%s non_monotonic=%s",
+            timing_report["timing_quality"],
+            timing_report["word_count"],
+            timing_report["missing_timestamps"],
+            timing_report["invalid_timestamps"],
+            timing_report["non_monotonic_pairs"],
+        )
+
     return normalized_segments
 
 
@@ -800,6 +818,19 @@ def build_word_timed_transcript_from_chunks(
     # final monotonic boundaries after cadence/speech-span repair.
     repair_word_timestamps(segments, repair_across_segments=False)
     validate_word_timestamps(segments, allow_intersegment_overlap=True)
+
+    all_words = [word for seg in segments for word in (seg.get("words") or [])]
+    if all_words:
+        timing_report = validate_transcript_timing(all_words)
+        logger.info(
+            "transcript timing validation quality=%s word_count=%s missing=%s invalid=%s non_monotonic=%s",
+            timing_report["timing_quality"],
+            timing_report["word_count"],
+            timing_report["missing_timestamps"],
+            timing_report["invalid_timestamps"],
+            timing_report["non_monotonic_pairs"],
+        )
+
     logger.info("word timestamps normalized", extra={"segment_count": len(segments)})
     return segments
 

@@ -1,6 +1,6 @@
 /* Types for Huygen Caps */
 
-export type Language = "english" | "hinglish" | "telgish" | "auto_mixed_indian";
+export type Language = "english" | "telugu" | "hindi" | "hinglish" | "tenglish" | "auto_mixed_indian" | "english_translation";
 export type ToolMode = "selection" | "razor" | "hand" | "zoom";
 export type LeftSidebarTab = "ai" | "media" | "text" | "subtitles" | "transcript" | "translate" | "templates";
 export type ExportFormat = "mp4" | "srt" | "json" | "ass" | "project";
@@ -286,6 +286,7 @@ export interface JobResponse {
   };
   created_at: string;
   completed_at?: string;
+  media_kind?: string;
 }
 
 export interface AlignedSegment {

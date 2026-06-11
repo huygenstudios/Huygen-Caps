@@ -32,6 +32,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("true", "1", "yes", "y", "on")
+
+
 TEMP_DIR = _path_env("TEMP_DIR", DEFAULT_TEMP_DIR)
 UPLOAD_DIR = _path_env("UPLOAD_DIR", TEMP_DIR / "uploads")
 EXPORT_DIR = _path_env("EXPORT_DIR", TEMP_DIR / "exports")
@@ -43,6 +50,38 @@ MAX_UPLOAD_SIZE_MB = _int_env("MAX_UPLOAD_SIZE_MB", 500)
 RUNTIME_CLEANUP_HOURS = _int_env("RUNTIME_CLEANUP_HOURS", 24)
 MAX_CONCURRENT_EXPORTS = max(1, _int_env("EXPORT_CONCURRENCY", _int_env("MAX_CONCURRENT_EXPORTS", 1)))
 MAX_EXPORT_DURATION_SECONDS = max(1, _int_env("MAX_EXPORT_DURATION_SECONDS", 300))
+MAX_SUBTITLE_IMPORT_BYTES = _int_env("MAX_SUBTITLE_IMPORT_BYTES", 2 * 1024 * 1024)
+
+FREE_EXPORT_TTL_HOURS = _int_env("FREE_EXPORT_TTL_HOURS", 24)
+FREE_UPLOAD_TTL_HOURS = _int_env("FREE_UPLOAD_TTL_HOURS", 24)
+
+
+MAX_AUDIO_UPLOAD_BYTES = _int_env("MAX_AUDIO_UPLOAD_BYTES", 25 * 1024 * 1024)
+MAX_AUDIO_DURATION_SECONDS = max(1, _int_env("MAX_AUDIO_DURATION_SECONDS", 120))
+AUDIO_DEFAULT_WIDTH = _int_env("AUDIO_DEFAULT_WIDTH", 1080)
+AUDIO_DEFAULT_HEIGHT = _int_env("AUDIO_DEFAULT_HEIGHT", 1920)
+AUDIO_DEFAULT_FPS = max(1, min(30, _int_env("AUDIO_DEFAULT_FPS", 30)))
+AUDIO_DEFAULT_BACKGROUND = os.getenv("AUDIO_DEFAULT_BACKGROUND", "#111111")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "").strip()
+AUTH_REQUIRED_FOR_EXPORT = _bool_env("AUTH_REQUIRED_FOR_EXPORT", False)
+AUTH_REQUIRED_FOR_SAVE = _bool_env("AUTH_REQUIRED_FOR_SAVE", True)
+ANONYMOUS_PREVIEW_ENABLED = _bool_env("ANONYMOUS_PREVIEW_ENABLED", True)
+FREE_PLAN_GENERATION_MINUTES = _int_env("FREE_PLAN_GENERATION_MINUTES", 30)
+FREE_PLAN_EXPORTS_PER_DAY = _int_env("FREE_PLAN_EXPORTS_PER_DAY", 3)
+
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "").strip()
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip()
+RAZORPAY_CURRENCY = os.getenv("RAZORPAY_CURRENCY", "INR").strip()
+RAZORPAY_PLAN_FREE = os.getenv("RAZORPAY_PLAN_FREE", "free").strip()
+RAZORPAY_PLAN_CREATOR_ID = os.getenv("RAZORPAY_PLAN_CREATOR_ID", "").strip()
+RAZORPAY_PLAN_PRO_ID = os.getenv("RAZORPAY_PLAN_PRO_ID", "").strip()
+RAZORPAY_CHECKOUT_PUBLIC_KEY_ID = os.getenv("RAZORPAY_CHECKOUT_PUBLIC_KEY_ID", RAZORPAY_KEY_ID).strip()
+RAZORPAY_BILLING_ENABLED = _bool_env("RAZORPAY_BILLING_ENABLED", False)
+BILLING_SUCCESS_URL = os.getenv("BILLING_SUCCESS_URL", "/login?success=true").strip()
+BILLING_CANCEL_URL = os.getenv("BILLING_CANCEL_URL", "/login?canceled=true").strip()
 
 
 def env_list(name: str, fallback: list[str]) -> list[str]:

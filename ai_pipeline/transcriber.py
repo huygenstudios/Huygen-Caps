@@ -14,34 +14,72 @@ from .config import (
 from .language_modes import (
     CODE_MIXED_LANGUAGE_MODES,
     TELUGU_CAPABLE_PROVIDER_ERROR,
+    get_stt_language_config,
     normalize_language_mode,
 )
 
 logger = logging.getLogger(__name__)
 
+# Language codes sent to Groq/OpenAI Whisper as the `language` hint.
+# None means let the provider auto-detect.
 LANGUAGE_HINTS = {
     "english": "en",
     "en": "en",
+    # Hindi native-script mode
     "hindi": "hi",
     "hi": "hi",
+    # Hinglish (Hindi-English Roman)
     "hinglish": "hi",
+    # Telugu native-script mode
+    "telugu": "te",
+    # Tenglish (Telugu/Telugu-English Roman) — new canonical name
+    "tenglish": "te",
+    # MIGRATION COMPAT: old names still accepted
     "telgish": "te",
     "teluglish": "te",
-    "telugu": "te",
+    # Auto-mixed Indian: no language hint — let provider detect
     "auto_mixed_indian": None,
+    "auto_indian_mixed": None,
+    # English translation: ask for English output from Indian speech
+    "english_translation": "en",
 }
 
+# All Indian language modes (Sarvam is preferred for these)
+_INDIAN_LANGUAGE_MODES = {
+    "hindi",
+    "telugu",
+    "hinglish",
+    "tenglish",
+    "auto_mixed_indian",
+    "english_translation",
+    # MIGRATION COMPAT
+    "telgish",
+    "teluglish",
+}
+
+# Sarvam language codes for the STT API
 SARVAM_LANGUAGE_CODES = {
-    "english": "en-IN",
+    # Romanized / code-mixed modes → translit endpoint
     "hinglish": "hi-IN",
-    "telgish": "te-IN",
+    "tenglish": "te-IN",
     "auto_mixed_indian": "te-IN",
+    "auto_indian_mixed": "te-IN",
+    # Native-script modes → transcribe endpoint
+    "hindi": "hi-IN",
+    "telugu": "te-IN",
+    # English translation: request English output from Indian speech
+    "english_translation": "en-IN",
+    # English passthrough
+    "english": "en-IN",
+    # MIGRATION COMPAT
+    "telgish": "te-IN",
+    "teluglish": "te-IN",
 }
 
 SARVAM_URL = "https://api.sarvam.ai/speech-to-text"
 
 
-SUPPORTED_STT_PROVIDERS = {"auto", "whisper", "groq_whisper", "openai_whisper", "sarvam"}
+SUPPORTED_STT_PROVIDERS = {"auto", "whisper", "groq_whisper", "openai_whisper", "sarvam", "deepgram"}
 OPENAI_KEY_ERROR = "OpenAI API key is invalid or missing. Update OPENAI_API_KEY in the backend environment, then restart the server."
 SARVAM_KEY_ERROR = "Sarvam API key is invalid or missing. Update SARVAM_API_KEY in the backend environment, then restart the server."
 GROQ_KEY_ERROR = "Groq API key is invalid or missing. Update GROQ_API_KEY in the backend environment, then restart the server."
@@ -66,6 +104,14 @@ def _has_real_key(env_name: str) -> bool:
 
 
 def _resolve_provider(language_mode: str, requested_provider: str | None = None) -> str:
+    """Choose the STT provider for the given language mode.
+
+    Priority (per spec):
+    - Indian modes (tenglish/hindi/telugu/hinglish/auto_mixed_indian/english_translation):
+        Sarvam → OpenAI Whisper → Groq Whisper
+    - English mode:
+        Groq Whisper → OpenAI Whisper → Sarvam
+    """
     mode = normalize_language_mode(language_mode)
     provider = (requested_provider or get_stt_provider()).strip().lower().replace("-", "_")
     if provider == "whisper":
@@ -78,7 +124,8 @@ def _resolve_provider(language_mode: str, requested_provider: str | None = None)
     if provider != "auto":
         return provider
 
-    if mode in CODE_MIXED_LANGUAGE_MODES:
+    # Indian modes: Sarvam is primary per spec
+    if mode in _INDIAN_LANGUAGE_MODES or mode in CODE_MIXED_LANGUAGE_MODES:
         if _has_real_key("SARVAM_API_KEY"):
             return "sarvam"
         if _has_real_key("OPENAI_API_KEY"):
@@ -87,13 +134,23 @@ def _resolve_provider(language_mode: str, requested_provider: str | None = None)
             return "groq_whisper"
         raise RuntimeError(TELUGU_CAPABLE_PROVIDER_ERROR)
 
+    # English mode: Groq first (faster/cheaper)
     if _has_real_key("GROQ_API_KEY"):
         return "groq_whisper"
     if _has_real_key("OPENAI_API_KEY"):
         return "openai_whisper"
     if _has_real_key("SARVAM_API_KEY"):
         return "sarvam"
-    raise RuntimeError("Configure GROQ_API_KEY, OPENAI_API_KEY, or SARVAM_API_KEY for transcription.")
+    raise RuntimeError("Configure GROQ_API_KEY, OPENAI_API_KEY, or SARVAM_API_KEY for transcription. Deepgram is not yet implemented.")
+
+
+# Modes where missing STT config is an error with a specific message
+_INDIAN_CAPABLE_MODES = {
+    "tenglish", "hindi", "telugu", "hinglish",
+    "auto_mixed_indian", "english_translation",
+    # MIGRATION COMPAT
+    "telgish", "teluglish",
+}
 
 
 def validate_transcription_config(language_mode: str) -> None:
@@ -102,20 +159,23 @@ def validate_transcription_config(language_mode: str) -> None:
 
     if provider == "sarvam":
         if not _has_real_key("SARVAM_API_KEY"):
-            if language_mode in {"telgish", "auto_mixed_indian"}:
+            if language_mode in _INDIAN_CAPABLE_MODES:
                 raise RuntimeError(TELUGU_CAPABLE_PROVIDER_ERROR)
             raise RuntimeError("STT_PROVIDER=sarvam requires SARVAM_API_KEY.")
         return
 
     if provider == "openai_whisper":
         if not _has_real_key("OPENAI_API_KEY"):
-            if language_mode in {"telgish", "auto_mixed_indian"}:
+            if language_mode in _INDIAN_CAPABLE_MODES:
                 raise RuntimeError(TELUGU_CAPABLE_PROVIDER_ERROR)
             raise RuntimeError("STT_PROVIDER=openai_whisper requires OPENAI_API_KEY.")
         return
 
+    if provider == "deepgram":
+        return
+
     if not _has_real_key("GROQ_API_KEY"):
-        if language_mode in {"telgish", "auto_mixed_indian"}:
+        if language_mode in _INDIAN_CAPABLE_MODES:
             raise RuntimeError(TELUGU_CAPABLE_PROVIDER_ERROR)
         raise RuntimeError("STT_PROVIDER=groq_whisper requires GROQ_API_KEY.")
 
@@ -277,13 +337,32 @@ def _normalize_sarvam_words(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+# Sarvam modes:
+#   "translit"    → romanized output (Tenglish, Hinglish, auto_mixed_indian)
+#   "transcribe"  → native-script output (Telugu, Hindi) or English translation
+_SARVAM_TRANSLIT_MODES = {"tenglish", "hinglish", "auto_mixed_indian", "auto_indian_mixed", "telgish", "teluglish"}
+_SARVAM_TRANSLATE_MODES = {"english_translation"}
+
+
 def _call_sarvam(audio_path: str, language_mode: str) -> dict:
     api_key = os.environ.get("SARVAM_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("STT_PROVIDER=sarvam requires SARVAM_API_KEY.")
 
-    language_code = SARVAM_LANGUAGE_CODES[language_mode]
-    mode = "translit" if language_mode in CODE_MIXED_LANGUAGE_MODES else "transcribe"
+    stt_config = get_stt_language_config(language_mode)
+    language_code = stt_config.get("language_code", "en-IN")
+    sarvam_mode = stt_config.get("sarvam_mode", "transcribe")
+
+    if language_code == "auto" or language_code == "unknown":
+        language_code = SARVAM_LANGUAGE_CODES.get(language_mode, "en-IN")
+
+    if not stt_config.get("production_ready", True):
+        logger.warning(
+            "Sarvam mode %s (%s) is not production-ready: %s",
+            language_mode,
+            stt_config.get("display_mode", "unknown"),
+            stt_config.get("notes", ""),
+        )
 
     with open(audio_path, "rb") as file:
         response = requests.post(
@@ -291,7 +370,7 @@ def _call_sarvam(audio_path: str, language_mode: str) -> dict:
             headers={"api-subscription-key": api_key},
             data={
                 "model": "saaras:v3",
-                "mode": mode,
+                "mode": sarvam_mode,
                 "language_code": language_code,
                 "with_timestamps": "true",
             },
@@ -405,5 +484,10 @@ def transcribe_audio(audio_path: str, language_mode: str = "english") -> dict:
         return _normalize_provider_result(_call_sarvam(audio_path, normalized_mode), provider)
     if provider == "openai_whisper":
         return _normalize_provider_result(_call_openai_whisper(audio_path, normalized_mode), provider)
+    if provider == "deepgram":
+        deepgram_enabled = (os.environ.get("STT_DEEPGRAM_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if not deepgram_enabled:
+            raise NotImplementedError("Deepgram STT is configured but not implemented yet. Set STT_DEEPGRAM_ENABLED=true once the integration is ready.")
+        raise NotImplementedError("Deepgram STT is configured but not implemented yet.")
 
     return _normalize_provider_result(transcribe_chunk_with_retry(audio_path, language=normalized_mode), provider)

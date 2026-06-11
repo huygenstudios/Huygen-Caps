@@ -1,3 +1,4 @@
+from ..models import ExportStatus, ExportRequest, ExportJobStatus, _job_from_row
 import asyncio
 import json
 import logging
@@ -12,13 +13,18 @@ from pathlib import Path
 from typing import Literal
 
 import aiosqlite
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..database import get_db
 from ..headless_export import EXPORT_FPS, ExportStageError, export_headless
 from ..progress import manager
+from urllib.parse import quote
+from ..storage import get_storage
+from ..auth import get_current_user_optional
+from ..usage import check_quota, record_usage_event
 from ..settings import (
+    AUTH_REQUIRED_FOR_EXPORT,
     EXPORT_DIR,
     DB_PATH,
     MAX_CONCURRENT_EXPORTS,
@@ -27,6 +33,8 @@ from ..settings import (
     ensure_runtime_dirs,
 )
 from .jobs import _public_export_stage, _resolve_export_dimensions
+from ..export_queue import enqueue_export_job, get_export_history, retry_export_job, requeue_stale_processing_jobs
+import time
 
 
 router = APIRouter(prefix="/export/jobs", tags=["export"])
@@ -34,162 +42,8 @@ logger = logging.getLogger(__name__)
 
 ensure_runtime_dirs()
 
-ExportStatus = Literal["queued", "running", "completed", "failed"]
-_export_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXPORTS)
-_jobs_lock = asyncio.Lock()
-_jobs: dict[str, "ExportJobStatus"] = {}
-_EXPORT_JOB_COLUMNS = (
-    "id",
-    "source_job_id",
-    "status",
-    "stage",
-    "progress",
-    "message",
-    "error",
-    "download_url",
-    "filename",
-    "output_path",
-    "bytes",
-    "duration",
-    "width",
-    "height",
-    "fps",
-    "created_at",
-    "updated_at",
-)
 
 
-@dataclass
-class ExportRequest:
-    source_job_id: str
-    captions_json: str
-    theme: str
-    style_config_json: str | None
-    resolution: str
-    export_width: int | None
-    export_height: int | None
-    export_fps: int
-    include_audio: bool
-    quality: str
-    bitrate: str
-    custom_bitrate_mbps: float | None
-    export_mode: str
-    captions_only: bool
-    background_color: str
-    duration_override: float | None
-    duration_source: str | None
-    visible_tracks_count: int | None
-    source_media_count: int | None
-    caption_chunks_count: int | None
-    hardware_acceleration: bool
-    render_mode: str
-    original_video_path: str
-    composition_json: str | None
-
-
-@dataclass
-class ExportJobStatus:
-    id: str
-    source_job_id: str
-    status: ExportStatus
-    stage: str
-    progress: int
-    message: str = ""
-    error: str | None = None
-    download_url: str | None = None
-    filename: str | None = None
-    output_path: str | None = None
-    bytes: int | None = None
-    duration: float | None = None
-    width: int | None = None
-    height: int | None = None
-    fps: int | None = None
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    def to_public_dict(self) -> dict[str, object]:
-        return {
-            "jobId": self.id,
-            "sourceJobId": self.source_job_id,
-            "status": self.status,
-            "stage": self.stage,
-            "progress": self.progress,
-            "message": self.message,
-            "error": self.error,
-            "downloadUrl": self.download_url,
-            "filename": self.filename,
-            "bytes": self.bytes,
-            "duration": self.duration,
-            "width": self.width,
-            "height": self.height,
-            "fps": self.fps,
-            "createdAt": self.created_at,
-            "updatedAt": self.updated_at,
-        }
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _job_db_values(job: ExportJobStatus) -> tuple[object, ...]:
-    return (
-        job.id,
-        job.source_job_id,
-        job.status,
-        job.stage,
-        job.progress,
-        job.message,
-        job.error,
-        job.download_url,
-        job.filename,
-        job.output_path,
-        job.bytes,
-        job.duration,
-        job.width,
-        job.height,
-        job.fps,
-        job.created_at,
-        job.updated_at,
-    )
-
-
-def _job_from_row(row: aiosqlite.Row) -> ExportJobStatus:
-    return ExportJobStatus(
-        id=row["id"],
-        source_job_id=row["source_job_id"],
-        status=row["status"],
-        stage=row["stage"],
-        progress=int(row["progress"] or 0),
-        message=row["message"] or "",
-        error=row["error"],
-        download_url=row["download_url"],
-        filename=row["filename"],
-        output_path=row["output_path"],
-        bytes=row["bytes"],
-        duration=row["duration"],
-        width=row["width"],
-        height=row["height"],
-        fps=row["fps"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-    )
-
-
-async def _persist_job(job: ExportJobStatus) -> None:
-    placeholders = ", ".join("?" for _ in _EXPORT_JOB_COLUMNS)
-    update_columns = [column for column in _EXPORT_JOB_COLUMNS if column != "id"]
-    update_clause = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            f"""
-            INSERT INTO export_jobs ({", ".join(_EXPORT_JOB_COLUMNS)})
-            VALUES ({placeholders})
-            ON CONFLICT(id) DO UPDATE SET {update_clause}
-            """,
-            _job_db_values(job),
-        )
-        await db.commit()
 
 
 async def _load_job_from_db(export_job_id: str) -> ExportJobStatus | None:
@@ -199,16 +53,6 @@ async def _load_job_from_db(export_job_id: str) -> ExportJobStatus | None:
         row = await cursor.fetchone()
     return _job_from_row(row) if row else None
 
-
-async def _load_recent_jobs_from_db(limit: int = 50) -> list[ExportJobStatus]:
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM export_jobs ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-    return [_job_from_row(row) for row in rows]
 
 
 async def recover_orphaned_export_jobs() -> int:
@@ -233,8 +77,8 @@ async def recover_orphaned_export_jobs() -> int:
         return cursor.rowcount or 0
 
 
-def _export_download_url(filename: str) -> str:
-    return f"/api/export/jobs/download/{filename}"
+def _export_download_url(object_key: str) -> str:
+    return f"/api/export/jobs/download?key={quote(object_key)}"
 
 
 def _resolve_export_file(filename: str) -> Path:
@@ -286,24 +130,6 @@ def _stage_from_progress(status: str, details: str) -> str:
 async def _prune_jobs() -> None:
     cutoff = time.time() - 24 * 3600
     cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-    async with _jobs_lock:
-        old_ids = []
-        for job_id, job in _jobs.items():
-            try:
-                updated = datetime.fromisoformat(job.updated_at).timestamp()
-            except ValueError:
-                updated = time.time()
-            if job.status in {"completed", "failed"} and updated < cutoff:
-                old_ids.append(job_id)
-        for job_id in old_ids:
-            _jobs.pop(job_id, None)
-        if len(_jobs) > 150:
-            removable = sorted(
-                (job for job in _jobs.values() if job.status in {"completed", "failed"}),
-                key=lambda item: item.updated_at,
-            )
-            for job in removable[: max(0, len(_jobs) - 150)]:
-                _jobs.pop(job.id, None)
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
             """
@@ -315,28 +141,6 @@ async def _prune_jobs() -> None:
         await db.commit()
 
 
-async def _set_job(job_id: str, **updates: object) -> ExportJobStatus:
-    async with _jobs_lock:
-        job = _jobs[job_id]
-        for key, value in updates.items():
-            setattr(job, key, value)
-        job.updated_at = _utc_now()
-        snapshot = replace(job)
-    await _persist_job(snapshot)
-    return snapshot
-
-
-async def _broadcast_progress(job: ExportJobStatus) -> None:
-    payload = {
-        "status": f"export_{job.status}",
-        "percent": job.progress,
-        "details": job.message or job.stage,
-        "stage": job.stage,
-        "exportJobId": job.id,
-    }
-    await manager.broadcast(job.id, payload)
-    if job.source_job_id:
-        await manager.broadcast(job.source_job_id, payload)
 
 
 def _validate_duration(duration: float | None) -> None:
@@ -363,195 +167,20 @@ def _validate_duration(duration: float | None) -> None:
         )
 
 
-async def _run_export_job(export_job_id: str, request: ExportRequest) -> None:
-    queued_job = await _set_job(
-        export_job_id,
-        status="queued",
-        stage="queued",
-        progress=0,
-        message="Waiting for an available export worker...",
-    )
-    await _broadcast_progress(queued_job)
-
-    async with _export_semaphore:
-        started_memory = _memory_mb()
-        logger.info(
-            "export_job_started export_job_id=%s source_job_id=%s mode=%s render_mode=%s duration=%s fps=%s size=%sx%s memory_mb=%s",
-            export_job_id,
-            request.source_job_id,
-            request.export_mode,
-            request.render_mode,
-            request.duration_override,
-            request.export_fps,
-            request.export_width,
-            request.export_height,
-            started_memory,
-        )
-        running_job = await _set_job(
-            export_job_id,
-            status="running",
-            stage="prepare_render_input",
-            progress=1,
-            message="Preparing render input...",
-        )
-        await _broadcast_progress(running_job)
-
-        async def progress_cb(status: str, percent: int, details: str):
-            stage = _stage_from_progress(status, details)
-            progress = max(0, min(99, int(percent)))
-            job = await _set_job(
-                export_job_id,
-                status="running",
-                stage=stage,
-                progress=progress,
-                message=details or stage,
-            )
-            await _broadcast_progress(job)
-
-        try:
-            if request.render_mode != "headless":
-                raise ExportStageError("validate_request", "Background export jobs currently support headless MP4 export only.")
-            if not request.captions_json or not request.captions_json.strip():
-                raise ExportStageError("render_input", "No captions JSON was provided for MP4 export.")
-
-            try:
-                parsed_captions = json.loads(request.captions_json)
-            except json.JSONDecodeError as exc:
-                raise ExportStageError("render_input", "Invalid captions JSON sent to export.", exc) from exc
-            if not isinstance(parsed_captions, list):
-                raise ExportStageError("render_input", "Captions JSON must be a list of caption chunks.")
-
-            duration = float(request.duration_override or 0)
-            total_frames = math.ceil(duration * request.export_fps) if duration > 0 else None
-            logger.info(
-                "export_job_request export_job_id=%s export_mode=%s captions_only=%s width=%s height=%s fps=%s duration=%s include_audio=%s background_color=%s render_url=%s total_frames=%s",
-                export_job_id,
-                request.export_mode,
-                request.export_mode == "captions_only" or request.captions_only,
-                request.export_width,
-                request.export_height,
-                request.export_fps,
-                request.duration_override,
-                request.include_audio,
-                request.background_color,
-                os.getenv("RENDER_PAGE_URL") or "bundled/static render page",
-                total_frames,
-            )
-
-            output_path = await export_headless(
-                job_id=export_job_id,
-                video_path=request.original_video_path,
-                captions_json=request.captions_json,
-                theme=request.theme,
-                resolution=request.resolution,
-                progress_callback=progress_cb,
-                style_config_json=request.style_config_json,
-                export_width=request.export_width,
-                export_height=request.export_height,
-                export_fps=request.export_fps,
-                include_audio=request.include_audio,
-                quality=request.quality,
-                bitrate=request.bitrate,
-                custom_bitrate_mbps=request.custom_bitrate_mbps,
-                export_mode=request.export_mode,
-                background_color=request.background_color,
-                duration_override=request.duration_override,
-                duration_source=request.duration_source,
-                hardware_acceleration=request.hardware_acceleration,
-                composition_json=request.composition_json,
-            )
-
-            output = Path(output_path)
-            output_bytes = output.stat().st_size if output.exists() else 0
-            if output_bytes <= 0:
-                raise ExportStageError("output_write", f"FFmpeg finished but output file is missing or empty: {output_path}")
-
-            fallback_width, fallback_height = _resolve_export_dimensions(
-                request.resolution,
-                request.export_width,
-                request.export_height,
-            )
-            width, height = _dimensions_from_export_filename(output.name, fallback_width, fallback_height)
-            download_url = _export_download_url(output.name)
-            completed = await _set_job(
-                export_job_id,
-                status="completed",
-                stage="completed",
-                progress=100,
-                message="MP4 export is ready to download.",
-                error=None,
-                download_url=download_url,
-                filename=output.name,
-                output_path=str(output),
-                bytes=output_bytes,
-                duration=float(request.duration_override or 0),
-                width=width,
-                height=height,
-                fps=request.export_fps,
-            )
-            logger.info(
-                "export_job_completed export_job_id=%s source_job_id=%s output=%s bytes=%s memory_mb=%s",
-                export_job_id,
-                request.source_job_id,
-                output,
-                output_bytes,
-                _memory_mb(),
-            )
-            await _broadcast_progress(completed)
-        except ExportStageError as exc:
-            public_stage = _public_export_stage(exc.stage)
-            message = str(exc)
-            failed = await _set_job(
-                export_job_id,
-                status="failed",
-                stage=public_stage,
-                progress=-1,
-                message=f"Export failed during {public_stage}: {message}",
-                error=message,
-            )
-            logger.exception(
-                "export_job_failed export_job_id=%s source_job_id=%s stage=%s error=%s memory_mb=%s",
-                export_job_id,
-                request.source_job_id,
-                exc.stage,
-                message,
-                _memory_mb(),
-            )
-            await _broadcast_progress(failed)
-        except Exception as exc:
-            message = str(exc).strip() or repr(exc) or type(exc).__name__
-            failed = await _set_job(
-                export_job_id,
-                status="failed",
-                stage="render_video",
-                progress=-1,
-                message=f"Export failed during render_video: {type(exc).__name__}: {message}",
-                error=f"{type(exc).__name__}: {message}",
-            )
-            logger.exception(
-                "export_job_failed_unexpected export_job_id=%s source_job_id=%s error=%s memory_mb=%s",
-                export_job_id,
-                request.source_job_id,
-                message,
-                _memory_mb(),
-            )
-            await _broadcast_progress(failed)
-
-
 def export_job_metrics() -> dict[str, int]:
-    values = list(_jobs.values())
     return {
         "maxConcurrentExports": MAX_CONCURRENT_EXPORTS,
         "maxExportDurationSeconds": MAX_EXPORT_DURATION_SECONDS,
-        "activeExports": sum(1 for job in values if job.status == "running"),
-        "queuedExports": sum(1 for job in values if job.status == "queued"),
-        "trackedExportJobs": len(values),
+        "activeExports": 0,
+        "queuedExports": 0,
+        "trackedExportJobs": 0,
     }
 
 
 @router.post("")
 @router.post("/")
 async def start_export_job(
+    request: Request,
     db: aiosqlite.Connection = Depends(get_db),
     source_job_id: str = Form(...),
     captions_json: str = Form("[]"),
@@ -579,6 +208,15 @@ async def start_export_job(
     render_mode: str = Form("headless"),
     composition_json: str | None = Form(None),
 ):
+    user_context = await get_current_user_optional(request)
+    if AUTH_REQUIRED_FOR_EXPORT and not user_context.is_authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required to export media.")
+    
+    # Do initial quota check
+    # Note: we don't know the final length yet, but we will use duration_override
+    quota_result = await check_quota(user_context, event_type="export", media_duration_sec=duration_override or 0)
+    if not quota_result.allowed:
+        raise HTTPException(status_code=402, detail=quota_result.reason)
     await _prune_jobs()
     if duration_override is None and custom_duration is not None:
         duration_override = custom_duration
@@ -644,21 +282,23 @@ async def start_export_job(
     )
 
     export_job_id = str(uuid.uuid4())
-    async with _jobs_lock:
-        queued_job = ExportJobStatus(
-            id=export_job_id,
-            source_job_id=source_job_id,
-            status="queued",
-            stage="queued",
-            progress=0,
-            message="Export queued.",
-            duration=float(duration_override or 0),
-            width=export_width,
-            height=export_height,
-            fps=export_fps,
-        )
-        _jobs[export_job_id] = queued_job
-    await _persist_job(queued_job)
+    
+    # Store usage record for export
+    await record_usage_event(
+        user_context=user_context,
+        event_type="export",
+        media_duration_sec=duration_override or 0,
+        job_id=source_job_id,
+        export_job_id=export_job_id
+    )
+
+    queued_job = await enqueue_export_job(
+        source_job_id=source_job_id,
+        user_id=user_context.user_id,
+        anonymous_session_id=None,
+        request=request,
+        export_job_id=export_job_id
+    )
 
     logger.info(
         "export_job_queued export_job_id=%s source_job_id=%s mode=%s duration=%s fps=%s captions=%s output_dir=%s",
@@ -670,22 +310,42 @@ async def start_export_job(
         caption_chunks_count,
         EXPORT_DIR,
     )
-    asyncio.create_task(_run_export_job(export_job_id, request))
 
     return {
         "success": True,
         "jobId": export_job_id,
         "statusUrl": f"/api/export/jobs/{export_job_id}",
-        "message": "Export started",
+        "message": "Export queued",
     }
 
 
 @router.get("")
 @router.get("/")
-async def list_export_jobs():
-    jobs = await _load_recent_jobs_from_db(50)
+async def list_export_jobs(request: Request):
+    user_context = await get_current_user_optional(request)
+    jobs = await get_export_history(user_context.user_id, user_context.anonymous_session_id, limit=50)
     return [job.to_public_dict() for job in jobs]
 
+@router.post("/{export_job_id}/retry")
+async def retry_job(export_job_id: str, request: Request):
+    user_context = await get_current_user_optional(request)
+    success, message = await retry_export_job(export_job_id, user_context.user_id, user_context.anonymous_session_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message}
+
+
+@router.get("/download")
+async def download_export_file_signed(key: str):
+    storage = get_storage()
+    if not storage.exists(key):
+        raise HTTPException(status_code=404, detail="Export file was not found or has expired.")
+    
+    url = storage.get_url(key)
+    if url:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url)
+    raise HTTPException(status_code=500, detail="Could not generate download link.")
 
 @router.get("/download/{filename}")
 async def download_export_file(filename: str):
@@ -704,14 +364,10 @@ async def download_export_file(filename: str):
 
 @router.get("/{export_job_id}")
 async def get_export_job(export_job_id: str):
-    async with _jobs_lock:
-        job = _jobs.get(export_job_id)
-        if job:
-            return job.to_public_dict()
-
     job = await _load_job_from_db(export_job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Export job not found")
+    if job:
+        return job.to_public_dict()
+    raise HTTPException(status_code=404, detail="Export job not found")
 
     if job.status in {"queued", "running"}:
         message = "Export worker restarted before this MP4 finished. Please start the export again."
