@@ -1,5 +1,5 @@
 FROM python:3.11-slim AS app-base
-
+ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 ENV NODE_ENV=production
