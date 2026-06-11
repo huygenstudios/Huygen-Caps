@@ -28,7 +28,11 @@ dist
 build
 .turbo
 
-storage
+/storage
+!server/storage/
+!server/storage/**
+server/storage/__pycache__/
+server/storage/**/*.pyc
 logs
 uploads
 exports

@@ -32,7 +32,11 @@ out/
 !.env.production.example
 
 # Runtime storage and generated media
-storage/
+/storage/
+!server/storage/
+!server/storage/**
+server/storage/__pycache__/
+server/storage/**/*.pyc
 uploads/
 exports/
 temp/
