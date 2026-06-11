@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 import aiosqlite
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
