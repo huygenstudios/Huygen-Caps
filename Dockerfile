@@ -1,21 +1,4 @@
-FROM node:20-bookworm-slim AS frontend-builder
-
-WORKDIR /app/frontend
-ENV NEXT_PUBLIC_API_BASE_URL=
-ENV NEXT_PUBLIC_API_URL=
-ENV NEXT_PUBLIC_APP_URL=
-ENV NEXT_OUTPUT=export
-ENV NEXT_TELEMETRY_DISABLED=1
-
-COPY frontend/package*.json ./
-RUN npm ci --include=dev
-
-COPY frontend ./
-ENV NODE_ENV=production
-RUN npm run build
-
-
-FROM python:3.11-slim AS app
+FROM python:3.11-slim AS app-base
 
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
@@ -55,6 +38,34 @@ COPY requirements.txt ./
 RUN python -m pip install --upgrade pip \
   && python -m pip install -r requirements.txt \
   && python -m playwright install --with-deps chromium
+
+# Dummy file to force sequential build
+RUN touch /app-base-done
+
+
+FROM node:20-bookworm-slim AS frontend-builder
+
+# Wait for app-base to finish to prevent OOM on small VPS (forces sequential build)
+COPY --from=app-base /app-base-done /tmp/
+
+WORKDIR /app/frontend
+ENV NEXT_PUBLIC_API_BASE_URL=
+ENV NEXT_PUBLIC_API_URL=
+ENV NEXT_PUBLIC_APP_URL=
+ENV NEXT_OUTPUT=export
+ENV NEXT_TELEMETRY_DISABLED=1
+# Limit memory usage for Next.js build
+ENV NODE_OPTIONS="--max_old_space_size=1024"
+
+COPY frontend/package*.json ./
+RUN npm ci --include=dev
+
+COPY frontend ./
+ENV NODE_ENV=production
+RUN npm run build
+
+
+FROM app-base AS app
 
 COPY . .
 COPY --from=frontend-builder /app/frontend/out ./frontend/out
