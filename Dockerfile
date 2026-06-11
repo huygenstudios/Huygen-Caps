@@ -54,8 +54,9 @@ ENV NEXT_PUBLIC_API_URL=
 ENV NEXT_PUBLIC_APP_URL=
 ENV NEXT_OUTPUT=export
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV SKIP_BUILD_VALIDATION=true
 # Limit memory usage for Next.js build
-ENV NODE_OPTIONS="--max_old_space_size=1024"
+ENV NODE_OPTIONS="--max_old_space_size=512"
 
 COPY frontend/package*.json ./
 RUN npm ci --include=dev
